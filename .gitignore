@@ -1,0 +1,9 @@
+# .net ignore folders
+.vs/
+bin/
+obj/
+
+# documentation
+dump.md
+*.drawio
+
