@@ -38,6 +38,7 @@ appsettings.*.Local.json
 # Generated project dumps
 dump.md
 dump*.md
+*dump.md
 
 # Generated diagrams
 *.drawio.bkp
