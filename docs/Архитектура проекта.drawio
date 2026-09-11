@@ -1,0 +1,88 @@
+<mxfile host="Electron">
+  <diagram name="Страница-1" id="rii9VzMfTnA7TpF7X65B">
+    <mxGraphModel dx="890" dy="674" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="Gefw01o4ees4nlFMWRZg-4" edge="1" parent="1" source="Gefw01o4ees4nlFMWRZg-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Gefw01o4ees4nlFMWRZg-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-16" connectable="0" parent="Gefw01o4ees4nlFMWRZg-4" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="HTTPS" vertex="1">
+          <mxGeometry relative="1" x="-0.2741" as="geometry">
+            <mxPoint y="6" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Desktop клиент (Gui/Cli)&lt;div&gt;Telegram-бот&lt;/div&gt;" vertex="1">
+          <mxGeometry height="100" width="221" x="240" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-8" edge="1" parent="1" source="Gefw01o4ees4nlFMWRZg-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Gefw01o4ees4nlFMWRZg-5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-9" edge="1" parent="1" source="Gefw01o4ees4nlFMWRZg-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Gefw01o4ees4nlFMWRZg-6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-23" edge="1" parent="1" source="Gefw01o4ees4nlFMWRZg-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Gefw01o4ees4nlFMWRZg-22">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="350.53" y="350.2" />
+              <mxPoint x="521.53" y="350.2" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-3" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="ASP.NET Core API&lt;div&gt;&lt;br&gt;&lt;div&gt;Авторизация&lt;/div&gt;&lt;div&gt;Проекты&lt;/div&gt;&lt;div&gt;Аналитика&lt;/div&gt;&lt;div&gt;Рекомендации&lt;/div&gt;&lt;div&gt;Интеграция GitHub&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="130" width="221" x="240" y="200" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-5" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="PostgreSQL" vertex="1">
+          <mxGeometry height="40" width="121" x="119" y="371" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-13" edge="1" parent="1" source="Gefw01o4ees4nlFMWRZg-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Gefw01o4ees4nlFMWRZg-10">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="420" y="431" />
+              <mxPoint x="280" y="431" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-14" edge="1" parent="1" source="Gefw01o4ees4nlFMWRZg-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Gefw01o4ees4nlFMWRZg-11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-15" edge="1" parent="1" source="Gefw01o4ees4nlFMWRZg-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Gefw01o4ees4nlFMWRZg-12">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="420" y="431" />
+              <mxPoint x="560" y="431" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-6" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Фоновые сервисы" vertex="1">
+          <mxGeometry height="40" width="121" x="290" y="371" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-10" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Анализатор Roslyn" vertex="1">
+          <mxGeometry height="40" width="121" x="119" y="456" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-11" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Анализатор EF core" vertex="1">
+          <mxGeometry height="40" width="121" x="290" y="456" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-12" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Анализатор SQL" vertex="1">
+          <mxGeometry height="40" width="121" x="461" y="456" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-25" edge="1" parent="1" source="Gefw01o4ees4nlFMWRZg-17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="Gefw01o4ees4nlFMWRZg-5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-27" edge="1" parent="1" source="Gefw01o4ees4nlFMWRZg-17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="Gefw01o4ees4nlFMWRZg-3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="96.52" y="265" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-17" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Docker" vertex="1">
+          <mxGeometry height="40" width="121" x="36" y="200" as="geometry" />
+        </mxCell>
+        <mxCell id="Gefw01o4ees4nlFMWRZg-22" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="GitHub API" vertex="1">
+          <mxGeometry height="40" width="121" x="461" y="371" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

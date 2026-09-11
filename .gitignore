@@ -1,9 +1,43 @@
-# .net ignore folders
+# .NET
 .vs/
 bin/
 obj/
 
-# documentation
-dump.md
-*.drawio
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
 
+# Test results
+TestResults/
+*.trx
+
+# Coverage
+coverage/
+*.coverage
+*.coveragexml
+
+# JetBrains Rider
+.idea/
+
+# Visual Studio Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local configuration / secrets
+appsettings.Local.json
+appsettings.*.Local.json
+*.local.json
+.env
+.env.*
+
+# Generated project dumps
+dump.md
+dump*.md
+
+# Generated diagrams
+*.drawio.bkp
