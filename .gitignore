@@ -35,10 +35,11 @@ appsettings.*.Local.json
 .env
 .env.*
 
-# Generated project dumps
+# Generated project dumps and dev files
 dump.md
 dump*.md
 *dump.md
+swagger.json
 
 # Generated diagrams
 *.drawio.bkp
