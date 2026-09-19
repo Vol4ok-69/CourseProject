@@ -2,15 +2,16 @@ using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Application.Services;
 using Infrastructure.Data;
+using Infrastructure.GitHub;
 using Infrastructure.Repository;
 using Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text;
-
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,9 +27,17 @@ builder.Services.AddScoped<IAnalysisRepository, AnalysisRepository>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 
+builder.Services.AddHttpClient<IGitHubService, GitHubService>(client =>
+{
+    client.BaseAddress = new Uri("https://api.github.com/");
+    client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CourseProject", "1.0"));
+    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+});
+
 builder.Services.AddScoped<CommitService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ProjectService>();
+builder.Services.AddScoped<GitHubSyncService>();
 
 var jwtKey = builder.Configuration["Jwt:Key"]
     ?? throw new InvalidOperationException("JWT key is not configured.");
