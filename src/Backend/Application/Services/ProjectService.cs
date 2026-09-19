@@ -29,4 +29,35 @@ public class ProjectService(IProjectRepository projectRepository)
 
         return project;
     }
+
+    public async Task<Project?> UpdateAsync(int id, UpdateProjectDto dto, CancellationToken cancellationToken = default)
+    {
+        var project = await projectRepository.GetByIdAsync(id, cancellationToken);
+
+        if (project is null)
+        {
+            return null;
+        }
+
+        project.Name = dto.Name;
+        project.RepoUrl = dto.RepoUrl;
+
+        await projectRepository.UpdateAsync(project, cancellationToken);
+
+        return project;
+    }
+
+    public async Task<bool> DeleteAsync(int id, CancellationToken cancellationToken = default)
+    {
+        var project = await projectRepository.GetByIdAsync(id, cancellationToken);
+
+        if (project is null)
+        {
+            return false;
+        }
+
+        await projectRepository.DeleteAsync(project, cancellationToken);
+
+        return true;
+    }
 }

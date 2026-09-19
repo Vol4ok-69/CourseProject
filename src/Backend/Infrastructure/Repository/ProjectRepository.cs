@@ -27,4 +27,16 @@ public class ProjectRepository(AppDbContext context) : IProjectRepository
         await context.Projects.AddAsync(project, cancellationToken);
         await context.SaveChangesAsync(cancellationToken);
     }
+
+    public async Task UpdateAsync(Project project, CancellationToken cancellationToken = default)
+    {
+        context.Projects.Update(project);
+        await context.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task DeleteAsync(Project project, CancellationToken cancellationToken = default)
+    {
+        context.Projects.Remove(project);
+        await context.SaveChangesAsync(cancellationToken);
+    }
 }

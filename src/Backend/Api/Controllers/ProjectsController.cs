@@ -132,6 +132,104 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
 
         return CreatedAtAction(nameof(GetById), new { id = project.Id }, projectDto);
     }
+
+    /// <summary>
+    /// Обновляет данные проекта.
+    /// </summary>
+    /// <param name="id">Идентификатор проекта.</param>
+    /// <param name="dto">Новые данные проекта.</param>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Обновленный проект.</returns>
+    [HttpPut("{id:int}")]
+    [ProducesResponseType(typeof(ProjectDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ProjectDto>> Update(int id, UpdateProjectDto dto, CancellationToken cancellationToken)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (userIdClaim is null || !int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var project = await projectService.GetByIdAsync(id, cancellationToken);
+
+        if (project is null)
+        {
+            return NotFound();
+        }
+
+        var isAdmin = User.IsInRole("Admin");
+
+        if (project.OwnerId != userId && !isAdmin)
+        {
+            return Forbid();
+        }
+
+        var updatedProject = await projectService.UpdateAsync(id, dto, cancellationToken);
+
+        if (updatedProject is null)
+        {
+            return NotFound();
+        }
+
+        var projectDto = new ProjectDto
+        {
+            Id = updatedProject.Id,
+            Name = updatedProject.Name,
+            RepoUrl = updatedProject.RepoUrl,
+            OwnerId = updatedProject.OwnerId
+        };
+
+        return Ok(projectDto);
+    }
+
+    /// <summary>
+    /// Удаляет проект.
+    /// </summary>
+    /// <param name="id">Идентификатор проекта.</param>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    [HttpDelete("{id:int}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (userIdClaim is null || !int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var project = await projectService.GetByIdAsync(id, cancellationToken);
+
+        if (project is null)
+        {
+            return NotFound();
+        }
+
+        var isAdmin = User.IsInRole("Admin");
+
+        if (project.OwnerId != userId && !isAdmin)
+        {
+            return Forbid();
+        }
+
+        var deleted = await projectService.DeleteAsync(id, cancellationToken);
+
+        if (!deleted)
+        {
+            return NotFound();
+        }
+
+        return NoContent();
+    }
+
     /// <summary>
     /// Синхронизирует проект с GitHub.
     /// </summary>
