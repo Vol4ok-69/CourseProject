@@ -1,12 +1,15 @@
 ﻿using Application.DTOs;
 using Application.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace Api.Controllers;
 
 /// <summary>
 /// Предоставляет операции для работы с проектами.
 /// </summary>
+[Authorize]
 [ApiController]
 [Route("api/projects")]
 [Produces("application/json")]
@@ -20,14 +23,30 @@ public class ProjectsController(ProjectService projectService) : ControllerBase
     /// <returns>Данные проекта.</returns>
     [HttpGet("{id:int}")]
     [ProducesResponseType(typeof(ProjectDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ProjectDto>> GetById(int id, CancellationToken cancellationToken)
     {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (userIdClaim is null || !int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
         var project = await projectService.GetByIdAsync(id, cancellationToken);
 
         if (project is null)
         {
             return NotFound();
+        }
+
+        var isAdmin = User.IsInRole("Admin");
+
+        if (project.OwnerId != userId && !isAdmin)
+        {
+            return Forbid();
         }
 
         var projectDto = new ProjectDto
@@ -49,8 +68,24 @@ public class ProjectsController(ProjectService projectService) : ControllerBase
     /// <returns>Список проектов владельца.</returns>
     [HttpGet("owner/{ownerId:int}")]
     [ProducesResponseType(typeof(IReadOnlyList<ProjectDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<IReadOnlyList<ProjectDto>>> GetByOwnerId(int ownerId, CancellationToken cancellationToken)
     {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (userIdClaim is null || !int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var isAdmin = User.IsInRole("Admin");
+
+        if (ownerId != userId && !isAdmin)
+        {
+            return Forbid();
+        }
+
         var projects = await projectService.GetByOwnerIdAsync(ownerId, cancellationToken);
 
         var projectDtos = projects
@@ -75,9 +110,17 @@ public class ProjectsController(ProjectService projectService) : ControllerBase
     [HttpPost]
     [ProducesResponseType(typeof(ProjectDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<ProjectDto>> Create(CreateProjectDto dto, CancellationToken cancellationToken)
     {
-        var project = await projectService.CreateAsync(dto, cancellationToken);
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (userIdClaim is null || !int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var project = await projectService.CreateAsync(dto, userId, cancellationToken);
 
         var projectDto = new ProjectDto
         {

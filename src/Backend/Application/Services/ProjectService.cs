@@ -16,13 +16,13 @@ public class ProjectService(IProjectRepository projectRepository)
         return await projectRepository.GetByOwnerIdAsync(ownerId, cancellationToken);
     }
 
-    public async Task<Project> CreateAsync(CreateProjectDto dto, CancellationToken cancellationToken = default)
+    public async Task<Project> CreateAsync(CreateProjectDto dto, int ownerId, CancellationToken cancellationToken = default)
     {
         var project = new Project
         {
             Name = dto.Name,
             RepoUrl = dto.RepoUrl,
-            OwnerId = dto.OwnerId
+            OwnerId = ownerId
         };
 
         await projectRepository.AddAsync(project, cancellationToken);

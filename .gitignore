@@ -40,6 +40,7 @@ dump.md
 dump*.md
 *dump.md
 swagger.json
+test.ps1
 
 # Generated diagrams
 *.drawio.bkp
