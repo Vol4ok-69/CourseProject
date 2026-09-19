@@ -1,4 +1,5 @@
-﻿using Application.Interfaces.Repositories;
+﻿using Application.DTOs;
+using Application.Interfaces.Repositories;
 using Domain.Entities;
 
 namespace Application.Services;
@@ -15,8 +16,17 @@ public class ProjectService(IProjectRepository projectRepository)
         return await projectRepository.GetByOwnerIdAsync(ownerId, cancellationToken);
     }
 
-    public async Task AddAsync(Project project, CancellationToken cancellationToken = default)
+    public async Task<Project> CreateAsync(CreateProjectDto dto, CancellationToken cancellationToken = default)
     {
+        var project = new Project
+        {
+            Name = dto.Name,
+            RepoUrl = dto.RepoUrl,
+            OwnerId = dto.OwnerId
+        };
+
         await projectRepository.AddAsync(project, cancellationToken);
+
+        return project;
     }
 }

@@ -65,4 +65,28 @@ public class ProjectsController(ProjectService projectService) : ControllerBase
 
         return Ok(projectDtos);
     }
+
+    /// <summary>
+    /// Создает новый проект.
+    /// </summary>
+    /// <param name="dto">Данные создаваемого проекта.</param>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Созданный проект.</returns>
+    [HttpPost]
+    [ProducesResponseType(typeof(ProjectDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ProjectDto>> Create(CreateProjectDto dto, CancellationToken cancellationToken)
+    {
+        var project = await projectService.CreateAsync(dto, cancellationToken);
+
+        var projectDto = new ProjectDto
+        {
+            Id = project.Id,
+            Name = project.Name,
+            RepoUrl = project.RepoUrl,
+            OwnerId = project.OwnerId
+        };
+
+        return CreatedAtAction(nameof(GetById), new { id = project.Id }, projectDto);
+    }
 }
