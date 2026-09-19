@@ -27,11 +27,15 @@ builder.Services.AddScoped<IAnalysisRepository, AnalysisRepository>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 
+var gitHubToken = builder.Configuration["GitHub:Token"]
+    ?? throw new InvalidOperationException("GitHub token is not configured.");
+
 builder.Services.AddHttpClient<IGitHubService, GitHubService>(client =>
 {
     client.BaseAddress = new Uri("https://api.github.com/");
     client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CourseProject", "1.0"));
     client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", gitHubToken);
 });
 
 builder.Services.AddScoped<CommitService>();

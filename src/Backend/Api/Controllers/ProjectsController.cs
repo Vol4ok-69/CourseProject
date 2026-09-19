@@ -13,7 +13,7 @@ namespace Api.Controllers;
 [ApiController]
 [Route("api/projects")]
 [Produces("application/json")]
-public class ProjectsController(ProjectService projectService) : ControllerBase
+public class ProjectsController(ProjectService projectService, GitHubSyncService gitHubSyncService) : ControllerBase
 {
     /// <summary>
     /// Получает проект по его идентификатору.
@@ -131,5 +131,48 @@ public class ProjectsController(ProjectService projectService) : ControllerBase
         };
 
         return CreatedAtAction(nameof(GetById), new { id = project.Id }, projectDto);
+    }
+    /// <summary>
+    /// Синхронизирует проект с GitHub.
+    /// </summary>
+    /// <param name="projectId">Идентификатор проекта.</param>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Результат синхронизации.</returns>
+    [HttpPost("{projectId:int}/github/sync")]
+    [ProducesResponseType(typeof(GitHubSyncResultDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<GitHubSyncResultDto>> SyncGitHub(int projectId, CancellationToken cancellationToken)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (userIdClaim is null || !int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var project = await projectService.GetByIdAsync(projectId, cancellationToken);
+
+        if (project is null)
+        {
+            return NotFound();
+        }
+
+        var isAdmin = User.IsInRole("Admin");
+
+        if (project.OwnerId != userId && !isAdmin)
+        {
+            return Forbid();
+        }
+
+        var result = await gitHubSyncService.SyncAsync(projectId, cancellationToken);
+
+        if (result is null)
+        {
+            return NotFound();
+        }
+
+        return Ok(result);
     }
 }
