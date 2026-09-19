@@ -1,6 +1,8 @@
 ﻿using Application.DTOs;
 using Application.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace Api.Controllers;
 
@@ -60,5 +62,73 @@ public class AuthController(AuthService authService) : ControllerBase
         }
 
         return Ok(response);
+    }
+    /// <summary>
+    /// Позволяет авторизованному пользователю изменить свое имя пользователя.
+    /// </summary>
+    /// <param name="dto">DTO для изменения имени пользователя</param>
+    /// <param name="cancellationToken">Токен отмены операции</param>
+    /// <returns>Обновленный токен доступа</returns>
+    [Authorize]
+    [HttpPut("me/username")]
+    public async Task<ActionResult<AuthResponseDto>> ChangeUsername(ChangeUsernameDto dto, CancellationToken cancellationToken)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            var result = await authService.ChangeUsernameAsync(userId, dto, cancellationToken);
+
+            if (result is null)
+            {
+                return NotFound();
+            }
+
+            return Ok(result);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Conflict(exception.Message);
+        }
+    }
+    /// <summary>
+    /// Позволяет авторизованному пользователю изменить свой пароль.
+    /// </summary>
+    /// <param name="dto">DTO для изменения пароля</param>
+    /// <param name="cancellationToken">Токен отмены операции</param>
+    /// <returns>Обновленный токен доступа</returns>
+    [Authorize]
+    [HttpPut("me/password")]
+    public async Task<ActionResult<AuthResponseDto>> ChangePassword(
+        ChangePasswordDto dto,
+        CancellationToken cancellationToken)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        try
+        {
+            var result = await authService.ChangePasswordAsync(userId, dto, cancellationToken);
+
+            if (result is null)
+            {
+                return NotFound();
+            }
+
+            return Ok(result);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return BadRequest(exception.Message);
+        }
     }
 }

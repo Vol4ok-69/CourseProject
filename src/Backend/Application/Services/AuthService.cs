@@ -48,4 +48,56 @@ public class AuthService(IUserRepository userRepository, IPasswordHasher passwor
             AccessToken = tokenService.GenerateToken(user)
         };
     }
+    public async Task<AuthResponseDto?> ChangeUsernameAsync(int userId, ChangeUsernameDto dto, CancellationToken cancellationToken = default)
+    {
+        var user = await userRepository.GetByIdAsync(userId, cancellationToken);
+
+        if (user is null)
+        {
+            return null;
+        }
+
+        var existingUser = await userRepository.GetByUsernameAsync(dto.Username, cancellationToken);
+
+        if (existingUser is not null && existingUser.Id != userId)
+        {
+            throw new InvalidOperationException("Пользователь с таким именем уже существует.");
+        }
+
+        user.Username = dto.Username;
+
+        await userRepository.UpdateAsync(user, cancellationToken);
+
+        var updatedUser = await userRepository.GetByIdAsync(userId, cancellationToken)
+            ?? throw new InvalidOperationException("Не удалось получить обновленного пользователя.");
+
+        return new AuthResponseDto
+        {
+            AccessToken = tokenService.GenerateToken(updatedUser)
+        };
+    }
+
+    public async Task<AuthResponseDto?> ChangePasswordAsync(int userId, ChangePasswordDto dto, CancellationToken cancellationToken = default)
+    {
+        var user = await userRepository.GetByIdAsync(userId, cancellationToken);
+
+        if (user is null)
+        {
+            return null;
+        }
+
+        if (!passwordHasher.Verify(dto.CurrentPassword, user.PasswordHash))
+        {
+            throw new InvalidOperationException("Неверный текущий пароль.");
+        }
+
+        user.PasswordHash = passwordHasher.Hash(dto.NewPassword);
+
+        await userRepository.UpdateAsync(user, cancellationToken);
+
+        return new AuthResponseDto
+        {
+            AccessToken = tokenService.GenerateToken(user)
+        };
+    }
 }
