@@ -1,9 +1,11 @@
 ﻿using Application.Analyzers;
+using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Application.Services;
 using Domain.Entities;
 using Domain.Enums;
 using Moq;
+using Xunit;
 
 namespace CSharpAnalyzer.Tests;
 
@@ -14,21 +16,38 @@ public class AnalysisServiceTests
     {
         var analysisRepository = new Mock<IAnalysisRepository>();
         var commitRepository = new Mock<ICommitRepository>();
+        var repositorySourceService = new Mock<IRepositorySourceService>();
         var analyzer = new Mock<IAnalyzer>();
 
         var commit = new Commit
         {
             Id = 1,
             ProjectId = 1,
-            CommitHash = "abc123"
+            CommitHash = "abc123",
+            Project = new Project
+            {
+                Id = 1,
+                Name = "Test",
+                RepoUrl = "https://github.com/test/repository"
+            }
         };
 
         commitRepository
             .Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(commit);
 
+        repositorySourceService
+            .Setup(x => x.DownloadAndExtractAsync(
+                "https://github.com/test/repository",
+                "abc123",
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync("C:\\Repository");
+
         analyzer
-            .Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.AnalyzeAsync(
+                It.IsAny<AnalyzerContext>(),
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(
             [
                 new AnalyzerFinding
@@ -45,15 +64,10 @@ public class AnalysisServiceTests
         var service = new AnalysisService(
             analysisRepository.Object,
             commitRepository.Object,
+            repositorySourceService.Object,
             [analyzer.Object]);
 
-        var context = new AnalyzerContext
-        {
-            RepositoryPath = "C:\\Repository",
-            CommitHash = "abc123"
-        };
-
-        var result = await service.AnalyzeAsync(1, context);
+        var result = await service.AnalyzeAsync(1);
 
         Assert.Equal(AnalysisStatus.Completed, result.Status);
         Assert.NotNull(result.CompletedAt);
@@ -68,11 +82,35 @@ public class AnalysisServiceTests
         Assert.Equal(AnalyzerType.CSharp, finding.AnalyzerType);
 
         analysisRepository.Verify(
-            x => x.AddAsync(It.IsAny<Analysis>(), It.IsAny<CancellationToken>()),
+            x => x.AddAsync(
+                It.IsAny<Analysis>(),
+                It.IsAny<CancellationToken>()),
             Times.Once);
 
         analysisRepository.Verify(
-            x => x.UpdateAsync(It.IsAny<Analysis>(), It.IsAny<CancellationToken>()),
+            x => x.UpdateAsync(
+                It.IsAny<Analysis>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        repositorySourceService.Verify(
+            x => x.DownloadAndExtractAsync(
+                "https://github.com/test/repository",
+                "abc123",
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        repositorySourceService.Verify(
+            x => x.CleanupAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        analyzer.Verify(
+            x => x.AnalyzeAsync(
+                It.IsAny<AnalyzerContext>(),
+                It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -81,6 +119,7 @@ public class AnalysisServiceTests
     {
         var analysisRepository = new Mock<IAnalysisRepository>();
         var commitRepository = new Mock<ICommitRepository>();
+        var repositorySourceService = new Mock<IRepositorySourceService>();
         var analyzer = new Mock<IAnalyzer>();
 
         commitRepository
@@ -90,25 +129,32 @@ public class AnalysisServiceTests
         var service = new AnalysisService(
             analysisRepository.Object,
             commitRepository.Object,
+            repositorySourceService.Object,
             [analyzer.Object]);
 
-        var context = new AnalyzerContext
-        {
-            RepositoryPath = "C:\\Repository",
-            CommitHash = "abc123"
-        };
-
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => service.AnalyzeAsync(1, context));
+            () => service.AnalyzeAsync(1));
 
         Assert.Equal("Коммит не найден.", exception.Message);
 
         analysisRepository.Verify(
-            x => x.AddAsync(It.IsAny<Analysis>(), It.IsAny<CancellationToken>()),
+            x => x.AddAsync(
+                It.IsAny<Analysis>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        repositorySourceService.Verify(
+            x => x.DownloadAndExtractAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
             Times.Never);
 
         analyzer.Verify(
-            x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()),
+            x => x.AnalyzeAsync(
+                It.IsAny<AnalyzerContext>(),
+                It.IsAny<CancellationToken>()),
             Times.Never);
     }
 }
