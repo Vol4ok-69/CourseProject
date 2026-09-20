@@ -1,4 +1,5 @@
 ﻿using Application.Analyzers;
+using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Domain.Enums;
@@ -8,14 +9,15 @@ namespace Application.Services;
 public class AnalysisService(
     IAnalysisRepository analysisRepository,
     ICommitRepository commitRepository,
+    IRepositorySourceService repositorySourceService,
     IEnumerable<IAnalyzer> analyzers)
 {
     public async Task<Analysis> AnalyzeAsync(
         int commitId,
-        AnalyzerContext context,
         CancellationToken cancellationToken = default)
     {
-        var commit = await commitRepository.GetByIdAsync(commitId, cancellationToken) ?? throw new InvalidOperationException("Коммит не найден.");
+        var commit = await commitRepository.GetByIdAsync(commitId, cancellationToken)
+            ?? throw new InvalidOperationException("Коммит не найден.");
 
         var analysis = new Analysis
         {
@@ -28,6 +30,18 @@ public class AnalysisService(
 
         try
         {
+            var repositoryPath = await repositorySourceService.DownloadAndExtractAsync(
+                commit.Project.RepoUrl,
+                commit.CommitHash,
+                analysis.Id,
+                cancellationToken);
+
+            var context = new AnalyzerContext
+            {
+                RepositoryPath = repositoryPath,
+                CommitHash = commit.CommitHash
+            };
+
             foreach (var analyzer in analyzers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -61,9 +75,13 @@ public class AnalysisService(
             analysis.Status = AnalysisStatus.Failed;
             analysis.CompletedAt = DateTime.UtcNow;
 
-            await analysisRepository.UpdateAsync(analysis, cancellationToken);
+            await analysisRepository.UpdateAsync(analysis, CancellationToken.None);
 
             throw;
+        }
+        finally
+        {
+            await repositorySourceService.CleanupAsync(analysis.Id, CancellationToken.None);
         }
     }
 }
