@@ -1,5 +1,8 @@
 <Solution>
   <Folder Name="/src/" />
+  <Folder Name="/src/Analyzers/">
+    <Project Path="src/Analyzers/CSharp/CSharp.csproj" />
+  </Folder>
   <Folder Name="/src/Backend/">
     <Project Path="src/Backend/Api/Api.csproj" />
     <Project Path="src/Backend/Application/Application.csproj" />
