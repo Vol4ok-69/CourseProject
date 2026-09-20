@@ -9,4 +9,7 @@
     <Project Path="src/Backend/Domain/Domain.csproj" />
     <Project Path="src/Backend/Infrastructure/Infrastructure.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CSharpAnalyzer.Tests/CSharpAnalyzer.Tests.csproj" />
+  </Folder>
 </Solution>
