@@ -84,4 +84,15 @@ public class AnalysisService(
             await repositorySourceService.CleanupAsync(analysis.Id, CancellationToken.None);
         }
     }
+    public async Task<Analysis?> GetByIdAsync(int analysisId, CancellationToken cancellationToken = default)
+    {
+        return await analysisRepository.GetByIdAsync(analysisId, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<Analysis>> GetByCommitIdAsync(
+        int commitId,
+        CancellationToken cancellationToken = default)
+    {
+        return await analysisRepository.GetByCommitIdAsync(commitId, cancellationToken);
+    }
 }
