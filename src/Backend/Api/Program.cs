@@ -1,6 +1,8 @@
+using Application.Analyzers;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Application.Services;
+using CSharp;
 using Infrastructure.Data;
 using Infrastructure.GitHub;
 using Infrastructure.Repository;
@@ -29,6 +31,7 @@ builder.Services.AddScoped<IRoleRepository, RoleRepository>();
 builder.Services.AddScoped<IProjectRepository, ProjectRepository>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
+builder.Services.AddScoped<IAnalyzer, CSharpAnalyzer>();
 
 var gitHubToken = builder.Configuration["GitHub:Token"]
     ?? throw new InvalidOperationException("GitHub token is not configured.");
@@ -41,11 +44,20 @@ builder.Services.AddHttpClient<IGitHubService, GitHubService>(client =>
     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", gitHubToken);
 });
 
+builder.Services.AddHttpClient<IRepositorySourceService, RepositorySourceService>(client =>
+{
+    client.BaseAddress = new Uri("https://api.github.com/");
+    client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CourseProject", "1.0"));
+    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", gitHubToken);
+});
+
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<CommitService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ProjectService>();
 builder.Services.AddScoped<GitHubSyncService>();
+builder.Services.AddScoped<AnalysisService>();
 
 var jwtKey = builder.Configuration["Jwt:Key"]
     ?? throw new InvalidOperationException("JWT key is not configured.");
