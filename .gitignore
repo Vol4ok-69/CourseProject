@@ -36,9 +36,10 @@ appsettings.*.Local.json
 .env.*
 
 # Generated project dumps and dev files
-dump.md
 dump*.md
 *dump.md
+*structure.md
+structure*.md
 swagger.json
 *test*.ps1
 
