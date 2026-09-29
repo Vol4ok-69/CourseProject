@@ -1,4 +1,4 @@
-﻿using Database.Mapping;
+﻿using DatabaseAnalyzer.Mapping;
 using DatabaseAnalyzer.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Xunit;

@@ -1,7 +1,7 @@
 ﻿using Application.Analyzers;
-using Database.Metadata;
+using DatabaseAnalyzer.Metadata;
 
-namespace Database.Providers;
+namespace DatabaseAnalyzer.Providers;
 
 public interface IDatabaseMetadataProvider
 {

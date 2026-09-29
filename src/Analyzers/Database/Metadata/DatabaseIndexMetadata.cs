@@ -1,4 +1,4 @@
-﻿namespace Database.Metadata;
+﻿namespace DatabaseAnalyzer.Metadata;
 
 public sealed class DatabaseIndexMetadata
 {

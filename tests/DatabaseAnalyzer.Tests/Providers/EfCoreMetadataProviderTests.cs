@@ -1,5 +1,5 @@
 ﻿using Application.Analyzers;
-using Database.Providers;
+using DatabaseAnalyzer.Providers;
 
 namespace DatabaseAnalyzer.Tests.Providers;
 

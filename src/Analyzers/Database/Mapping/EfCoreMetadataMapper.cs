@@ -1,8 +1,8 @@
-﻿using Database.Metadata;
+﻿using DatabaseAnalyzer.Metadata;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 
-namespace Database.Mapping;
+namespace DatabaseAnalyzer.Mapping;
 
 public sealed class EfCoreMetadataMapper
 {
