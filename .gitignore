@@ -40,6 +40,10 @@ dump*.md
 *dump.md
 *structure.md
 structure*.md
+packages*.md
+*packages.md
+references*.md
+*references.md
 swagger.json
 *test*.ps1
 
