@@ -1,11 +1,14 @@
 ﻿using Application.Analyzers;
+using DatabaseAnalyzer.Mapping;
 using DatabaseAnalyzer.Metadata;
 
 namespace DatabaseAnalyzer.Providers;
 
-public sealed class EfCoreMetadataProvider : IDatabaseMetadataProvider
+public sealed class EfCoreMetadataProvider(
+    IEfCoreModelInspector modelInspector,
+    EfCoreMetadataMapper mapper) : IDatabaseMetadataProvider
 {
-    public Task<DatabaseMetadata> GetMetadataAsync(
+    public async Task<DatabaseMetadata> GetMetadataAsync(
         AnalyzerContext context,
         CancellationToken cancellationToken = default)
     {
@@ -26,9 +29,19 @@ public sealed class EfCoreMetadataProvider : IDatabaseMetadataProvider
 
         if (projectFiles.Count == 0)
         {
-            return Task.FromResult(new DatabaseMetadata());
+            return new DatabaseMetadata();
         }
 
-        return Task.FromResult(new DatabaseMetadata());
+        if (projectFiles.Count > 1)
+        {
+            throw new InvalidOperationException(
+                "Multiple .csproj files were found in the repository.");
+        }
+
+        var model = await modelInspector.InspectAsync(
+            projectFiles[0],
+            cancellationToken);
+
+        return mapper.Map(model);
     }
 }
