@@ -1,0 +1,29 @@
+* [33mb71eff4[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m feat: add database metadata provider
+* [33md0eacd5[m test: cover EF Core metadata provider
+* [33me9b50fc[m fix: namespace does match folder structure
+* [33m44e3205[m feat: add EF Core metadata mapper
+* [33mf3126a1[m feat: add EF Core metadata provider foundation
+* [33m03f35d1[m fix: align EF Core relational package version
+* [33m803eae6[m feat: add database metadata model
+* [33m6b96bfe[m feat: add analysis retrieval endpoints and tests
+* [33m0e64748[m feat: add analysis api endpoint
+* [33ma827940[m feat: add analysis api endpoint
+* [33me9ef5e4[m feat: add repository source service
+* [33m0a343a4[m test: add analysis service tests
+* [33mbe66adb[m feat: add CSharp analyzer rules and tests
+* [33mf1d333f[m feat: add analyzer contracts and CSharp analyzer project
+* [33mb3ecccc[m feat: add user management and self-service
+* [33m35ce1c4[m feat: add project update and deletion
+* [33mf117d1c[m feat: add GitHub commit synchronization
+* [33m74005e5[m feat: add GitHub commit synchronization service(before test)
+* [33m5064da6[m feat: add commit management
+* [33m6b6a38b[m feat: add authentication and project authorization
+* [33mbf5ab2c[m feat: add project api
+* [33m0480d91[m feat: add project api and repositories
+* [33meab91ef[m feat: add initial database migration
+* [33mbc69a85[m feat: add EF Core DbContext and configurations
+* [33m28ec0ae[m feat: add domain entities and enums
+* [33m0292fd9[m chore: add PostgreSQL docker setup
+* [33m7071d30[m chore: setup backend architecture
+* [33mb982d95[m create project structure. move doc files to docs directory
+* [33m332a988[m Initial commit
