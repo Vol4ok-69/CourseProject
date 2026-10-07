@@ -1,6 +1,8 @@
 ﻿using Application.Analyzers;
 using DatabaseAnalyzer.Mapping;
+using DatabaseAnalyzer.Metadata;
 using DatabaseAnalyzer.Providers;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Moq;
 
 namespace DatabaseAnalyzer.Tests.Providers;
@@ -8,165 +10,196 @@ namespace DatabaseAnalyzer.Tests.Providers;
 public sealed class EfCoreMetadataProviderTests
 {
     [Fact]
-    public async Task GetMetadataAsync_WhenRepositoryPathDoesNotExist_ThrowsDirectoryNotFoundException()
+    public async Task GetMetadataAsync_ShouldResolveProject()
     {
+        var resolver = new Mock<IDatabaseProjectResolver>();
         var inspector = new Mock<IEfCoreModelInspector>();
         var mapper = new EfCoreMetadataMapper();
 
+        var projectPath = Path.Combine(
+            Path.GetTempPath(),
+            "TestProject.csproj");
+
+        resolver
+            .Setup(x => x.ResolveAsync(
+                It.IsAny<AnalyzerContext>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(projectPath);
+
         var provider = new EfCoreMetadataProvider(
+            resolver.Object,
             inspector.Object,
             mapper);
 
         var context = new AnalyzerContext
         {
-            RepositoryPath = Path.Combine(
-                Path.GetTempPath(),
-                Guid.NewGuid().ToString()),
+            RepositoryPath = Path.GetTempPath(),
             CommitHash = "test"
         };
 
-        await Assert.ThrowsAsync<DirectoryNotFoundException>(
-            () => provider.GetMetadataAsync(context));
-    }
-
-    [Fact]
-    public async Task GetMetadataAsync_WhenRepositoryHasNoProjects_ReturnsEmptyMetadata()
-    {
-        var repositoryPath = Path.Combine(
-            Path.GetTempPath(),
-            Guid.NewGuid().ToString());
-
-        Directory.CreateDirectory(repositoryPath);
-
-        try
-        {
-            var inspector = new Mock<IEfCoreModelInspector>();
-            var mapper = new EfCoreMetadataMapper();
-
-            var provider = new EfCoreMetadataProvider(
-                inspector.Object,
-                mapper);
-
-            var context = new AnalyzerContext
-            {
-                RepositoryPath = repositoryPath,
-                CommitHash = "test"
-            };
-
-            var metadata = await provider.GetMetadataAsync(context);
-
-            Assert.Empty(metadata.Entities);
-
-            inspector.Verify(
-                x => x.InspectAsync(
-                    It.IsAny<string>(),
-                    It.IsAny<CancellationToken>()),
-                Times.Never);
-        }
-        finally
-        {
-            Directory.Delete(repositoryPath, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task GetMetadataAsync_WhenRepositoryContainsProject_PassesProjectToInspector()
-    {
-        var repositoryPath = Path.Combine(
-            Path.GetTempPath(),
-            Guid.NewGuid().ToString());
-
-        Directory.CreateDirectory(repositoryPath);
-
-        try
-        {
-            var projectPath = Path.Combine(
-                repositoryPath,
-                "TestProject.csproj");
-
-            await File.WriteAllTextAsync(
+        inspector
+            .Setup(x => x.InspectAsync(
                 projectPath,
-                """
-                <Project Sdk="Microsoft.NET.Sdk">
-                </Project>
-                """);
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new NotSupportedException());
 
-            var inspector = new Mock<IEfCoreModelInspector>();
-            var mapper = new EfCoreMetadataMapper();
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => provider.GetMetadataAsync(context));
 
-            inspector
-                .Setup(x => x.InspectAsync(
-                    projectPath,
-                    It.IsAny<CancellationToken>()))
-                .ThrowsAsync(new NotSupportedException());
-
-            var provider = new EfCoreMetadataProvider(
-                inspector.Object,
-                mapper);
-
-            await Assert.ThrowsAsync<NotSupportedException>(
-                () => provider.GetMetadataAsync(
-                    new AnalyzerContext
-                    {
-                        RepositoryPath = repositoryPath,
-                        CommitHash = "test"
-                    }));
-
-            inspector.Verify(
-                x => x.InspectAsync(
-                    projectPath,
-                    It.IsAny<CancellationToken>()),
-                Times.Once);
-        }
-        finally
-        {
-            Directory.Delete(repositoryPath, recursive: true);
-        }
+        resolver.Verify(
+            x => x.ResolveAsync(
+                context,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]
-    public async Task GetMetadataAsync_WhenRepositoryContainsMultipleProjects_ThrowsInvalidOperationException()
+    public async Task GetMetadataAsync_ShouldPassResolvedProjectToInspector()
     {
-        var repositoryPath = Path.Combine(
+        var resolver = new Mock<IDatabaseProjectResolver>();
+        var inspector = new Mock<IEfCoreModelInspector>();
+        var mapper = new EfCoreMetadataMapper();
+
+        var projectPath = Path.Combine(
             Path.GetTempPath(),
-            Guid.NewGuid().ToString());
+            "TestProject.csproj");
 
-        Directory.CreateDirectory(repositoryPath);
+        resolver
+            .Setup(x => x.ResolveAsync(
+                It.IsAny<AnalyzerContext>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(projectPath);
 
-        try
+        inspector
+            .Setup(x => x.InspectAsync(
+                projectPath,
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new NotSupportedException());
+
+        var provider = new EfCoreMetadataProvider(
+            resolver.Object,
+            inspector.Object,
+            mapper);
+
+        var context = new AnalyzerContext
         {
-            await File.WriteAllTextAsync(
-                Path.Combine(repositoryPath, "Project1.csproj"),
-                "<Project />");
+            RepositoryPath = Path.GetTempPath(),
+            CommitHash = "test"
+        };
 
-            await File.WriteAllTextAsync(
-                Path.Combine(repositoryPath, "Project2.csproj"),
-                "<Project />");
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => provider.GetMetadataAsync(context));
 
-            var inspector = new Mock<IEfCoreModelInspector>();
-            var mapper = new EfCoreMetadataMapper();
+        inspector.Verify(
+            x => x.InspectAsync(
+                projectPath,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
 
-            var provider = new EfCoreMetadataProvider(
-                inspector.Object,
-                mapper);
+    [Fact]
+    public async Task GetMetadataAsync_WhenProjectCannotBeResolved_ReturnsEmptyMetadata()
+    {
+        var resolver = new Mock<IDatabaseProjectResolver>();
+        var inspector = new Mock<IEfCoreModelInspector>();
+        var mapper = new EfCoreMetadataMapper();
 
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => provider.GetMetadataAsync(
-                    new AnalyzerContext
-                    {
-                        RepositoryPath = repositoryPath,
-                        CommitHash = "test"
-                    }));
+        resolver
+            .Setup(x => x.ResolveAsync(
+                It.IsAny<AnalyzerContext>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string?)null);
 
-            inspector.Verify(
-                x => x.InspectAsync(
-                    It.IsAny<string>(),
-                    It.IsAny<CancellationToken>()),
-                Times.Never);
-        }
-        finally
+        var provider = new EfCoreMetadataProvider(
+            resolver.Object,
+            inspector.Object,
+            mapper);
+
+        var context = new AnalyzerContext
         {
-            Directory.Delete(repositoryPath, recursive: true);
-        }
+            RepositoryPath = Path.GetTempPath(),
+            CommitHash = "test"
+        };
+
+        var metadata = await provider.GetMetadataAsync(context);
+
+        Assert.Empty(metadata.Entities);
+
+        inspector.Verify(
+            x => x.InspectAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GetMetadataAsync_WhenResolverFails_PropagatesException()
+    {
+        var resolver = new Mock<IDatabaseProjectResolver>();
+        var inspector = new Mock<IEfCoreModelInspector>();
+        var mapper = new EfCoreMetadataMapper();
+
+        resolver
+            .Setup(x => x.ResolveAsync(
+                It.IsAny<AnalyzerContext>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Resolver failed."));
+
+        var provider = new EfCoreMetadataProvider(
+            resolver.Object,
+            inspector.Object,
+            mapper);
+
+        var context = new AnalyzerContext
+        {
+            RepositoryPath = Path.GetTempPath(),
+            CommitHash = "test"
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.GetMetadataAsync(context));
+
+        inspector.Verify(
+            x => x.InspectAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GetMetadataAsync_ShouldPassCancellationTokenToResolver()
+    {
+        var resolver = new Mock<IDatabaseProjectResolver>();
+        var inspector = new Mock<IEfCoreModelInspector>();
+        var mapper = new EfCoreMetadataMapper();
+
+        var cancellationToken = new CancellationToken();
+
+        resolver
+            .Setup(x => x.ResolveAsync(
+                It.IsAny<AnalyzerContext>(),
+                cancellationToken))
+            .ReturnsAsync((string?)null);
+
+        var provider = new EfCoreMetadataProvider(
+            resolver.Object,
+            inspector.Object,
+            mapper);
+
+        var context = new AnalyzerContext
+        {
+            RepositoryPath = Path.GetTempPath(),
+            CommitHash = "test"
+        };
+
+        await provider.GetMetadataAsync(
+            context,
+            cancellationToken);
+
+        resolver.Verify(
+            x => x.ResolveAsync(
+                context,
+                cancellationToken),
+            Times.Once);
     }
 }

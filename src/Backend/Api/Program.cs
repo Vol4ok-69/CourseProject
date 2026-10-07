@@ -3,6 +3,9 @@ using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Application.Services;
 using CSharp;
+using DatabaseAnalyzer;
+using DatabaseAnalyzer.Mapping;
+using DatabaseAnalyzer.Providers;
 using Infrastructure.Data;
 using Infrastructure.GitHub;
 using Infrastructure.Repository;
@@ -32,6 +35,12 @@ builder.Services.AddScoped<IProjectRepository, ProjectRepository>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAnalyzer, CSharpAnalyzer>();
+builder.Services.AddScoped<IAnalyzer, DatabaseAnalyzer.DatabaseAnalyzer>();
+builder.Services.AddScoped<IDatabaseMetadataProvider, EfCoreMetadataProvider>();
+builder.Services.AddScoped<IDatabaseProjectResolver, EfCoreDatabaseProjectResolver>();
+builder.Services.AddScoped<IEfCoreModelInspector, EfCoreModelInspector>();
+builder.Services.AddScoped<EfCoreMetadataMapper>();
+
 
 var gitHubToken = builder.Configuration["GitHub:Token"]
     ?? throw new InvalidOperationException("GitHub token is not configured.");
