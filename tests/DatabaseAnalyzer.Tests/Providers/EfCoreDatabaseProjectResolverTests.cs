@@ -24,9 +24,7 @@ public sealed class EfCoreDatabaseProjectResolverTests
 
         var result = await resolver.ResolveAsync(context);
 
-        Assert.Equal(
-            Path.GetFullPath(projectPath),
-            result);
+        Assert.Equal(Path.GetFullPath(projectPath), result);
     }
 
     [Fact]
@@ -47,9 +45,7 @@ public sealed class EfCoreDatabaseProjectResolverTests
 
         var result = await resolver.ResolveAsync(context);
 
-        Assert.Equal(
-            Path.GetFullPath(projectPath),
-            result);
+        Assert.Equal(Path.GetFullPath(projectPath), result);
     }
 
     [Fact]
@@ -75,13 +71,25 @@ public sealed class EfCoreDatabaseProjectResolverTests
     {
         var repositoryPath = CreateRepository();
 
-        await File.WriteAllTextAsync(
-            Path.Combine(repositoryPath, "Project1.csproj"),
-            "<Project />");
+        await File.WriteAllTextAsync
+        (
+            Path.Combine
+            (
+                repositoryPath,
+                "Project1.csproj"
+            ),
+            "<Project />"
+        );
 
-        await File.WriteAllTextAsync(
-            Path.Combine(repositoryPath, "Project2.csproj"),
-            "<Project />");
+        await File.WriteAllTextAsync
+        (
+            Path.Combine
+            (
+                repositoryPath,
+                "Project2.csproj"
+            ),
+            "<Project />"
+        );
 
         var resolver = new EfCoreDatabaseProjectResolver();
 
@@ -91,8 +99,7 @@ public sealed class EfCoreDatabaseProjectResolverTests
             CommitHash = "test"
         };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => resolver.ResolveAsync(context));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => resolver.ResolveAsync(context));
     }
 
     [Fact]
@@ -109,8 +116,7 @@ public sealed class EfCoreDatabaseProjectResolverTests
             ProjectPath = "Missing.csproj"
         };
 
-        await Assert.ThrowsAsync<FileNotFoundException>(
-            () => resolver.ResolveAsync(context));
+        await Assert.ThrowsAsync<FileNotFoundException>(() => resolver.ResolveAsync(context));
     }
 
     private static string CreateRepository()
