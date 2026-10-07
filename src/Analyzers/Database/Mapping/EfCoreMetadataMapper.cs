@@ -10,10 +10,7 @@ public sealed class EfCoreMetadataMapper
     {
         ArgumentNullException.ThrowIfNull(model);
 
-        var entities = model
-            .GetEntityTypes()
-            .Select(MapEntity)
-            .ToList();
+        var entities = model.GetEntityTypes().Select(MapEntity).ToList();
 
         return new DatabaseMetadata
         {
@@ -23,9 +20,9 @@ public sealed class EfCoreMetadataMapper
 
     private static DatabaseEntityMetadata MapEntity(IEntityType entityType)
     {
-        var properties = entityType
-            .GetProperties()
-            .Select(property => new DatabasePropertyMetadata
+        var properties = entityType.GetProperties().Select
+        (
+            property => new DatabasePropertyMetadata
             {
                 PropertyName = property.Name,
                 ColumnName = property.GetColumnName() ?? property.Name,
@@ -35,60 +32,52 @@ public sealed class EfCoreMetadataMapper
                 IsUnique = false,
                 IsGenerated = property.ValueGenerated != ValueGenerated.Never,
                 DefaultValueSql = property.GetDefaultValueSql()
-            })
-            .ToList();
+            }
+        ).ToList();
 
-        var keys = entityType
-            .GetKeys()
-            .Select(key => new DatabaseKeyMetadata
+        var keys = entityType.GetKeys().Select
+        (
+            key => new DatabaseKeyMetadata
             {
-                Name = key.GetName() ?? key.Properties.First().Name,
-                PropertyNames = key.Properties
-                    .Select(property => property.Name)
-                    .ToList(),
+                Name = key.GetName() ?? key.Properties[0].Name,
+                PropertyNames = [.. key.Properties.Select(property => property.Name)],
                 IsPrimaryKey = key.IsPrimaryKey()
-            })
-            .ToList();
+            }
+        ).ToList();
 
-        var foreignKeys = entityType
-            .GetForeignKeys()
-            .Select(foreignKey => new DatabaseForeignKeyMetadata
+        var foreignKeys = entityType.GetForeignKeys().Select
+        (
+            foreignKey => new DatabaseForeignKeyMetadata
             {
-                Name = foreignKey.GetConstraintName() ?? foreignKey.Properties.First().Name,
-                PropertyNames = foreignKey.Properties
-                    .Select(property => property.Name)
-                    .ToList(),
+                Name = foreignKey.GetConstraintName() ?? foreignKey.Properties[0].Name,
+                PropertyNames = [.. foreignKey.Properties.Select(property => property.Name)],
                 PrincipalEntityName = foreignKey.PrincipalEntityType.Name,
-                PrincipalPropertyNames = foreignKey.PrincipalKey.Properties
-                    .Select(property => property.Name)
-                    .ToList(),
+                PrincipalPropertyNames = [.. foreignKey.PrincipalKey.Properties.Select(property => property.Name)],
                 DeleteBehavior = foreignKey.DeleteBehavior.ToString()
-            })
-            .ToList();
+            }
+        ).ToList();
 
-        var indexes = entityType
-            .GetIndexes()
-            .Select(index => new DatabaseIndexMetadata
+        var indexes = entityType.GetIndexes().Select
+        (
+            index => new DatabaseIndexMetadata
             {
                 Name = index.GetDatabaseName() ?? index.Properties.First().Name,
-                PropertyNames = index.Properties
-                    .Select(property => property.Name)
-                    .ToList(),
+                PropertyNames = [.. index.Properties.Select(property => property.Name)],
                 IsUnique = index.IsUnique
-            })
-            .ToList();
+            }
+        ).ToList();
 
-        var relationships = entityType
-            .GetForeignKeys()
-            .Select(foreignKey => new DatabaseRelationshipMetadata
+        var relationships = entityType.GetForeignKeys().Select
+        (
+            foreignKey => new DatabaseRelationshipMetadata
             {
                 PrincipalEntityName = foreignKey.PrincipalEntityType.Name,
                 DependentEntityName = entityType.Name,
                 RelationshipType = GetRelationshipType(foreignKey),
                 NavigationToPrincipal = foreignKey.DependentToPrincipal?.Name,
                 NavigationToDependent = foreignKey.PrincipalToDependent?.Name
-            })
-            .ToList();
+            }
+        ).ToList();
 
         return new DatabaseEntityMetadata
         {

@@ -10,27 +10,29 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
     {
         var repository = GitHubRepositoryReference.Parse(repositoryUrl);
 
-        var response = await httpClient.GetAsync(
-            $"repos/{repository.Owner}/{repository.Name}/commits",
-            cancellationToken);
+        var response = await httpClient.GetAsync($"repos/{repository.Owner}/{repository.Name}/commits", cancellationToken);
 
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
 
 
-        var commits = JsonSerializer.Deserialize<List<GitHubCommitResponse>>(
+        var commits = JsonSerializer.Deserialize<List<GitHubCommitResponse>>
+        (
             json,
             new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true
-            });
+            }
+        );
 
-        return commits?
-            .Select(commit => new GitHubCommitInfo(
+        return commits?.Select
+        (
+            commit => new GitHubCommitInfo
+            (
                 commit.Sha,
-                commit.Commit?.Author?.Date))
-            .ToList()
-            ?? [];
+                commit.Commit?.Author?.Date
+            )
+        ).ToList() ?? [];
     }
 }

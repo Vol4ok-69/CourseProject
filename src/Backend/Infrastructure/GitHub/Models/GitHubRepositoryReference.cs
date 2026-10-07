@@ -10,14 +10,11 @@ public record GitHubRepositoryReference(string Owner, string Name)
             throw new InvalidOperationException("Некорректный URL GitHub-репозитория.");
         }
 
-        var segments = uri.AbsolutePath
-            .Trim('/')
-            .Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var segments = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
 
         if (segments.Length != 2)
         {
-            throw new InvalidOperationException(
-                "URL GitHub-репозитория должен иметь формат https://github.com/{owner}/{repo}.");
+            throw new InvalidOperationException("URL GitHub-репозитория должен иметь формат https://github.com/{owner}/{repo}.");
         }
 
         var repositoryName = segments[1].EndsWith(".git", StringComparison.OrdinalIgnoreCase)

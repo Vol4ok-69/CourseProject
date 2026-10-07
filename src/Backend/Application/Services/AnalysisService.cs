@@ -6,15 +6,10 @@ using Domain.Enums;
 
 namespace Application.Services;
 
-public class AnalysisService(
-    IAnalysisRepository analysisRepository,
-    ICommitRepository commitRepository,
-    IRepositorySourceService repositorySourceService,
-    IEnumerable<IAnalyzer> analyzers)
+public class AnalysisService(IAnalysisRepository analysisRepository, ICommitRepository commitRepository,
+    IRepositorySourceService repositorySourceService, IEnumerable<IAnalyzer> analyzers)
 {
-    public async Task<Analysis> AnalyzeAsync(
-        int commitId,
-        CancellationToken cancellationToken = default)
+    public async Task<Analysis> AnalyzeAsync(int commitId, CancellationToken cancellationToken = default)
     {
         var commit = await commitRepository.GetByIdAsync(commitId, cancellationToken)
             ?? throw new InvalidOperationException("Коммит не найден.");
@@ -30,11 +25,13 @@ public class AnalysisService(
 
         try
         {
-            var repositoryPath = await repositorySourceService.DownloadAndExtractAsync(
+            var repositoryPath = await repositorySourceService.DownloadAndExtractAsync
+            (
                 commit.Project.RepoUrl,
                 commit.CommitHash,
                 analysis.Id,
-                cancellationToken);
+                cancellationToken
+            );
 
             var context = new AnalyzerContext
             {

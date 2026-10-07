@@ -4,9 +4,7 @@ using Domain.Entities;
 
 namespace Application.Services;
 
-public class CommitService(
-    ICommitRepository commitRepository,
-    IProjectRepository projectRepository)
+public class CommitService(ICommitRepository commitRepository, IProjectRepository projectRepository)
 {
     public async Task<Commit?> GetByIdAsync(int id, CancellationToken cancellationToken = default)
     {

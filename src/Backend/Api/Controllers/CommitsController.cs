@@ -13,9 +13,7 @@ namespace Api.Controllers;
 [ApiController]
 [Route("api/projects/{projectId:int}/commits")]
 [Produces("application/json")]
-public class CommitsController(
-    CommitService commitService,
-    ProjectService projectService) : ControllerBase
+public class CommitsController(CommitService commitService, ProjectService projectService) : ControllerBase
 {
     /// <summary>
     /// Возвращает список коммитов проекта.

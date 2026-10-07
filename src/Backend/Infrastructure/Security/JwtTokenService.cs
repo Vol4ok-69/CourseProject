@@ -31,12 +31,14 @@ public class JwtTokenService(IConfiguration configuration) : ITokenService
         var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key));
         var credentials = new SigningCredentials(signingKey, SecurityAlgorithms.HmacSha256);
 
-        var token = new JwtSecurityToken(
+        var token = new JwtSecurityToken
+        (
             issuer: issuer,
             audience: audience,
             claims: claims,
             expires: DateTime.UtcNow.AddHours(1),
-            signingCredentials: credentials);
+            signingCredentials: credentials
+        );
 
         return new JwtSecurityTokenHandler().WriteToken(token);
     }

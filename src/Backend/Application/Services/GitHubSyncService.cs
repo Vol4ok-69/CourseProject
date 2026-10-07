@@ -5,10 +5,7 @@ using Domain.Entities;
 
 namespace Application.Services;
 
-public class GitHubSyncService(
-    IGitHubService gitHubService,
-    IProjectRepository projectRepository,
-    ICommitRepository commitRepository)
+public class GitHubSyncService(IGitHubService gitHubService, IProjectRepository projectRepository, ICommitRepository commitRepository)
 {
     public async Task<GitHubSyncResultDto?> SyncAsync(int projectId, CancellationToken cancellationToken = default)
     {

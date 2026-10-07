@@ -88,15 +88,16 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
 
         var projects = await projectService.GetByOwnerIdAsync(ownerId, cancellationToken);
 
-        var projectDtos = projects
-            .Select(project => new ProjectDto
+        var projectDtos = projects.Select
+        (
+            project => new ProjectDto
             {
                 Id = project.Id,
                 Name = project.Name,
                 RepoUrl = project.RepoUrl,
                 OwnerId = project.OwnerId
-            })
-            .ToList();
+            }
+        ).ToList();
 
         return Ok(projectDtos);
     }

@@ -32,23 +32,22 @@ public class AnalysisServiceTests
             }
         };
 
-        commitRepository
-            .Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(commit);
+        commitRepository.Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(commit);
 
-        repositorySourceService
-            .Setup(x => x.DownloadAndExtractAsync(
+        repositorySourceService.Setup(x => x.DownloadAndExtractAsync
+        (
                 "https://github.com/test/repository",
                 "abc123",
                 It.IsAny<int>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync("C:\\Repository");
+                It.IsAny<CancellationToken>()
+        )).ReturnsAsync("C:\\Repository");
 
-        analyzer
-            .Setup(x => x.AnalyzeAsync(
+        analyzer.Setup(x => x.AnalyzeAsync
+        (
                 It.IsAny<AnalyzerContext>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(
+                It.IsAny<CancellationToken>()
+        )).ReturnsAsync
+        (
             [
                 new AnalyzerFinding
                 {
@@ -59,13 +58,16 @@ public class AnalysisServiceTests
                     Severity = Severity.Warning,
                     Recommendation = "Test recommendation"
                 }
-            ]);
+            ]
+        );
 
-        var service = new AnalysisService(
+        var service = new AnalysisService
+        (
             analysisRepository.Object,
             commitRepository.Object,
             repositorySourceService.Object,
-            [analyzer.Object]);
+            [analyzer.Object]
+        );
 
         var result = await service.AnalyzeAsync(1);
 
@@ -81,11 +83,12 @@ public class AnalysisServiceTests
         Assert.Equal(Severity.Warning, finding.Severity);
         Assert.Equal(AnalyzerType.CSharp, finding.AnalyzerType);
 
-        analysisRepository.Verify(
-            x => x.AddAsync(
-                It.IsAny<Analysis>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+        analysisRepository.Verify(x => x.AddAsync
+        (
+            It.IsAny<Analysis>(),
+            It.IsAny<CancellationToken>()
+        ),
+        Times.Once);
 
         analysisRepository.Verify(
             x => x.UpdateAsync(

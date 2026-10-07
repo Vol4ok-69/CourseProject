@@ -31,11 +31,13 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
 
         var repository = GitHubRepositoryReference.Parse(repositoryUrl);
 
-        var analysisDirectory = Path.Combine(
+        var analysisDirectory = Path.Combine
+        (
             AppContext.BaseDirectory,
             "data",
             "analysis",
-            analysisId.ToString());
+            analysisId.ToString()
+        );
 
         var repositoryPath = Path.Combine(analysisDirectory, "repository");
 
@@ -78,13 +80,15 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
                     Directory.CreateDirectory(destinationDirectory);
 
                 await using var entryStream = entry.Open();
-                await using var destinationStream = new FileStream(
+                await using var destinationStream = new FileStream
+                (
                     destinationPath,
                     FileMode.Create,
                     FileAccess.Write,
                     FileShare.None,
                     81920,
-                    useAsync: true);
+                    useAsync: true
+                );
 
                 await entryStream.CopyToAsync(destinationStream, cancellationToken);
             }
@@ -104,11 +108,13 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(analysisId);
 
-        var analysisDirectory = Path.Combine(
+        var analysisDirectory = Path.Combine
+        (
             AppContext.BaseDirectory,
             "data",
             "analysis",
-            analysisId.ToString());
+            analysisId.ToString()
+        );
 
         if (Directory.Exists(analysisDirectory))
             Directory.Delete(analysisDirectory, recursive: true);
@@ -124,9 +130,7 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
         if (segments.Length <= 1)
             return string.Empty;
 
-        return string.Join(
-            Path.DirectorySeparatorChar,
-            segments.Skip(1));
+        return string.Join(Path.DirectorySeparatorChar, segments.Skip(1));
     }
 
     private static bool ShouldExclude(string relativePath)
@@ -138,11 +142,9 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
 
     private static string GetSafeDestinationPath(string repositoryPath, string relativePath)
     {
-        var fullRepositoryPath = Path.GetFullPath(repositoryPath).TrimEnd(Path.DirectorySeparatorChar)
-            + Path.DirectorySeparatorChar;
+        var fullRepositoryPath = Path.GetFullPath(repositoryPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
 
-        var destinationPath = Path.GetFullPath(
-            Path.Combine(repositoryPath, relativePath));
+        var destinationPath = Path.GetFullPath(Path.Combine(repositoryPath, relativePath));
 
         if (!destinationPath.StartsWith(fullRepositoryPath, StringComparison.Ordinal))
         {
