@@ -72,4 +72,87 @@ public sealed class DatabaseAnalyzerTests
 
         Assert.Equal("Test error", exception.Message);
     }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportEntityWithoutPrimaryKey()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(
+                It.IsAny<AnalyzerContext>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                {
+                    EntityName = "ReportRow",
+                    TableName = "ReportRows",
+                    Keys = []
+                }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+
+        var context = new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        };
+
+        var findings = await analyzer.AnalyzeAsync(context);
+
+        var finding = Assert.Single(findings);
+        Assert.Equal("DB01", finding.Rule);
+        Assert.Equal("ReportRows", finding.FilePath);
+        Assert.Equal(Severity.Warning, finding.Severity);
+        Assert.Contains("ReportRow", finding.Message);
+        Assert.False(string.IsNullOrWhiteSpace(finding.Recommendation));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldNotReportEntityWithPrimaryKey()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(
+                It.IsAny<AnalyzerContext>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                {
+                    EntityName = "User",
+                    TableName = "Users",
+                    Keys =
+                    [
+                        new DatabaseKeyMetadata
+                        {
+                            Name = "PK_Users",
+                            PropertyNames = ["UserId"],
+                            IsPrimaryKey = true
+                        }
+                    ]
+                }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+
+        var context = new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        };
+
+        var findings = await analyzer.AnalyzeAsync(context);
+
+        Assert.Empty(findings);
+    }
 }

@@ -1,4 +1,5 @@
 ﻿using Application.Analyzers;
+using DatabaseAnalyzer.Metadata;
 using DatabaseAnalyzer.Providers;
 using Domain.Enums;
 
@@ -12,8 +13,27 @@ public sealed class DatabaseAnalyzer(IDatabaseMetadataProvider metadataProvider)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        await metadataProvider.GetMetadataAsync(context, cancellationToken);
+        var metadata = await metadataProvider.GetMetadataAsync(context, cancellationToken);
+        var findings = new List<AnalyzerFinding>();
 
-        return [];
+        foreach (var entity in metadata.Entities)
+        {
+            if (entity.Keys.Any(key => key.IsPrimaryKey))
+            {
+                continue;
+            }
+
+            findings.Add(new AnalyzerFinding
+            {
+                Rule = "DB01",
+                FilePath = entity.TableName,
+                LineNumber = 0,
+                Message = $"Сущность '{entity.EntityName}' (таблица '{entity.TableName}') не имеет первичного ключа.",
+                Severity = Severity.Warning,
+                Recommendation = "Проверьте, что сущность намеренно настроена без первичного ключа. Для таблицы с изменяемыми данными задайте первичный ключ; для представления или проекции убедитесь, что отсутствие ключа предусмотрено."
+            });
+        }
+
+        return findings;
     }
 }
