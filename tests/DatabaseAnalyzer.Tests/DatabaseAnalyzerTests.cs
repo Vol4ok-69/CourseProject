@@ -320,4 +320,166 @@ public sealed class DatabaseAnalyzerTests
         Assert.Empty(result);
     }
 
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportDuplicateIndexes()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                {
+                    EntityName = "Order",
+                    TableName = "Orders",
+                    Keys =
+                    [
+                        new DatabaseKeyMetadata
+                        {
+                            Name = "PK_Orders",
+                            PropertyNames = ["OrderId"],
+                            IsPrimaryKey = true
+                        }
+                    ],
+                    Indexes =
+                    [
+                        new DatabaseIndexMetadata
+                        {
+                            Name = "IX_Orders_CustomerId",
+                            PropertyNames = ["CustomerId"]
+                        },
+                        new DatabaseIndexMetadata
+                        {
+                            Name = "IX_Orders_CustomerId_Copy",
+                            PropertyNames = ["CustomerId"]
+                        }
+                    ]
+                }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB05", finding.Rule);
+        Assert.Equal("Orders", finding.FilePath);
+        Assert.Equal(Severity.Info, finding.Severity);
+        Assert.Contains("CustomerId", finding.Message);
+        Assert.False(string.IsNullOrWhiteSpace(finding.Recommendation));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldNotReportIndexesWithDifferentPropertyOrderAsDuplicates()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                {
+                    EntityName = "Order",
+                    TableName = "Orders",
+                    Keys =
+                    [
+                        new DatabaseKeyMetadata
+                        {
+                            Name = "PK_Orders",
+                            PropertyNames = ["OrderId"],
+                            IsPrimaryKey = true
+                        }
+                    ],
+                    Indexes =
+                    [
+                        new DatabaseIndexMetadata
+                        {
+                            Name = "IX_Orders_Customer_Status",
+                            PropertyNames = ["CustomerId", "Status"]
+                        },
+                        new DatabaseIndexMetadata
+                        {
+                            Name = "IX_Orders_Status_Customer",
+                            PropertyNames = ["Status", "CustomerId"]
+                        }
+                    ]
+                }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldNotReportIndexesWithDifferentUniquenessAsDuplicates()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                {
+                    EntityName = "Order",
+                    TableName = "Orders",
+                    Keys =
+                    [
+                        new DatabaseKeyMetadata
+                        {
+                            Name = "PK_Orders",
+                            PropertyNames = ["OrderId"],
+                            IsPrimaryKey = true
+                        }
+                    ],
+                    Indexes =
+                    [
+                        new DatabaseIndexMetadata
+                        {
+                            Name = "IX_Orders_CustomerId",
+                            PropertyNames = ["CustomerId"],
+                            IsUnique = false
+                        },
+                        new DatabaseIndexMetadata
+                        {
+                            Name = "UX_Orders_CustomerId",
+                            PropertyNames = ["CustomerId"],
+                            IsUnique = true
+                        }
+                    ]
+                }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        Assert.Empty(result);
+    }
+
+
 }
