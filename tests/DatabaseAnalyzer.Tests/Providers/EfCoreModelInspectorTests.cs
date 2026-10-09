@@ -19,9 +19,13 @@ public sealed class EfCoreModelInspectorTests
                 "SampleEfProject",
                 "SampleEfProject.csproj"));
 
+        var resolution = new DatabaseProjectResolution(
+            projectPath,
+            projectPath);
+
         var inspector = new EfCoreModelInspector();
 
-        var model = await inspector.InspectAsync(projectPath);
+        var model = await inspector.InspectAsync(resolution);
 
         Assert.NotNull(model);
 

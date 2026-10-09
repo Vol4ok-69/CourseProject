@@ -1,8 +1,6 @@
 ﻿using Application.Analyzers;
 using DatabaseAnalyzer.Mapping;
-using DatabaseAnalyzer.Metadata;
 using DatabaseAnalyzer.Providers;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Moq;
 
 namespace DatabaseAnalyzer.Tests.Providers;
@@ -20,11 +18,21 @@ public sealed class EfCoreMetadataProviderTests
             Path.GetTempPath(),
             "TestProject.csproj");
 
+        var resolution = new DatabaseProjectResolution(
+            projectPath,
+            projectPath);
+
         resolver
             .Setup(x => x.ResolveAsync(
                 It.IsAny<AnalyzerContext>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(projectPath);
+            .ReturnsAsync(resolution);
+
+        inspector
+            .Setup(x => x.InspectAsync(
+                resolution,
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new NotSupportedException());
 
         var provider = new EfCoreMetadataProvider(
             resolver.Object,
@@ -36,12 +44,6 @@ public sealed class EfCoreMetadataProviderTests
             RepositoryPath = Path.GetTempPath(),
             CommitHash = "test"
         };
-
-        inspector
-            .Setup(x => x.InspectAsync(
-                projectPath,
-                It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new NotSupportedException());
 
         await Assert.ThrowsAsync<NotSupportedException>(
             () => provider.GetMetadataAsync(context));
@@ -64,15 +66,19 @@ public sealed class EfCoreMetadataProviderTests
             Path.GetTempPath(),
             "TestProject.csproj");
 
+        var resolution = new DatabaseProjectResolution(
+            projectPath,
+            projectPath);
+
         resolver
             .Setup(x => x.ResolveAsync(
                 It.IsAny<AnalyzerContext>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(projectPath);
+            .ReturnsAsync(resolution);
 
         inspector
             .Setup(x => x.InspectAsync(
-                projectPath,
+                resolution,
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new NotSupportedException());
 
@@ -92,7 +98,7 @@ public sealed class EfCoreMetadataProviderTests
 
         inspector.Verify(
             x => x.InspectAsync(
-                projectPath,
+                resolution,
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
@@ -108,7 +114,7 @@ public sealed class EfCoreMetadataProviderTests
             .Setup(x => x.ResolveAsync(
                 It.IsAny<AnalyzerContext>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string?)null);
+            .ReturnsAsync((DatabaseProjectResolution?)null);
 
         var provider = new EfCoreMetadataProvider(
             resolver.Object,
@@ -127,7 +133,7 @@ public sealed class EfCoreMetadataProviderTests
 
         inspector.Verify(
             x => x.InspectAsync(
-                It.IsAny<string>(),
+                It.IsAny<DatabaseProjectResolution>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -161,7 +167,7 @@ public sealed class EfCoreMetadataProviderTests
 
         inspector.Verify(
             x => x.InspectAsync(
-                It.IsAny<string>(),
+                It.IsAny<DatabaseProjectResolution>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -173,13 +179,14 @@ public sealed class EfCoreMetadataProviderTests
         var inspector = new Mock<IEfCoreModelInspector>();
         var mapper = new EfCoreMetadataMapper();
 
-        var cancellationToken = new CancellationToken();
+        using var cancellationSource = new CancellationTokenSource();
+        var cancellationToken = cancellationSource.Token;
 
         resolver
             .Setup(x => x.ResolveAsync(
                 It.IsAny<AnalyzerContext>(),
                 cancellationToken))
-            .ReturnsAsync((string?)null);
+            .ReturnsAsync((DatabaseProjectResolution?)null);
 
         var provider = new EfCoreMetadataProvider(
             resolver.Object,

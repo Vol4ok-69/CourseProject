@@ -7,71 +7,96 @@ namespace DatabaseAnalyzer.Providers;
 
 public sealed class EfCoreModelInspector : IEfCoreModelInspector
 {
-    public async Task<IModel> InspectAsync(string projectPath, CancellationToken cancellationToken = default)
+    public async Task<IModel> InspectAsync(DatabaseProjectResolution resolution, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!File.Exists(projectPath))
-            throw new FileNotFoundException("The specified project file was not found.", projectPath);
+        var contextProjectPath = resolution.ContextProjectPath;
+        var startupProjectPath = resolution.StartupProjectPath;
 
-
-        var projectDirectory = Path.GetDirectoryName(projectPath);
-
-        if (projectDirectory is null)
-            throw new InvalidOperationException("The project directory could not be determined.");
-
-        await BuildProjectAsync(projectPath, cancellationToken);
-
-        var projectName = Path.GetFileNameWithoutExtension(projectPath);
-
-        var targetFramework = await GetTargetFrameworkAsync(projectPath, cancellationToken);
-
-        var assemblyPath = Path.Combine
-        (
-            projectDirectory,
-            "bin",
-            "Debug",
-            targetFramework,
-            $"{projectName}.dll"
-        );
-
-        if (!File.Exists(assemblyPath))
-            throw new FileNotFoundException("The project assembly was not found after build.", assemblyPath);
-
-        var assembly = Assembly.LoadFrom(assemblyPath);
-
-        var contextType = assembly.GetTypes().FirstOrDefault(type => !type.IsAbstract && typeof(DbContext).IsAssignableFrom(type));
-
-        if (contextType is null)
-            throw new InvalidOperationException("No DbContext implementation was found in the project.");
-
-
-        var factoryType = assembly.GetTypes().FirstOrDefault(type => !type.IsAbstract && ImplementsDesignTimeFactory(type, contextType));
-
-        if (factoryType is not null)
+        if (!File.Exists(contextProjectPath))
         {
-            var factory = Activator.CreateInstance(factoryType);
-
-            if (factory is null)
-                throw new InvalidOperationException($"Could not create DbContext factory '{factoryType.FullName}'.");
-
-
-            var createMethod = factoryType.GetMethod(nameof(IDesignTimeDbContextFactory<DbContext>.CreateDbContext));
-
-            if (createMethod is null)
-                throw new InvalidOperationException($"CreateDbContext method was not found on '{factoryType.FullName}'.");
-
-            var context = createMethod.Invoke(factory, [Array.Empty<string>()]) as DbContext;
-
-            if (context is null)
-            {
-                throw new InvalidOperationException("The design-time factory did not return a DbContext.");
-            }
-
-            return context.Model;
+            throw new FileNotFoundException(
+                "The context project file was not found.",
+                contextProjectPath);
         }
 
-        throw new InvalidOperationException($"No IDesignTimeDbContextFactory was found for '{contextType.FullName}'.");
+        if (!File.Exists(startupProjectPath))
+        {
+            throw new FileNotFoundException(
+                "The startup project file was not found.",
+                startupProjectPath);
+        }
+
+        await BuildProjectAsync(startupProjectPath, cancellationToken);
+        await BuildProjectAsync(contextProjectPath, cancellationToken);
+
+        var contextAssembly = await LoadProjectAssemblyAsync(
+            contextProjectPath,
+            cancellationToken);
+
+        var startupAssembly = await LoadProjectAssemblyAsync(
+            startupProjectPath,
+            cancellationToken);
+
+        var contextType = contextAssembly.GetTypes()
+            .FirstOrDefault(type =>
+                !type.IsAbstract &&
+                typeof(DbContext).IsAssignableFrom(type));
+
+        if (contextType is null)
+        {
+            throw new InvalidOperationException(
+                $"No DbContext implementation was found in " +
+                $"'{contextProjectPath}'.");
+        }
+
+        var assemblies = new[] { contextAssembly, startupAssembly }
+            .Distinct()
+            .ToArray();
+
+        var factoryType = assemblies
+            .SelectMany(assembly => assembly.GetTypes())
+            .FirstOrDefault(type =>
+                !type.IsAbstract &&
+                ImplementsDesignTimeFactory(type, contextType));
+
+        if (factoryType is null)
+        {
+            throw new InvalidOperationException(
+                $"No IDesignTimeDbContextFactory was found for " +
+                $"'{contextType.FullName}' in the context or startup assembly.");
+        }
+
+        var factory = Activator.CreateInstance(factoryType);
+
+        if (factory is null)
+        {
+            throw new InvalidOperationException(
+                $"Could not create DbContext factory '{factoryType.FullName}'.");
+        }
+
+        var createMethod = factoryType.GetMethod(
+            nameof(IDesignTimeDbContextFactory<DbContext>.CreateDbContext));
+
+        if (createMethod is null)
+        {
+            throw new InvalidOperationException(
+                $"CreateDbContext method was not found on " +
+                $"'{factoryType.FullName}'.");
+        }
+
+        var context = createMethod.Invoke(
+            factory,
+            [Array.Empty<string>()]) as DbContext;
+
+        if (context is null)
+        {
+            throw new InvalidOperationException(
+                "The design-time factory did not return a DbContext.");
+        }
+
+        return context.Model;
     }
 
     private static async Task BuildProjectAsync(string projectPath, CancellationToken cancellationToken)
@@ -169,5 +194,33 @@ public sealed class EfCoreModelInspector : IEfCoreModelInspector
                 typeof(IDesignTimeDbContextFactory<>) &&
                 interfaceType.GetGenericArguments()[0] == contextType
         );
+    }
+
+    private static async Task<Assembly> LoadProjectAssemblyAsync(string projectPath, CancellationToken cancellationToken)
+    {
+        var projectDirectory = Path.GetDirectoryName(projectPath)
+            ?? throw new InvalidOperationException(
+                "The project directory could not be determined.");
+
+        var projectName = Path.GetFileNameWithoutExtension(projectPath);
+        var targetFramework = await GetTargetFrameworkAsync(
+            projectPath,
+            cancellationToken);
+
+        var assemblyPath = Path.Combine(
+            projectDirectory,
+            "bin",
+            "Debug",
+            targetFramework,
+            $"{projectName}.dll");
+
+        if (!File.Exists(assemblyPath))
+        {
+            throw new FileNotFoundException(
+                "The project assembly was not found after build.",
+                assemblyPath);
+        }
+
+        return Assembly.LoadFrom(assemblyPath);
     }
 }

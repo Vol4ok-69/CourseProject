@@ -4,5 +4,5 @@ namespace DatabaseAnalyzer.Providers;
 
 public interface IEfCoreModelInspector
 {
-    Task<IModel> InspectAsync(string projectPath, CancellationToken cancellationToken = default);
+    Task<IModel> InspectAsync(DatabaseProjectResolution resolution, CancellationToken cancellationToken = default);
 }

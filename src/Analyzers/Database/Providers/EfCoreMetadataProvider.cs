@@ -4,27 +4,29 @@ using DatabaseAnalyzer.Metadata;
 
 namespace DatabaseAnalyzer.Providers;
 
-public sealed class EfCoreMetadataProvider
-(
+public sealed class EfCoreMetadataProvider(
     IDatabaseProjectResolver projectResolver,
-    IEfCoreModelInspector modelInspector, EfCoreMetadataMapper mapper
+    IEfCoreModelInspector modelInspector,
+    EfCoreMetadataMapper mapper
 ) : IDatabaseMetadataProvider
 {
-    public async Task<DatabaseMetadata> GetMetadataAsync(AnalyzerContext context, CancellationToken cancellationToken = default)
+    public async Task<DatabaseMetadata> GetMetadataAsync(
+        AnalyzerContext context,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var projectPath = await projectResolver.ResolveAsync(
+        var resolution = await projectResolver.ResolveAsync(
             context,
             cancellationToken);
 
-        if (projectPath is null)
+        if (resolution is null)
         {
             return new DatabaseMetadata();
         }
 
         var model = await modelInspector.InspectAsync(
-            projectPath,
+            resolution,
             cancellationToken);
 
         return mapper.Map(model);
