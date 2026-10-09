@@ -1,4 +1,5 @@
-﻿using Application.Analyzers;
+﻿
+using Application.Analyzers;
 using DatabaseAnalyzer.Metadata;
 using DatabaseAnalyzer.Providers;
 using Domain.Enums;
@@ -18,20 +19,51 @@ public sealed class DatabaseAnalyzer(IDatabaseMetadataProvider metadataProvider)
 
         foreach (var entity in metadata.Entities)
         {
-            if (entity.Keys.Any(key => key.IsPrimaryKey))
+            // DB01: сущность без первичного ключа.
+            if (!entity.Keys.Any(key => key.IsPrimaryKey))
             {
-                continue;
+                findings.Add(new AnalyzerFinding
+                {
+                    Rule = "DB01",
+                    FilePath = entity.TableName,
+                    LineNumber = 0,
+                    Message = $"Сущность '{entity.EntityName}' (таблица '{entity.TableName}') не имеет первичного ключа.",
+                    Severity = Severity.Warning,
+                    Recommendation = "Проверьте, что сущность намеренно настроена без первичного ключа. Для таблицы с изменяемыми данными задайте первичный ключ; для представления или проекции убедитесь, что отсутствие ключа предусмотрено."
+                });
             }
 
-            findings.Add(new AnalyzerFinding
+            // DB04: внешний ключ без подходящего индекса.
+            foreach (var foreignKey in entity.ForeignKeys)
             {
-                Rule = "DB01",
-                FilePath = entity.TableName,
-                LineNumber = 0,
-                Message = $"Сущность '{entity.EntityName}' (таблица '{entity.TableName}') не имеет первичного ключа.",
-                Severity = Severity.Warning,
-                Recommendation = "Проверьте, что сущность намеренно настроена без первичного ключа. Для таблицы с изменяемыми данными задайте первичный ключ; для представления или проекции убедитесь, что отсутствие ключа предусмотрено."
-            });
+                var foreignKeyProperties = foreignKey.PropertyNames;
+
+                if (foreignKeyProperties.Count == 0)
+                {
+                    continue;
+                }
+
+                var hasMatchingIndex = entity.Indexes.Any(index =>
+                    index.PropertyNames.Count >= foreignKeyProperties.Count &&
+                    index.PropertyNames
+                        .Take(foreignKeyProperties.Count)
+                        .SequenceEqual(foreignKeyProperties, StringComparer.Ordinal));
+
+                if (hasMatchingIndex)
+                {
+                    continue;
+                }
+
+                findings.Add(new AnalyzerFinding
+                {
+                    Rule = "DB04",
+                    FilePath = entity.TableName,
+                    LineNumber = 0,
+                    Message = $"Внешний ключ '{foreignKey.Name}' сущности '{entity.EntityName}' не имеет подходящего индекса по столбцам: {string.Join(", ", foreignKeyProperties)}.",
+                    Severity = Severity.Warning,
+                    Recommendation = "Проверьте частоту соединений и фильтрации по столбцам внешнего ключа. При необходимости добавьте индекс, начинающийся со столбцов внешнего ключа в указанном порядке."
+                });
+            }
         }
 
         return findings;

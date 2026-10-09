@@ -53,11 +53,11 @@ public sealed class DatabaseAnalyzerTests
     {
         var metadataProvider = new Mock<IDatabaseMetadataProvider>();
 
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(
+        metadataProvider.Setup(provider => provider.GetMetadataAsync
+        (
                 It.IsAny<AnalyzerContext>(),
-                It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("Test error"));
+                It.IsAny<CancellationToken>()
+        )).ThrowsAsync(new InvalidOperationException("Test error"));
 
         var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
 
@@ -127,20 +127,20 @@ public sealed class DatabaseAnalyzerTests
                 Entities =
                 [
                     new DatabaseEntityMetadata
-                {
-                    EntityName = "User",
-                    TableName = "Users",
-                    Keys =
-                    [
-                        new DatabaseKeyMetadata
-                        {
-                            Name = "PK_Users",
-                            PropertyNames = ["UserId"],
-                            IsPrimaryKey = true
-                        }
+                    {
+                        EntityName = "User",
+                        TableName = "Users",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Users",
+                                PropertyNames = ["UserId"],
+                                IsPrimaryKey = true
+                            }
+                        ]
+                    }
                     ]
-                }
-                ]
             });
 
         var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
@@ -155,4 +155,169 @@ public sealed class DatabaseAnalyzerTests
 
         Assert.Empty(findings);
     }
+
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportForeignKeyWithoutIndex()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Order",
+                        TableName = "Orders",
+                        ForeignKeys =
+                        [
+                            new DatabaseForeignKeyMetadata
+                            {
+                                Name = "FK_Orders_Customers",
+                                PropertyNames = ["CustomerId"],
+                                PrincipalEntityName = "Customer",
+                                PrincipalPropertyNames = ["CustomerId"]
+                            }
+                        ],
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Orders",
+                                PropertyNames = ["OrderId"],
+                                IsPrimaryKey = true
+                            }
+                        ]
+
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB04", finding.Rule);
+        Assert.Equal("Orders", finding.FilePath);
+        Assert.Equal(Severity.Warning, finding.Severity);
+        Assert.Contains("CustomerId", finding.Message);
+        Assert.False(string.IsNullOrWhiteSpace(finding.Recommendation));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldNotReportForeignKeyWithMatchingIndex()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Order",
+                        TableName = "Orders",
+                        ForeignKeys =
+                        [
+                            new DatabaseForeignKeyMetadata
+                            {
+                                Name = "FK_Orders_Customers",
+                                PropertyNames = ["CustomerId"],
+                                PrincipalEntityName = "Customer",
+                                PrincipalPropertyNames = ["CustomerId"]
+                            }
+                        ],
+                        Indexes =
+                        [
+                            new DatabaseIndexMetadata
+                            {
+                                Name = "IX_Orders_CustomerId",
+                                PropertyNames = ["CustomerId"]
+                            }
+                        ],
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Orders",
+                                PropertyNames = ["OrderId"],
+                                IsPrimaryKey = true
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldAcceptCompositeIndexStartingWithForeignKeyColumns()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "OrderItem",
+                        TableName = "OrderItems",
+                        ForeignKeys =
+                        [
+                            new DatabaseForeignKeyMetadata
+                            {
+                                Name = "FK_OrderItems_Products",
+                                PropertyNames = ["ProductId", "WarehouseId"],
+                                PrincipalEntityName = "Product",
+                                PrincipalPropertyNames = ["ProductId", "WarehouseId"]
+                            }
+                        ],
+                        Indexes =
+                        [
+                            new DatabaseIndexMetadata
+                            {
+                                Name = "IX_OrderItems_Product_Warehouse_Date",
+                                PropertyNames = ["ProductId", "WarehouseId", "CreatedAt"]
+                            }
+                        ],
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_OrderItems",
+                                PropertyNames = ["OrderItemId"],
+                                IsPrimaryKey = true
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        Assert.Empty(result);
+    }
+
 }
