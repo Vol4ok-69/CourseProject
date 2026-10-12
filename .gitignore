@@ -49,3 +49,4 @@ swagger.json
 
 # Generated diagrams
 *.drawio.bkp
+~$*.*
