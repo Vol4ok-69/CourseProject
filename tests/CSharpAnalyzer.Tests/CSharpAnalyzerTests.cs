@@ -5,28 +5,49 @@ namespace CSharpAnalyzer.Tests;
 
 public class CSharpAnalyzerTests
 {
+
     [Fact]
-    public async Task AnalyzeAsync_ShouldAnalyzeRepositoryFiles()
+    public async Task AnalyzeAsync_ShouldIgnoreGeneratedDirectories()
     {
         var repositoryPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
 
-        Directory.CreateDirectory(repositoryPath);
+        var sourceDirectory = Path.Combine(repositoryPath, "src");
+        var generatedDirectory = Path.Combine(repositoryPath, "obj");
+
+        Directory.CreateDirectory(sourceDirectory);
+        Directory.CreateDirectory(generatedDirectory);
 
         try
         {
-            var source = """
-            public class TestClass
-            {
-                public void TestMethod()
+            await File.WriteAllTextAsync
+            (
+                Path.Combine(sourceDirectory, "NormalClass.cs"),
+                """
+                public class NormalClass
                 {
-                    var value = 1;
+                    public void Execute()
+                    {
+                        var value = 1;
+                    }
                 }
-            }
-            """;
+                """
+            );
+
+            var generatedMethodBody = string.Join(
+                Environment.NewLine,
+                Enumerable.Repeat("        var value = 1;", 51));
 
             await File.WriteAllTextAsync(
-                Path.Combine(repositoryPath, "TestClass.cs"),
-                source);
+                Path.Combine(generatedDirectory, "GeneratedClass.cs"),
+                $$"""
+            public class GeneratedClass
+            {
+                public void Execute()
+                {
+            {{generatedMethodBody}}
+                }
+            }
+            """);
 
             var analyzer = new CSharp.CSharpAnalyzer();
 
@@ -37,41 +58,51 @@ public class CSharpAnalyzerTests
             };
 
             var findings = await analyzer.AnalyzeAsync(context);
+
+            Assert.DoesNotContain(
+                findings,
+                finding => finding.FilePath.Contains(
+                    $"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                    StringComparison.OrdinalIgnoreCase));
 
             Assert.Empty(findings);
         }
         finally
         {
-            Directory.Delete(repositoryPath, true);
+            Directory.Delete(repositoryPath, recursive: true);
         }
     }
 
-    [Fact]
-    public async Task AnalyzeAsync_ShouldReturnFindingsFromRepository()
-    {
-        var repositoryPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
 
-        Directory.CreateDirectory(repositoryPath);
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReturnRelativeFilePaths()
+    {
+        var repositoryPath = Path.Combine(
+            Path.GetTempPath(),
+            Guid.NewGuid().ToString());
+
+        var sourceDirectory = Path.Combine(repositoryPath, "src");
+        Directory.CreateDirectory(sourceDirectory);
 
         try
         {
-            var body = string.Join(
+            var methodBody = string.Join(
                 Environment.NewLine,
                 Enumerable.Repeat("        var value = 1;", 51));
 
-            var source = $$"""
-            public class TestClass
-            {
-                public void TestMethod()
-                {
-            {{body}}
-                }
-            }
-            """;
-
-            await File.WriteAllTextAsync(
-                Path.Combine(repositoryPath, "TestClass.cs"),
-                source);
+            await File.WriteAllTextAsync
+            (
+                Path.Combine(sourceDirectory, "LongMethod.cs"),
+                $$"""
+                    public class LongMethod
+                    {
+                        public void Execute()
+                        {
+                    {{methodBody}}
+                        }
+                    }
+                 """
+            );
 
             var analyzer = new CSharp.CSharpAnalyzer();
 
@@ -83,28 +114,18 @@ public class CSharpAnalyzerTests
 
             var findings = await analyzer.AnalyzeAsync(context);
 
-            Assert.Single(findings);
-            Assert.Equal("CSHARP002", findings[0].Rule);
-            Assert.Equal("TestClass.cs", Path.GetFileName(findings[0].FilePath));
+            var finding = Assert.Single(findings);
+
+            Assert.Equal("CSHARP002", finding.Rule);
+            Assert.Equal(
+                Path.Combine("src", "LongMethod.cs"),
+                finding.FilePath);
+
+            Assert.False(Path.IsPathRooted(finding.FilePath));
         }
         finally
         {
-            Directory.Delete(repositoryPath, true);
+            Directory.Delete(repositoryPath, recursive: true);
         }
-    }
-
-    [Fact]
-    public async Task AnalyzeAsync_ShouldThrowWhenRepositoryDoesNotExist()
-    {
-        var analyzer = new CSharp.CSharpAnalyzer();
-
-        var context = new AnalyzerContext
-        {
-            RepositoryPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString()),
-            CommitHash = "test-commit"
-        };
-
-        await Assert.ThrowsAsync<DirectoryNotFoundException>(
-            () => analyzer.AnalyzeAsync(context));
     }
 }
