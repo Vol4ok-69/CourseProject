@@ -46,6 +46,10 @@ references*.md
 *references.md
 swagger.json
 *test*.ps1
+source*.md
+*source.md
+review*.md
+*review.md
 
 # Generated diagrams
 *.drawio.bkp
