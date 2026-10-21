@@ -23,11 +23,12 @@ public sealed class DatabaseAnalyzerTests
     {
         var metadataProvider = new Mock<IDatabaseMetadataProvider>();
 
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(
-                It.IsAny<AnalyzerContext>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata());
+        metadataProvider.Setup
+        (
+            provider => provider
+                .GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new DatabaseMetadata()
+        );
 
         var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
 

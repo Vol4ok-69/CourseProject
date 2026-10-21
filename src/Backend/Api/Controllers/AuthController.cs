@@ -33,10 +33,7 @@ public class AuthController(AuthService authService) : ControllerBase
         }
         catch (InvalidOperationException exception)
         {
-            return BadRequest(new
-            {
-                message = exception.Message
-            });
+            return BadRequest(new { message = exception.Message });
         }
     }
 
@@ -55,10 +52,7 @@ public class AuthController(AuthService authService) : ControllerBase
 
         if (response is null)
         {
-            return Unauthorized(new
-            {
-                message = "Неверное имя пользователя или пароль."
-            });
+            return Unauthorized(new { message = "Неверное имя пользователя или пароль." });
         }
 
         return Ok(response);
@@ -104,9 +98,7 @@ public class AuthController(AuthService authService) : ControllerBase
     /// <returns>Обновленный токен доступа</returns>
     [Authorize]
     [HttpPut("me/password")]
-    public async Task<ActionResult<AuthResponseDto>> ChangePassword(
-        ChangePasswordDto dto,
-        CancellationToken cancellationToken)
+    public async Task<ActionResult<AuthResponseDto>> ChangePassword(ChangePasswordDto dto, CancellationToken cancellationToken)
     {
         var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
