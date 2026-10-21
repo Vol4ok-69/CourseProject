@@ -44,12 +44,13 @@ packages*.md
 *packages.md
 references*.md
 *references.md
-swagger.json
-*test*.ps1
 source*.md
 *source.md
 review*.md
 *review.md
+
+swagger.json
+*test*.ps1
 
 # Generated diagrams
 *.drawio.bkp
