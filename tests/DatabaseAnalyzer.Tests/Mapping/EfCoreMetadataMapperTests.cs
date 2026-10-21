@@ -94,6 +94,29 @@ public sealed class EfCoreMetadataMapperTests
         }
     }
 
+	
+	[Fact]
+	public void Map_ShouldClassifyBidirectionalRelationshipAsOneToMany()
+	{
+		using var context = CreateContext(out var connection);
+		using (connection)
+		{
+			var mapper = new EfCoreMetadataMapper();
+
+			var result = mapper.Map(context.Model);
+
+			var order = Assert.Single(
+				result.Entities,
+				entity => entity.EntityName == typeof(TestOrder).FullName);
+
+			var relationship = Assert.Single(order.Relationships);
+
+			Assert.Equal("OneToMany", relationship.RelationshipType);
+			Assert.Equal(nameof(TestOrder.User), relationship.NavigationToPrincipal);
+			Assert.Equal(nameof(TestUser.Orders), relationship.NavigationToDependent);
+		}
+	}
+
     private static TestDbContext CreateContext(out Microsoft.Data.Sqlite.SqliteConnection connection)
     {
         connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=:memory:");

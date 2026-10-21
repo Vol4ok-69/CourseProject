@@ -92,26 +92,38 @@ public sealed class EfCoreMetadataMapper
         };
     }
 
-    private static string GetRelationshipType(IForeignKey foreignKey)
-    {
-        if (foreignKey.IsOwnership)
-        {
-            return "Ownership";
-        }
+    
+	private static string GetRelationshipType(IForeignKey foreignKey)
+	{
+		if (foreignKey.IsOwnership)
+		{
+			return "Ownership";
+		}
 
-        var dependentNavigation = foreignKey.DependentToPrincipal;
-        var principalNavigation = foreignKey.PrincipalToDependent;
+		if (foreignKey.IsUnique)
+		{
+			return "OneToOne";
+		}
 
-        if (dependentNavigation is not null && principalNavigation is not null)
-        {
-            return "ManyToMany";
-        }
+		var dependentNavigation = foreignKey.DependentToPrincipal;
+		var principalNavigation = foreignKey.PrincipalToDependent;
 
-        if (principalNavigation is not null)
-        {
-            return "OneToMany";
-        }
+		if (principalNavigation?.IsCollection == true)
+		{
+			return "OneToMany";
+		}
 
-        return "ManyToOne";
-    }
+		if (dependentNavigation is not null)
+		{
+			return "ManyToOne";
+		}
+
+		if (principalNavigation is not null)
+		{
+			return "OneToMany";
+		}
+
+		return "ManyToOne";
+	}
+
 }
