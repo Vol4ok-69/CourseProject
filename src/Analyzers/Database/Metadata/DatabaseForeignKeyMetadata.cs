@@ -1,4 +1,4 @@
-﻿namespace DatabaseAnalyzer.Metadata;
+namespace DatabaseAnalyzer.Metadata;
 
 public sealed class DatabaseForeignKeyMetadata
 {
@@ -11,4 +11,8 @@ public sealed class DatabaseForeignKeyMetadata
     public IReadOnlyList<string> PrincipalPropertyNames { get; init; } = [];
 
     public string? DeleteBehavior { get; init; }
+
+    public string? NavigationToPrincipal { get; init; }
+
+    public string? NavigationToDependent { get; init; }
 }

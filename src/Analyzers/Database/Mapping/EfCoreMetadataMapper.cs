@@ -53,7 +53,9 @@ public sealed class EfCoreMetadataMapper
                 PropertyNames = [.. foreignKey.Properties.Select(property => property.Name)],
                 PrincipalEntityName = foreignKey.PrincipalEntityType.Name,
                 PrincipalPropertyNames = [.. foreignKey.PrincipalKey.Properties.Select(property => property.Name)],
-                DeleteBehavior = foreignKey.DeleteBehavior.ToString()
+                DeleteBehavior = foreignKey.DeleteBehavior.ToString(),
+                NavigationToPrincipal = foreignKey.DependentToPrincipal?.Name,
+                NavigationToDependent = foreignKey.PrincipalToDependent?.Name
             }
         ).ToList();
 

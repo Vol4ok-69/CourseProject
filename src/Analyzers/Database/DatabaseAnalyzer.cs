@@ -1,4 +1,4 @@
-﻿
+
 using Application.Analyzers;
 using DatabaseAnalyzer.Metadata;
 using DatabaseAnalyzer.Providers;
@@ -31,6 +31,23 @@ public sealed class DatabaseAnalyzer(IDatabaseMetadataProvider metadataProvider)
                     Severity = Severity.Warning,
                     Recommendation = "Проверьте, что сущность намеренно настроена без первичного ключа. Для таблицы с изменяемыми данными задайте первичный ключ; для представления или проекции убедитесь, что отсутствие ключа предусмотрено."
                 });
+            }
+
+            // DB02: внешний ключ без навигационного свойства к главной сущности (рекомендация соглашения проекта).
+            foreach (var foreignKey in entity.ForeignKeys)
+            {
+                if (string.IsNullOrWhiteSpace(foreignKey.NavigationToPrincipal))
+                {
+                    findings.Add(new AnalyzerFinding
+                    {
+                        Rule = "DB02",
+                        FilePath = entity.TableName,
+                        LineNumber = 0,
+                        Message = $"Рекомендация: внешний ключ '{foreignKey.Name}' сущности '{entity.EntityName}' не имеет навигационного свойства к главной сущности '{foreignKey.PrincipalEntityName}'. Это допустимо в EF Core, но не соответствует рекомендуемому проектному соглашению.",
+                        Severity = Severity.Warning,
+                        Recommendation = $"В рамках проектного соглашения рекомендуется добавить навигационное свойство в сущность '{entity.EntityName}' для внешнего ключа '{foreignKey.Name}'. Это обеспечивает типобезопасный доступ к связанной сущности '{foreignKey.PrincipalEntityName}' и поддержку удобной загрузки связанных данных через LINQ (.Include()). Это является рекомендацией по стилю моделирования и не нарушает целостность БД или требования EF Core."
+                    });
+                }
             }
 
             // DB04: внешний ключ без подходящего индекса.

@@ -179,7 +179,8 @@ public sealed class DatabaseAnalyzerTests
                                 Name = "FK_Orders_Customers",
                                 PropertyNames = ["CustomerId"],
                                 PrincipalEntityName = "Customer",
-                                PrincipalPropertyNames = ["CustomerId"]
+                                PrincipalPropertyNames = ["CustomerId"],
+                                NavigationToPrincipal = "Customer"
                             }
                         ],
                         Keys =
@@ -232,7 +233,8 @@ public sealed class DatabaseAnalyzerTests
                                 Name = "FK_Orders_Customers",
                                 PropertyNames = ["CustomerId"],
                                 PrincipalEntityName = "Customer",
-                                PrincipalPropertyNames = ["CustomerId"]
+                                PrincipalPropertyNames = ["CustomerId"],
+                                NavigationToPrincipal = "Customer"
                             }
                         ],
                         Indexes =
@@ -287,7 +289,8 @@ public sealed class DatabaseAnalyzerTests
                                 Name = "FK_OrderItems_Products",
                                 PropertyNames = ["ProductId", "WarehouseId"],
                                 PrincipalEntityName = "Product",
-                                PrincipalPropertyNames = ["ProductId", "WarehouseId"]
+                                PrincipalPropertyNames = ["ProductId", "WarehouseId"],
+                                NavigationToPrincipal = "Product"
                             }
                         ],
                         Indexes =
@@ -482,5 +485,317 @@ public sealed class DatabaseAnalyzerTests
         Assert.Empty(result);
     }
 
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportForeignKeyWithoutAnyNavigation()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Order",
+                        TableName = "Orders",
+                        ForeignKeys =
+                        [
+                            new DatabaseForeignKeyMetadata
+                            {
+                                Name = "FK_Orders_Users_UserId",
+                                PropertyNames = ["UserId"],
+                                PrincipalEntityName = "User",
+                                PrincipalPropertyNames = ["Id"],
+                                NavigationToPrincipal = null,
+                                NavigationToDependent = null
+                            }
+                        ],
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Orders",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        Indexes =
+                        [
+                            new DatabaseIndexMetadata
+                            {
+                                Name = "IX_Orders_UserId",
+                                PropertyNames = ["UserId"]
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB02", finding.Rule);
+        Assert.Equal("Orders", finding.FilePath);
+        Assert.Equal(Severity.Warning, finding.Severity);
+        Assert.Contains("FK_Orders_Users_UserId", finding.Message);
+        Assert.Contains("User", finding.Message);
+        Assert.Contains("Order", finding.Message);
+        Assert.False(string.IsNullOrWhiteSpace(finding.Recommendation));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportForeignKeyWhenOnlyDependentNavigationExists()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Order",
+                        TableName = "Orders",
+                        ForeignKeys =
+                        [
+                            new DatabaseForeignKeyMetadata
+                            {
+                                Name = "FK_Orders_Users_UserId",
+                                PropertyNames = ["UserId"],
+                                PrincipalEntityName = "User",
+                                PrincipalPropertyNames = ["Id"],
+                                NavigationToPrincipal = null,
+                                NavigationToDependent = "Orders"
+                            }
+                        ],
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Orders",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        Indexes =
+                        [
+                            new DatabaseIndexMetadata
+                            {
+                                Name = "IX_Orders_UserId",
+                                PropertyNames = ["UserId"]
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB02", finding.Rule);
+        Assert.Equal("Orders", finding.FilePath);
+        Assert.Equal(Severity.Warning, finding.Severity);
+        Assert.Contains("FK_Orders_Users_UserId", finding.Message);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldNotReportForeignKeyWhenPrincipalNavigationExistsEvenWithoutDependentNavigation()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Order",
+                        TableName = "Orders",
+                        ForeignKeys =
+                        [
+                            new DatabaseForeignKeyMetadata
+                            {
+                                Name = "FK_Orders_Users_UserId",
+                                PropertyNames = ["UserId"],
+                                PrincipalEntityName = "User",
+                                PrincipalPropertyNames = ["Id"],
+                                NavigationToPrincipal = "User",
+                                NavigationToDependent = null
+                            }
+                        ],
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Orders",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        Indexes =
+                        [
+                            new DatabaseIndexMetadata
+                            {
+                                Name = "IX_Orders_UserId",
+                                PropertyNames = ["UserId"]
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldNotReportForeignKeyWhenBothNavigationsExist()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Order",
+                        TableName = "Orders",
+                        ForeignKeys =
+                        [
+                            new DatabaseForeignKeyMetadata
+                            {
+                                Name = "FK_Orders_Users_UserId",
+                                PropertyNames = ["UserId"],
+                                PrincipalEntityName = "User",
+                                PrincipalPropertyNames = ["Id"],
+                                NavigationToPrincipal = "User",
+                                NavigationToDependent = "Orders"
+                            }
+                        ],
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Orders",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        Indexes =
+                        [
+                            new DatabaseIndexMetadata
+                            {
+                                Name = "IX_Orders_UserId",
+                                PropertyNames = ["UserId"]
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldHandleMultipleForeignKeysIndependently()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Order",
+                        TableName = "Orders",
+                        ForeignKeys =
+                        [
+                            new DatabaseForeignKeyMetadata
+                            {
+                                Name = "FK_Orders_Users_UserId",
+                                PropertyNames = ["UserId"],
+                                PrincipalEntityName = "User",
+                                PrincipalPropertyNames = ["Id"],
+                                NavigationToPrincipal = "User",
+                                NavigationToDependent = "Orders"
+                            },
+                            new DatabaseForeignKeyMetadata
+                            {
+                                Name = "FK_Orders_PaymentMethods_PaymentMethodId",
+                                PropertyNames = ["PaymentMethodId"],
+                                PrincipalEntityName = "PaymentMethod",
+                                PrincipalPropertyNames = ["Id"],
+                                NavigationToPrincipal = null,
+                                NavigationToDependent = null
+                            }
+                        ],
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Orders",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        Indexes =
+                        [
+                            new DatabaseIndexMetadata
+                            {
+                                Name = "IX_Orders_UserId",
+                                PropertyNames = ["UserId"]
+                            },
+                            new DatabaseIndexMetadata
+                            {
+                                Name = "IX_Orders_PaymentMethodId",
+                                PropertyNames = ["PaymentMethodId"]
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB02", finding.Rule);
+        Assert.Contains("FK_Orders_PaymentMethods_PaymentMethodId", finding.Message);
+        Assert.Contains("PaymentMethod", finding.Message);
+    }
 
 }
