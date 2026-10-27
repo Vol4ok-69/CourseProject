@@ -50,6 +50,44 @@ public sealed class DatabaseAnalyzer(IDatabaseMetadataProvider metadataProvider)
                 }
             }
 
+            // DB03: неявная связь многие-ко-многим без явной промежуточной сущности.
+            foreach (var skipNav in entity.SkipNavigations)
+            {
+                if (!skipNav.IsImplicitJoinEntity)
+                {
+                    continue;
+                }
+
+                // Стабильная дедупликация физической связи:
+                // Для двунаправленной связи регистрируем finding только один раз для сущности с лексикографически меньшим именем.
+                // При равенстве имен (самоссылающаяся связь) регистрируем finding только для лексикографически меньшего имени навигации.
+                // Если между теми же типами сущностей настроено несколько связей, они различаются по JoinEntityTableName/JoinEntityName.
+                if (!string.IsNullOrWhiteSpace(skipNav.InverseNavigationName))
+                {
+                    var entityComparison = string.Compare(entity.EntityName, skipNav.TargetEntityName, StringComparison.Ordinal);
+                    if (entityComparison > 0)
+                    {
+                        continue;
+                    }
+
+                    if (entityComparison == 0 &&
+                        string.Compare(skipNav.NavigationName, skipNav.InverseNavigationName, StringComparison.Ordinal) > 0)
+                    {
+                        continue;
+                    }
+                }
+
+                findings.Add(new AnalyzerFinding
+                {
+                    Rule = "DB03",
+                    FilePath = entity.TableName,
+                    LineNumber = 0,
+                    Message = $"Рекомендация: связь многие-ко-многим между сущностями '{entity.EntityName}' и '{skipNav.TargetEntityName}' настроена через неявную промежуточную таблицу '{skipNav.JoinEntityTableName}'.",
+                    Severity = Severity.Info,
+                    Recommendation = $"Рассмотрите возможность создания явной связующей сущности (join entity) для таблицы '{skipNav.JoinEntityTableName}'. Это позволит явно управлять схемой связующей таблицы, индексами и добавлять дополнительные атрибуты связи (например, дату создания или статус) без изменения типа связи в будущем. Использование неявной связи допустимо в EF Core и является рекомендацией по проектированию модели."
+                });
+            }
+
             // DB04: внешний ключ без подходящего индекса.
             foreach (var foreignKey in entity.ForeignKeys)
             {

@@ -1,4 +1,4 @@
-﻿using Application.Analyzers;
+using Application.Analyzers;
 using DatabaseAnalyzer;
 using DatabaseAnalyzer.Metadata;
 using DatabaseAnalyzer.Providers;
@@ -798,4 +798,599 @@ public sealed class DatabaseAnalyzerTests
         Assert.Contains("PaymentMethod", finding.Message);
     }
 
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportDB03WithInfoSeverityForImplicitManyToMany()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Student",
+                        TableName = "Students",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Students",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Courses",
+                                TargetEntityName = "Course",
+                                JoinEntityTableName = "CourseStudent",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = null
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB03", finding.Rule);
+        Assert.Equal("Students", finding.FilePath);
+        Assert.Equal(Severity.Info, finding.Severity);
+        Assert.Contains("Student", finding.Message);
+        Assert.Contains("Course", finding.Message);
+        Assert.Contains("CourseStudent", finding.Message);
+        Assert.False(string.IsNullOrWhiteSpace(finding.Recommendation));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportSingleFindingForBidirectionalImplicitManyToMany()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Student",
+                        TableName = "Students",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Students",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Courses",
+                                TargetEntityName = "Course",
+                                JoinEntityTableName = "CourseStudent",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "Students"
+                            }
+                        ]
+                    },
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Course",
+                        TableName = "Courses",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Courses",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Students",
+                                TargetEntityName = "Student",
+                                JoinEntityTableName = "CourseStudent",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "Courses"
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB03", finding.Rule);
+        Assert.Equal("Courses", finding.FilePath);
+        Assert.Equal(Severity.Info, finding.Severity);
+        Assert.Contains("Course", finding.Message);
+        Assert.Contains("Student", finding.Message);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportFindingForUnidirectionalImplicitManyToMany()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Article",
+                        TableName = "Articles",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Articles",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Tags",
+                                TargetEntityName = "Tag",
+                                JoinEntityTableName = "ArticleTag",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = null
+                            }
+                        ]
+                    },
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Tag",
+                        TableName = "Tags",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Tags",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations = []
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB03", finding.Rule);
+        Assert.Equal("Articles", finding.FilePath);
+        Assert.Equal(Severity.Info, finding.Severity);
+        Assert.Contains("Article", finding.Message);
+        Assert.Contains("Tag", finding.Message);
+        Assert.Contains("ArticleTag", finding.Message);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldNotReportDB03WhenNoSkipNavigations()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Category",
+                        TableName = "Categories",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Categories",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations = []
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldNotReportDB03ForExplicitJoinEntityWithOwnClrClass()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "User",
+                        TableName = "Users",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Users",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Roles",
+                                TargetEntityName = "Role",
+                                JoinEntityTableName = "UserRoles",
+                                IsImplicitJoinEntity = false,
+                                InverseNavigationName = "Users"
+                            }
+                        ]
+                    },
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Role",
+                        TableName = "Roles",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Roles",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Users",
+                                TargetEntityName = "User",
+                                JoinEntityTableName = "UserRoles",
+                                IsImplicitJoinEntity = false,
+                                InverseNavigationName = "Roles"
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportDB03ForDictionarySharedTypeJoinEntityRegardlessOfName()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Developer",
+                        TableName = "Developers",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Developers",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Skills",
+                                TargetEntityName = "Skill",
+                                JoinEntityTableName = "CustomJoinTableName",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "Developers"
+                            }
+                        ]
+                    },
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Skill",
+                        TableName = "Skills",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Skills",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Developers",
+                                TargetEntityName = "Developer",
+                                JoinEntityTableName = "CustomJoinTableName",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "Skills"
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB03", finding.Rule);
+        Assert.Equal(Severity.Info, finding.Severity);
+        Assert.Contains("CustomJoinTableName", finding.Message);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldNotReportDB03ForOrdinaryOneToManyRelationship()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Order",
+                        TableName = "Orders",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Orders",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        ForeignKeys =
+                        [
+                            new DatabaseForeignKeyMetadata
+                            {
+                                PrincipalEntityName = "User",
+                                PropertyNames = ["UserId"],
+                                PrincipalPropertyNames = ["Id"],
+                                NavigationToPrincipal = "User",
+                                NavigationToDependent = "Orders"
+                            }
+                        ],
+                        Indexes =
+                        [
+                            new DatabaseIndexMetadata
+                            {
+                                Name = "IX_Orders_UserId",
+                                PropertyNames = ["UserId"]
+                            }
+                        ],
+                        SkipNavigations = []
+                    },
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "User",
+                        TableName = "Users",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Users",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations = []
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        Assert.DoesNotContain(result, f => f.Rule == "DB03");
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportSingleFindingForSelfReferencingImplicitManyToMany()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "User",
+                        TableName = "Users",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Users",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Friends",
+                                TargetEntityName = "User",
+                                JoinEntityTableName = "UserUser",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "FriendOf"
+                            },
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "FriendOf",
+                                TargetEntityName = "User",
+                                JoinEntityTableName = "UserUser",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "Friends"
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        var finding = Assert.Single(result);
+        Assert.Equal("DB03", finding.Rule);
+        Assert.Equal("Users", finding.FilePath);
+        Assert.Contains("UserUser", finding.Message);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ShouldReportTwoFindingsForTwoDistinctManyToManyRelationshipsBetweenSameEntities()
+    {
+        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
+        metadataProvider
+            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DatabaseMetadata
+            {
+                Entities =
+                [
+                    new DatabaseEntityMetadata
+                    {
+                        EntityName = "Person",
+                        TableName = "Persons",
+                        Keys =
+                        [
+                            new DatabaseKeyMetadata
+                            {
+                                Name = "PK_Persons",
+                                PropertyNames = ["Id"],
+                                IsPrimaryKey = true
+                            }
+                        ],
+                        SkipNavigations =
+                        [
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Friends",
+                                TargetEntityName = "Person",
+                                JoinEntityTableName = "PersonPerson",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "FriendOf"
+                            },
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "FriendOf",
+                                TargetEntityName = "Person",
+                                JoinEntityTableName = "PersonPerson",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "Friends"
+                            },
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "Colleagues",
+                                TargetEntityName = "Person",
+                                JoinEntityTableName = "PersonPerson1",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "ColleagueOf"
+                            },
+                            new DatabaseSkipNavigationMetadata
+                            {
+                                NavigationName = "ColleagueOf",
+                                TargetEntityName = "Person",
+                                JoinEntityTableName = "PersonPerson1",
+                                IsImplicitJoinEntity = true,
+                                InverseNavigationName = "Colleagues"
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
+        {
+            RepositoryPath = @"C:\Test\Repository",
+            CommitHash = "test-commit"
+        });
+
+        // Two distinct physical relationships between the same entity types should yield exactly two findings
+        Assert.Equal(2, result.Count);
+        Assert.All(result, f => Assert.Equal("DB03", f.Rule));
+        Assert.Contains(result, f => f.Message.Contains("PersonPerson"));
+        Assert.Contains(result, f => f.Message.Contains("PersonPerson1"));
+    }
 }

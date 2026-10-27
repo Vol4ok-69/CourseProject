@@ -1,4 +1,4 @@
-﻿using DatabaseAnalyzer.Metadata;
+using DatabaseAnalyzer.Metadata;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 
@@ -81,6 +81,28 @@ public sealed class EfCoreMetadataMapper
             }
         ).ToList();
 
+        var skipNavigations = entityType.GetSkipNavigations()
+            .Where(IsDeclaredOrExplicitSkipNavigation)
+            .Select
+            (
+                skipNav =>
+                {
+                    var joinEntity = skipNav.JoinEntityType;
+                    var isImplicit = IsImplicitJoinEntity(skipNav);
+                    var inverseName = GetInverseNavigationName(skipNav);
+
+                    return new DatabaseSkipNavigationMetadata
+                    {
+                        NavigationName = skipNav.Name,
+                        TargetEntityName = skipNav.TargetEntityType.Name,
+                        JoinEntityTableName = joinEntity.GetTableName() ?? joinEntity.Name,
+                        JoinEntityName = joinEntity.Name,
+                        IsImplicitJoinEntity = isImplicit,
+                        InverseNavigationName = inverseName
+                    };
+                }
+            ).ToList();
+
         return new DatabaseEntityMetadata
         {
             EntityName = entityType.Name,
@@ -90,7 +112,8 @@ public sealed class EfCoreMetadataMapper
             Keys = keys,
             ForeignKeys = foreignKeys,
             Indexes = indexes,
-            Relationships = relationships
+            Relationships = relationships,
+            SkipNavigations = skipNavigations
         };
     }
 
@@ -128,4 +151,44 @@ public sealed class EfCoreMetadataMapper
 		return "ManyToOne";
 	}
 
+    private static bool IsDeclaredOrExplicitSkipNavigation(ISkipNavigation skipNav)
+    {
+        if (!skipNav.IsShadowProperty())
+        {
+            return true;
+        }
+
+        if (skipNav.FieldInfo != null || skipNav.PropertyInfo != null)
+        {
+            return true;
+        }
+
+        // В EF Core для однонаправленных связей (HasMany().WithMany()) на целевой сущности создаётся
+        // синтетическая теневая навигация с именем TargetEntityType.ShortName().
+        // В скомпилированной RuntimeModel вызовы .WithMany() и .WithMany("TargetShortName") порождают
+        // идентичную метамодель. Синтетическая навигация с таким именем исключается из метаданных целевой сущности.
+        return !string.Equals(skipNav.Name, skipNav.TargetEntityType.ShortName(), StringComparison.Ordinal);
+    }
+
+    private static string? GetInverseNavigationName(ISkipNavigation skipNav)
+    {
+        var inverse = skipNav.Inverse;
+        if (inverse == null)
+        {
+            return null;
+        }
+
+        if (inverse.IsShadowProperty() &&
+            string.Equals(inverse.Name, inverse.TargetEntityType.ShortName(), StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return inverse.Name;
+    }
+
+    private static bool IsImplicitJoinEntity(ISkipNavigation skipNav)
+    {
+        return skipNav.JoinEntityType.ClrType == typeof(Dictionary<string, object>);
+    }
 }

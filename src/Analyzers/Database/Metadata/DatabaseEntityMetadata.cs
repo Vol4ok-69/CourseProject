@@ -17,4 +17,6 @@ public sealed class DatabaseEntityMetadata
     public IReadOnlyList<DatabaseIndexMetadata> Indexes { get; init; } = [];
 
     public IReadOnlyList<DatabaseRelationshipMetadata> Relationships { get; init; } = [];
+
+    public IReadOnlyList<DatabaseSkipNavigationMetadata> SkipNavigations { get; init; } = [];
 }
