@@ -10,6 +10,7 @@ using Xunit;
 
 namespace DatabaseAnalyzer.Tests;
 
+[Collection("SampleEfProject")]
 public sealed class DatabaseAnalyzerIntegrationTests
 {
     [Fact]

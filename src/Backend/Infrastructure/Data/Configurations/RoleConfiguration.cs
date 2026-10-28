@@ -17,6 +17,9 @@ public class RoleConfiguration : IEntityTypeConfiguration<Role>
         builder.Property(role => role.Name)
             .IsRequired();
 
+        builder.HasIndex(role => role.Name)
+            .IsUnique();
+
         builder.HasMany(role => role.Users)
             .WithOne(user => user.Role)
             .HasForeignKey(user => user.RoleId)

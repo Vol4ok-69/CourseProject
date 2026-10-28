@@ -25,6 +25,11 @@ public class ProjectConfiguration : IEntityTypeConfiguration<Project>
             .HasForeignKey(project => project.OwnerId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        builder.HasIndex(project => project.OwnerId);
+
+        builder.HasIndex(project => new { project.OwnerId, project.Name })
+            .IsUnique();
+
         builder.HasMany(project => project.Commits)
             .WithOne(commit => commit.Project)
             .HasForeignKey(commit => commit.ProjectId)

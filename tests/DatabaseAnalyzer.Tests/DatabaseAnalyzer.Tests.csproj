@@ -30,6 +30,7 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\..\src\Analyzers\Database\DatabaseAnalyzer.csproj" />
+		<ProjectReference Include="..\..\src\Backend\Infrastructure\Infrastructure.csproj" />
 	</ItemGroup>
 
 </Project>

@@ -4,6 +4,7 @@ using Xunit;
 
 namespace DatabaseAnalyzer.Tests.Providers;
 
+[Collection("SampleEfProject")]
 public sealed class EfCoreModelInspectorTests
 {
     [Fact]

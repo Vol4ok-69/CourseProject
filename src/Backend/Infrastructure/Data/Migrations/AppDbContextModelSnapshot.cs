@@ -113,6 +113,9 @@ namespace Infrastructure.Data.Migrations
 
                     b.HasIndex("ProjectId");
 
+                    b.HasIndex("ProjectId", "CommitHash")
+                        .IsUnique();
+
                     b.ToTable("Commits");
                 });
 
@@ -139,6 +142,9 @@ namespace Infrastructure.Data.Migrations
 
                     b.HasIndex("OwnerId");
 
+                    b.HasIndex("OwnerId", "Name")
+                        .IsUnique();
+
                     b.ToTable("Projects");
                 });
 
@@ -155,6 +161,9 @@ namespace Infrastructure.Data.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
 
                     b.ToTable("Roles");
                 });
@@ -181,6 +190,9 @@ namespace Infrastructure.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("RoleId");
+
+                    b.HasIndex("Username")
+                        .IsUnique();
 
                     b.ToTable("Users");
                 });

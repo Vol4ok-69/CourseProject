@@ -25,6 +25,11 @@ public class CommitConfiguration : IEntityTypeConfiguration<Commit>
             .HasForeignKey(commit => commit.ProjectId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        builder.HasIndex(commit => commit.ProjectId);
+
+        builder.HasIndex(commit => new { commit.ProjectId, commit.CommitHash })
+            .IsUnique();
+
         builder.HasMany(commit => commit.Analyses)
             .WithOne(analysis => analysis.Commit)
             .HasForeignKey(analysis => analysis.CommitId)
