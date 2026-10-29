@@ -36,6 +36,8 @@ builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAnalyzer, CSharpAnalyzer>();
 builder.Services.AddScoped<IAnalyzer, DatabaseAnalyzer.DatabaseAnalyzer>();
+builder.Services.AddScoped<IAnalyzer, SqlAnalyzer.SqlAnalyzer>();
+builder.Services.AddScoped<IAnalyzer, SecurityAnalyzer.SecurityAnalyzer>();
 builder.Services.AddScoped<IDatabaseMetadataProvider, EfCoreMetadataProvider>();
 builder.Services.AddScoped<IDatabaseProjectResolver, EfCoreDatabaseProjectResolver>();
 builder.Services.AddScoped<IEfCoreModelInspector, EfCoreModelInspector>();

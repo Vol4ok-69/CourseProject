@@ -21,6 +21,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Analyzers\CSharp\CSharp.csproj" />
     <ProjectReference Include="..\..\Analyzers\Database\DatabaseAnalyzer.csproj" />
+    <ProjectReference Include="..\..\Analyzers\Security\SecurityAnalyzer.csproj" />
+    <ProjectReference Include="..\..\Analyzers\Sql\SqlAnalyzer.csproj" />
     <ProjectReference Include="..\Application\Application.csproj" />
     <ProjectReference Include="..\Infrastructure\Infrastructure.csproj" />
   </ItemGroup>
