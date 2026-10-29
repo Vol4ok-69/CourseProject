@@ -2,6 +2,7 @@
   <Folder Name="/src/" />
   <Folder Name="/src/Analyzers/">
     <Project Path="src/Analyzers/CSharp/CSharp.csproj" />
+    <Project Path="src/Analyzers/Sql/SqlAnalyzer.csproj" />
   </Folder>
   <Folder Name="/src/Analyzers/Database/">
     <Project Path="src/Analyzers/Database/DatabaseAnalyzer.csproj" />
@@ -15,5 +16,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/CSharpAnalyzer.Tests/CSharpAnalyzer.Tests.csproj" />
     <Project Path="tests/DatabaseAnalyzer.Tests/DatabaseAnalyzer.Tests.csproj" />
+    <Project Path="tests/SqlAnalyzer.Tests/SqlAnalyzer.Tests.csproj" />
   </Folder>
 </Solution>
