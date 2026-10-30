@@ -1,4 +1,4 @@
-﻿using Application.Interfaces.Repositories;
+using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
@@ -24,19 +24,41 @@ public class ProjectRepository(AppDbContext context) : IProjectRepository
 
     public async Task AddAsync(Project project, CancellationToken cancellationToken = default)
     {
-        await context.Projects.AddAsync(project, cancellationToken);
-        await context.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await context.Projects.AddAsync(project, cancellationToken);
+            await context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException exception) when (IsUniqueConstraintViolation(exception, "IX_Projects_OwnerId_Name"))
+        {
+            throw new InvalidOperationException("Проект с таким именем уже существует.", exception);
+        }
     }
 
     public async Task UpdateAsync(Project project, CancellationToken cancellationToken = default)
     {
-        context.Projects.Update(project);
-        await context.SaveChangesAsync(cancellationToken);
+        try
+        {
+            context.Projects.Update(project);
+            await context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException exception) when (IsUniqueConstraintViolation(exception, "IX_Projects_OwnerId_Name"))
+        {
+            throw new InvalidOperationException("Проект с таким именем уже существует.", exception);
+        }
     }
 
     public async Task DeleteAsync(Project project, CancellationToken cancellationToken = default)
     {
         context.Projects.Remove(project);
         await context.SaveChangesAsync(cancellationToken);
+    }
+
+    private static bool IsUniqueConstraintViolation(DbUpdateException exception, string constraintName)
+    {
+        return exception.InnerException is Npgsql.PostgresException postgresException &&
+               postgresException.SqlState == Npgsql.PostgresErrorCodes.UniqueViolation &&
+               (postgresException.ConstraintName == constraintName ||
+                postgresException.ConstraintName?.Contains(constraintName, StringComparison.OrdinalIgnoreCase) == true);
     }
 }

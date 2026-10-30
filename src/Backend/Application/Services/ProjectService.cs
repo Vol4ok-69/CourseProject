@@ -1,4 +1,4 @@
-﻿using Application.DTOs;
+using Application.DTOs;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
 
@@ -18,6 +18,13 @@ public class ProjectService(IProjectRepository projectRepository)
 
     public async Task<Project> CreateAsync(CreateProjectDto dto, int ownerId, CancellationToken cancellationToken = default)
     {
+        var existingProjects = await projectRepository.GetByOwnerIdAsync(ownerId, cancellationToken);
+
+        if (existingProjects.Any(project => string.Equals(project.Name, dto.Name, StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException("Проект с таким именем уже существует.");
+        }
+
         var project = new Project
         {
             Name = dto.Name,
@@ -37,6 +44,13 @@ public class ProjectService(IProjectRepository projectRepository)
         if (project is null)
         {
             return null;
+        }
+
+        var existingProjects = await projectRepository.GetByOwnerIdAsync(project.OwnerId, cancellationToken);
+
+        if (existingProjects.Any(p => p.Id != id && string.Equals(p.Name, dto.Name, StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException("Проект с таким именем уже существует.");
         }
 
         project.Name = dto.Name;

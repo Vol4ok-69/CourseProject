@@ -1,7 +1,8 @@
-﻿using Application.DTOs;
+using Application.DTOs;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace Api.Controllers;
@@ -112,6 +113,7 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
     [ProducesResponseType(typeof(ProjectDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ProjectDto>> Create(CreateProjectDto dto, CancellationToken cancellationToken)
     {
         var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -121,17 +123,28 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
             return Unauthorized();
         }
 
-        var project = await projectService.CreateAsync(dto, userId, cancellationToken);
-
-        var projectDto = new ProjectDto
+        try
         {
-            Id = project.Id,
-            Name = project.Name,
-            RepoUrl = project.RepoUrl,
-            OwnerId = project.OwnerId
-        };
+            var project = await projectService.CreateAsync(dto, userId, cancellationToken);
 
-        return CreatedAtAction(nameof(GetById), new { id = project.Id }, projectDto);
+            var projectDto = new ProjectDto
+            {
+                Id = project.Id,
+                Name = project.Name,
+                RepoUrl = project.RepoUrl,
+                OwnerId = project.OwnerId
+            };
+
+            return CreatedAtAction(nameof(GetById), new { id = project.Id }, projectDto);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Conflict(new { message = exception.Message });
+        }
+        catch (DbUpdateException exception) when (IsProjectUniqueConstraintViolation(exception))
+        {
+            return Conflict(new { message = "Проект с таким именем уже существует." });
+        }
     }
 
     /// <summary>
@@ -147,6 +160,7 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ProjectDto>> Update(int id, UpdateProjectDto dto, CancellationToken cancellationToken)
     {
         var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -170,22 +184,33 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
             return Forbid();
         }
 
-        var updatedProject = await projectService.UpdateAsync(id, dto, cancellationToken);
-
-        if (updatedProject is null)
+        try
         {
-            return NotFound();
+            var updatedProject = await projectService.UpdateAsync(id, dto, cancellationToken);
+
+            if (updatedProject is null)
+            {
+                return NotFound();
+            }
+
+            var projectDto = new ProjectDto
+            {
+                Id = updatedProject.Id,
+                Name = updatedProject.Name,
+                RepoUrl = updatedProject.RepoUrl,
+                OwnerId = updatedProject.OwnerId
+            };
+
+            return Ok(projectDto);
         }
-
-        var projectDto = new ProjectDto
+        catch (InvalidOperationException exception)
         {
-            Id = updatedProject.Id,
-            Name = updatedProject.Name,
-            RepoUrl = updatedProject.RepoUrl,
-            OwnerId = updatedProject.OwnerId
-        };
-
-        return Ok(projectDto);
+            return Conflict(new { message = exception.Message });
+        }
+        catch (DbUpdateException exception) when (IsProjectUniqueConstraintViolation(exception))
+        {
+            return Conflict(new { message = "Проект с таким именем уже существует." });
+        }
     }
 
     /// <summary>
@@ -273,5 +298,13 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
         }
 
         return Ok(result);
+    }
+
+    private static bool IsProjectUniqueConstraintViolation(DbUpdateException exception)
+    {
+        return exception.InnerException is Npgsql.PostgresException postgresException &&
+               postgresException.SqlState == "23505" &&
+               (postgresException.ConstraintName == "IX_Projects_OwnerId_Name" ||
+                postgresException.ConstraintName?.Contains("Projects_OwnerId_Name", StringComparison.OrdinalIgnoreCase) == true);
     }
 }
