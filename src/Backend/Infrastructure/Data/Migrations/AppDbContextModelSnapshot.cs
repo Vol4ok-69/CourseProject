@@ -36,7 +36,18 @@ namespace Infrastructure.Data.Migrations
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<DateTime>("StartedAt")
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<Guid?>("ExecutionToken")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("LeaseExpiration")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("StartedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("Status")
@@ -44,7 +55,11 @@ namespace Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CommitId");
+                    b.HasIndex("CommitId", "CreatedAt")
+                        .HasDatabaseName("IX_Analyses_CommitId_CreatedAt");
+
+                    b.HasIndex("Status", "CreatedAt")
+                        .HasDatabaseName("IX_Analyses_Status_CreatedAt");
 
                     b.ToTable("Analyses");
                 });

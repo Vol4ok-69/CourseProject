@@ -19,14 +19,14 @@ public class AnalysesController(
     ProjectService projectService) : ControllerBase
 {
     /// <summary>
-    /// Запускает анализ коммита проекта.
+    /// Создаёт задачу на анализ коммита проекта и ставит её в очередь.
     /// </summary>
     /// <param name="projectId">Идентификатор проекта.</param>
     /// <param name="commitId">Идентификатор коммита.</param>
     /// <param name="cancellationToken">Токен отмены операции.</param>
-    /// <returns>Результат анализа.</returns>
+    /// <returns>Созданная задача анализа.</returns>
     [HttpPost]
-    [ProducesResponseType(typeof(AnalysisDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(AnalysisDto), StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -63,11 +63,14 @@ public class AnalysesController(
             return NotFound();
         }
 
-        var analysis = await analysisService.AnalyzeAsync(
+        var analysis = await analysisService.EnqueueAsync(
             commitId,
             cancellationToken);
 
-        return Ok(MapToDto(analysis));
+        return AcceptedAtAction(
+            nameof(GetById),
+            new { projectId, commitId, analysisId = analysis.Id },
+            MapToDto(analysis));
     }
 
     /// <summary>
@@ -185,6 +188,7 @@ public class AnalysesController(
             Id = analysis.Id,
             CommitId = analysis.CommitId,
             Status = analysis.Status,
+            CreatedAt = analysis.CreatedAt,
             StartedAt = analysis.StartedAt,
             CompletedAt = analysis.CompletedAt,
             Results = [.. analysis.Results

@@ -1,3 +1,4 @@
+using Api.BackgroundServices;
 using Application.Analyzers;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
@@ -69,6 +70,7 @@ builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ProjectService>();
 builder.Services.AddScoped<GitHubSyncService>();
 builder.Services.AddScoped<AnalysisService>();
+builder.Services.AddHostedService<AnalysisBackgroundService>();
 
 var jwtKey = builder.Configuration["Jwt:Key"]
     ?? throw new InvalidOperationException("JWT key is not configured.");

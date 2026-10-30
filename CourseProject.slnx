@@ -13,6 +13,7 @@
     <Project Path="src/Backend/Infrastructure/Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Backend.Tests/Backend.Tests.csproj" />
     <Project Path="tests/CSharpAnalyzer.Tests/CSharpAnalyzer.Tests.csproj" />
     <Project Path="tests/DatabaseAnalyzer.Tests/DatabaseAnalyzer.Tests.csproj" />
     <Project Path="tests/SecurityAnalyzer.Tests/SecurityAnalyzer.Tests.csproj" />

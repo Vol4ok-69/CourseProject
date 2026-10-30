@@ -17,10 +17,20 @@ public class AnalysisConfiguration : IEntityTypeConfiguration<Analysis>
         builder.Property(analysis => analysis.Status)
             .IsRequired();
 
+        builder.Property(analysis => analysis.CreatedAt)
+            .IsRequired()
+            .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
         builder.Property(analysis => analysis.StartedAt)
-            .IsRequired();
+            .IsRequired(false);
 
         builder.Property(analysis => analysis.CompletedAt)
+            .IsRequired(false);
+
+        builder.Property(analysis => analysis.LeaseExpiration)
+            .IsRequired(false);
+
+        builder.Property(analysis => analysis.ExecutionToken)
             .IsRequired(false);
 
         builder.HasOne(analysis => analysis.Commit)
@@ -32,5 +42,11 @@ public class AnalysisConfiguration : IEntityTypeConfiguration<Analysis>
             .WithOne(result => result.Analysis)
             .HasForeignKey(result => result.AnalysisId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasIndex(analysis => new { analysis.CommitId, analysis.CreatedAt })
+            .HasDatabaseName("IX_Analyses_CommitId_CreatedAt");
+
+        builder.HasIndex(analysis => new { analysis.Status, analysis.CreatedAt })
+            .HasDatabaseName("IX_Analyses_Status_CreatedAt");
     }
 }

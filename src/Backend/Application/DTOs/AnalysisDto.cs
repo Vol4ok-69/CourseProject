@@ -7,7 +7,8 @@ public class AnalysisDto
     public int Id { get; set; }
     public int CommitId { get; set; }
     public AnalysisStatus Status { get; set; }
-    public DateTime StartedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
     public IReadOnlyList<AnalysisResultDto> Results { get; set; } = [];
 }
