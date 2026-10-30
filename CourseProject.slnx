@@ -2,7 +2,7 @@
   <Folder Name="/src/" />
   <Folder Name="/src/Analyzers/">
     <Project Path="src/Analyzers/CSharp/CSharp.csproj" />
-	<Project Path="src/Analyzers/Database/DatabaseAnalyzer.csproj" />
+    <Project Path="src/Analyzers/Database/DatabaseAnalyzer.csproj" />
     <Project Path="src/Analyzers/Security/SecurityAnalyzer.csproj" />
     <Project Path="src/Analyzers/Sql/SqlAnalyzer.csproj" />
   </Folder>
