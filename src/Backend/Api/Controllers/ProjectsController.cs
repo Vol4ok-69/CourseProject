@@ -17,6 +17,44 @@ namespace Api.Controllers;
 public class ProjectsController(ProjectService projectService, GitHubSyncService gitHubSyncService) : ControllerBase
 {
     /// <summary>
+    /// Получает список проектов текущего пользователя или всех проектов (для администратора).
+    /// </summary>
+    /// <param name="all">Признак запроса всех проектов (учитывается только для роли Admin).</param>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Список проектов.</returns>
+    [HttpGet]
+    [ProducesResponseType(typeof(IReadOnlyList<ProjectDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<IReadOnlyList<ProjectDto>>> GetAll([FromQuery] bool all = false, CancellationToken cancellationToken = default)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (userIdClaim is null || !int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var isAdmin = User.IsInRole("Admin");
+
+        var projects = (isAdmin && all)
+            ? await projectService.GetAllAsync(cancellationToken)
+            : await projectService.GetByOwnerIdAsync(userId, cancellationToken);
+
+        var projectDtos = projects.Select
+        (
+            project => new ProjectDto
+            {
+                Id = project.Id,
+                Name = project.Name,
+                RepoUrl = project.RepoUrl,
+                OwnerId = project.OwnerId
+            }
+        ).ToList();
+
+        return Ok(projectDtos);
+    }
+
+    /// <summary>
     /// Получает проект по его идентификатору.
     /// </summary>
     /// <param name="id">Идентификатор проекта.</param>

@@ -14,6 +14,14 @@ public class ProjectRepository(AppDbContext context) : IProjectRepository
             .FirstOrDefaultAsync(project => project.Id == id, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<Project>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        return await context.Projects
+            .AsNoTracking()
+            .OrderBy(project => project.Id)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<Project>> GetByOwnerIdAsync(int ownerId, CancellationToken cancellationToken = default)
     {
         return await context.Projects

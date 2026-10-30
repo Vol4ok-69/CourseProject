@@ -11,6 +11,11 @@ public class ProjectService(IProjectRepository projectRepository)
         return await projectRepository.GetByIdAsync(id, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<Project>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        return await projectRepository.GetAllAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<Project>> GetByOwnerIdAsync(int ownerId, CancellationToken cancellationToken = default)
     {
         return await projectRepository.GetByOwnerIdAsync(ownerId, cancellationToken);

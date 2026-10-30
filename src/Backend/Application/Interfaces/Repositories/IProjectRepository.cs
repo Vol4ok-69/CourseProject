@@ -1,8 +1,10 @@
-﻿using Domain.Entities;
+using Domain.Entities;
 
 public interface IProjectRepository
 {
     Task<Project?> GetByIdAsync(int id, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<Project>> GetAllAsync(CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<Project>> GetByOwnerIdAsync(int ownerId, CancellationToken cancellationToken = default);
 

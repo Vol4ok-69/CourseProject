@@ -324,6 +324,39 @@ function Test-UserManagement {
     Write-Host ""
     Write-Host "=== 2. USER MANAGEMENT & PROFILE ===" -ForegroundColor Cyan
 
+    # Verify GET /api/auth/me for User 1
+    $meResponse = Invoke-Api `
+        -Method "GET" `
+        -Uri "/api/auth/me" `
+        -Token $script:User1Token
+
+    Assert-Status $meResponse 200 "User 1 gets own profile via /api/auth/me"
+    $meObj = Get-Json $meResponse
+    if ($meObj.username -ne $TestUser1Name -or $meObj.id -ne $script:User1Id -or $meObj.roleName -ne "User") {
+        throw "Profile for User 1 returned incorrect data: id=$($meObj.id), username=$($meObj.username), role=$($meObj.roleName)"
+    }
+    Write-TestResult "User 1 profile contains correct id, username and role" $true
+
+    # Verify GET /api/auth/me for Admin
+    $adminMeResponse = Invoke-Api `
+        -Method "GET" `
+        -Uri "/api/auth/me" `
+        -Token $script:AdminToken
+
+    Assert-Status $adminMeResponse 200 "Admin gets profile via /api/auth/me"
+    $adminMeObj = Get-Json $adminMeResponse
+    if ($adminMeObj.username -ne $AdminUsername -or $adminMeObj.roleName -ne "Admin") {
+        throw "Admin profile returned incorrect data: username=$($adminMeObj.username), role=$($adminMeObj.roleName)"
+    }
+    Write-TestResult "Admin profile contains correct username and Admin role" $true
+
+    # Verify GET /api/auth/me without token returns 401
+    $unauthMe = Invoke-Api `
+        -Method "GET" `
+        -Uri "/api/auth/me"
+
+    Assert-Status $unauthMe 401 "Unauthenticated request to /api/auth/me returns 401"
+
     $getUser = Invoke-Api `
         -Method "GET" `
         -Uri "/api/admin/users/$script:User1Id" `
@@ -482,6 +515,55 @@ function Test-Projects {
     }
 
     Write-TestResult "Created project exists in owner's projects list" $true
+
+    # Verify GET /api/projects for User 1
+    $myProjectsResponse = Invoke-Api `
+        -Method "GET" `
+        -Uri "/api/projects" `
+        -Token $script:User1Token
+
+    Assert-Status $myProjectsResponse 200 "User 1 gets own projects via /api/projects"
+    $myProjects = Get-Json $myProjectsResponse
+    if (-not ($myProjects | Where-Object { $_.id -eq $script:TestProjectId })) {
+        throw "Created project was not found in User 1's /api/projects list."
+    }
+    if ($myProjects | Where-Object { $_.ownerId -ne $script:User1Id }) {
+        throw "User 1 received projects belonging to another owner."
+    }
+    Write-TestResult "User 1 receives only own projects via /api/projects" $true
+
+    # Verify GET /api/projects?all=true ignores all=true for regular User
+    $userAllProjectsResponse = Invoke-Api `
+        -Method "GET" `
+        -Uri "/api/projects?all=true" `
+        -Token $script:User1Token
+
+    Assert-Status $userAllProjectsResponse 200 "User 1 request to /api/projects?all=true succeeds"
+    $userAllProjects = Get-Json $userAllProjectsResponse
+    if ($userAllProjects | Where-Object { $_.ownerId -ne $script:User1Id }) {
+        throw "User 1 received other users' projects when passing all=true."
+    }
+    Write-TestResult "User 1 passing all=true is ignored and returns only own projects" $true
+
+    # Verify GET /api/projects?all=true for Admin returns all projects
+    $adminAllProjectsResponse = Invoke-Api `
+        -Method "GET" `
+        -Uri "/api/projects?all=true" `
+        -Token $script:AdminToken
+
+    Assert-Status $adminAllProjectsResponse 200 "Admin gets all projects via /api/projects?all=true"
+    $adminAllProjects = Get-Json $adminAllProjectsResponse
+    if (-not ($adminAllProjects | Where-Object { $_.id -eq $script:TestProjectId })) {
+        throw "Admin with all=true did not receive User 1's project."
+    }
+    Write-TestResult "Admin with all=true receives all projects across users" $true
+
+    # Verify GET /api/projects without token returns 401
+    $unauthProjects = Invoke-Api `
+        -Method "GET" `
+        -Uri "/api/projects"
+
+    Assert-Status $unauthProjects 401 "Unauthenticated request to /api/projects returns 401"
 
     $updateResponse = Invoke-Api `
         -Method "PUT" `

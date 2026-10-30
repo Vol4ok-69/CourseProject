@@ -1,4 +1,4 @@
-﻿using Application.DTOs;
+using Application.DTOs;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -12,7 +12,7 @@ namespace Api.Controllers;
 [ApiController]
 [Route("api/auth")]
 [Produces("application/json")]
-public class AuthController(AuthService authService) : ControllerBase
+public class AuthController(AuthService authService, UserService userService) : ControllerBase
 {
     /// <summary>
     /// Регистрирует нового пользователя.
@@ -57,6 +57,44 @@ public class AuthController(AuthService authService) : ControllerBase
 
         return Ok(response);
     }
+
+    /// <summary>
+    /// Получает профиль текущего аутентифицированного пользователя.
+    /// </summary>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Профиль текущего пользователя.</returns>
+    [Authorize]
+    [HttpGet("me")]
+    [ProducesResponseType(typeof(UserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<UserDto>> GetCurrentUser(CancellationToken cancellationToken)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var user = await userService.GetByIdAsync(userId, cancellationToken);
+
+        if (user is null)
+        {
+            return NotFound();
+        }
+
+        var userDto = new UserDto
+        {
+            Id = user.Id,
+            Username = user.Username,
+            RoleId = user.RoleId,
+            RoleName = user.Role.Name
+        };
+
+        return Ok(userDto);
+    }
+
     /// <summary>
     /// Позволяет авторизованному пользователю изменить свое имя пользователя.
     /// </summary>
@@ -90,6 +128,7 @@ public class AuthController(AuthService authService) : ControllerBase
             return Conflict(exception.Message);
         }
     }
+
     /// <summary>
     /// Позволяет авторизованному пользователю изменить свой пароль.
     /// </summary>
