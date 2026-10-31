@@ -1,4 +1,4 @@
-﻿using Domain.Entities;
+using Domain.Entities;
 
 namespace Application.Interfaces.Repositories;
 
@@ -37,6 +37,16 @@ public interface IAnalysisRepository
         int analysisId,
         Guid executionToken,
         IReadOnlyList<AnalysisResult> results,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Атомарно переводит анализ в статус Failed с сохранением причины ошибки,
+    /// только если текущий статус Running и совпадает ExecutionToken.
+    /// </summary>
+    Task<bool> FailAsync(
+        int analysisId,
+        Guid executionToken,
+        string? errorMessage,
         CancellationToken cancellationToken = default);
 
     /// <summary>

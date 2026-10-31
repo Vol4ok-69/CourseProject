@@ -1,4 +1,4 @@
-﻿using Api.BackgroundServices;
+using Api.BackgroundServices;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Application.Services;
@@ -120,7 +120,7 @@ public sealed class AnalysisBackgroundServiceTests
 
         // Первая задача падает с ошибкой
         analysisRepo.Setup(x => x.GetByIdAsync(201, It.IsAny<CancellationToken>())).ReturnsAsync(failingTask);
-        analysisRepo.Setup(x => x.FailAsync(201, token1, It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(201, token1, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Callback(() => task1FailedTcs.TrySetResult(true))
             .ReturnsAsync(true);
         sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), "h1", 201, It.IsAny<CancellationToken>()))
@@ -155,7 +155,7 @@ public sealed class AnalysisBackgroundServiceTests
         await bgService.StopAsync(CancellationToken.None);
 
         // Убеждаемся, что ошибка на первой задаче не остановила обработку второй задачи
-        analysisRepo.Verify(x => x.FailAsync(201, token1, It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(201, token1, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         analysisRepo.Verify(x => x.CompleteAsync(202, token2, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

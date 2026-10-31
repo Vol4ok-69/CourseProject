@@ -1,4 +1,4 @@
-﻿using Application.DTOs;
+using Application.DTOs;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -180,7 +180,6 @@ public class AnalysesController(
         return Ok(MapToDto(analysis));
     }
 
-
     private static AnalysisDto MapToDto(Domain.Entities.Analysis analysis)
     {
         return new AnalysisDto
@@ -191,6 +190,7 @@ public class AnalysesController(
             CreatedAt = analysis.CreatedAt,
             StartedAt = analysis.StartedAt,
             CompletedAt = analysis.CompletedAt,
+            ErrorMessage = analysis.ErrorMessage,
             Results = [.. analysis.Results
                 .Select(result => new AnalysisResultDto
                 {

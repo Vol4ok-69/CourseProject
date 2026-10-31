@@ -1,7 +1,9 @@
-﻿using Application.DTOs;
+using Api.Common;
+using Application.DTOs;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace Api.Controllers;
@@ -65,6 +67,7 @@ public class CommitsController(CommitService commitService, ProjectService proje
 
         return Ok(commitDtos);
     }
+
     /// <summary>
     /// Возвращает конкретный коммит проекта.
     /// </summary>
@@ -120,6 +123,7 @@ public class CommitsController(CommitService commitService, ProjectService proje
 
         return Ok(commitDto);
     }
+
     /// <summary>
     /// Создаёт коммит в проекте.
     /// </summary>
@@ -133,6 +137,7 @@ public class CommitsController(CommitService commitService, ProjectService proje
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<CommitDto>> Create(
         int projectId,
         CreateCommitDto dto,
@@ -186,7 +191,29 @@ public class CommitsController(CommitService commitService, ProjectService proje
         }
         catch (InvalidOperationException exception)
         {
-            return BadRequest(new { message = exception.Message });
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.CommitAlreadyExists);
         }
+        catch (DbUpdateException exception) when (IsCommitUniqueConstraintViolation(exception))
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                "Коммит с таким хэшем уже существует в проекте.",
+                ApiErrorCodes.CommitAlreadyExists);
+        }
+    }
+
+    private static bool IsCommitUniqueConstraintViolation(DbUpdateException exception)
+    {
+        return exception.InnerException is Npgsql.PostgresException postgresException &&
+               postgresException.SqlState == "23505" &&
+               (postgresException.ConstraintName == "IX_Commits_ProjectId_CommitHash" ||
+                postgresException.ConstraintName?.Contains("Commits_ProjectId_CommitHash", StringComparison.OrdinalIgnoreCase) == true);
     }
 }

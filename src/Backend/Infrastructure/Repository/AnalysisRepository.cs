@@ -1,4 +1,4 @@
-﻿using Application.Interfaces.Repositories;
+using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Domain.Enums;
 using Infrastructure.Data;
@@ -216,6 +216,7 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
     public async Task<bool> FailAsync(
         int analysisId,
         Guid executionToken,
+        string? errorMessage,
         CancellationToken cancellationToken = default)
     {
         var now = DateTime.UtcNow;
@@ -227,7 +228,8 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
             .ExecuteUpdateAsync(setter => setter
                 .SetProperty(a => a.Status, AnalysisStatus.Failed)
                 .SetProperty(a => a.CompletedAt, now)
-                .SetProperty(a => a.LeaseExpiration, (DateTime?)null),
+                .SetProperty(a => a.LeaseExpiration, (DateTime?)null)
+                .SetProperty(a => a.ErrorMessage, errorMessage),
                 cancellationToken);
 
         if (affected == 0)
@@ -241,8 +243,17 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
             local.Status = AnalysisStatus.Failed;
             local.CompletedAt = now;
             local.LeaseExpiration = null;
+            local.ErrorMessage = errorMessage;
         }
 
         return true;
+    }
+
+    public Task<bool> FailAsync(
+        int analysisId,
+        Guid executionToken,
+        CancellationToken cancellationToken = default)
+    {
+        return FailAsync(analysisId, executionToken, null, cancellationToken);
     }
 }

@@ -1,8 +1,9 @@
-﻿using Application.Analyzers;
+using Application.Analyzers;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Domain.Enums;
+using System.Text.RegularExpressions;
 
 namespace Application.Services;
 
@@ -29,7 +30,8 @@ public class AnalysisService(
             StartedAt = null,
             CompletedAt = null,
             LeaseExpiration = null,
-            ExecutionToken = null
+            ExecutionToken = null,
+            ErrorMessage = null
         };
 
         await analysisRepository.AddAsync(analysis, cancellationToken);
@@ -151,7 +153,7 @@ public class AnalysisService(
             // Потеря или истечение аренды: не перезаписываем чужую задачу
             return false;
         }
-        catch
+        catch (Exception ex)
         {
             leaseCts.Cancel();
             try { await leaseRenewalTask; } catch { }
@@ -159,7 +161,8 @@ public class AnalysisService(
             // Ошибка подготовки коммита/проекта, скачивания или анализа:
             // помечаем задачу как неудачную с защитой по ExecutionToken.
             // Если владение уже утрачено, FailAsync вернёт false.
-            var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, CancellationToken.None);
+            var errorMessage = SanitizeErrorMessage(ex);
+            var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, errorMessage, CancellationToken.None);
             if (!failed)
             {
                 ownershipLost = true;
@@ -234,7 +237,8 @@ public class AnalysisService(
             CommitId = commitId,
             Status = AnalysisStatus.Running,
             CreatedAt = DateTime.UtcNow,
-            StartedAt = DateTime.UtcNow
+            StartedAt = DateTime.UtcNow,
+            ErrorMessage = null
         };
 
         await analysisRepository.AddAsync(analysis, cancellationToken);
@@ -281,10 +285,11 @@ public class AnalysisService(
 
             return analysis;
         }
-        catch
+        catch (Exception ex)
         {
             analysis.Status = AnalysisStatus.Failed;
             analysis.CompletedAt = DateTime.UtcNow;
+            analysis.ErrorMessage = SanitizeErrorMessage(ex);
 
             await analysisRepository.UpdateAsync(analysis, CancellationToken.None);
 
@@ -313,5 +318,139 @@ public class AnalysisService(
         CancellationToken cancellationToken = default)
     {
         return await analysisRepository.GetByCommitIdAsync(commitId, cancellationToken);
+    }
+
+    public static string SanitizeErrorMessage(Exception exception)
+    {
+        if (exception is null)
+        {
+            return "Во время выполнения анализа произошла неизвестная ошибка.";
+        }
+
+        // Если это системное исключение с техническими деталями среды исполнения,
+        // сразу заменяем на безопасное общее сообщение.
+        if (exception is NullReferenceException or IndexOutOfRangeException or ArgumentOutOfRangeException or AccessViolationException)
+        {
+            return "Во время выполнения анализа произошла непредвиденная ошибка.";
+        }
+
+        // Проверяем всю цепочку исключений на наличие конфиденциальных данных и технических параметров
+        var sensitivePatterns = new[]
+        {
+            "password", "pwd", "secret", "token", "bearer", "authorization",
+            "connectionstring", "host=", "server=", "database=", "user id=",
+            "username=", "port=", "ssl mode=", "stack trace", "at System.",
+            "exception:", "stacktrace", "credentials", "apikey", "api_key",
+            "private_key", "localhost", "127.0.0.1"
+        };
+
+        var currentEx = exception;
+        while (currentEx != null)
+        {
+            var rawMsg = currentEx.Message;
+            if (!string.IsNullOrEmpty(rawMsg))
+            {
+                var msg = StripStackTrace(rawMsg);
+                foreach (var pattern in sensitivePatterns)
+                {
+                    if (msg.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return "Во время выполнения анализа произошла внутренняя ошибка.";
+                    }
+                }
+
+                // Проверка на внутренние приватные IP-адреса (10.x.x.x, 192.168.x.x, 172.16-31.x.x)
+                if (Regex.IsMatch(msg, @"\b(?:10\.\d{1,3}|192\.168\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1]))\.\d{1,3}\b"))
+                {
+                    return "Во время выполнения анализа произошла внутренняя ошибка.";
+                }
+            }
+
+            if (currentEx is AggregateException agg && agg.InnerExceptions.Count > 0)
+            {
+                foreach (var inner in agg.InnerExceptions)
+                {
+                    var innerRaw = inner.Message;
+                    if (!string.IsNullOrEmpty(innerRaw))
+                    {
+                        var innerMsg = StripStackTrace(innerRaw);
+                        foreach (var pattern in sensitivePatterns)
+                        {
+                            if (innerMsg.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                            {
+                                return "Во время выполнения анализа произошла внутренняя ошибка.";
+                            }
+                        }
+                    }
+                }
+            }
+
+            currentEx = currentEx.InnerException;
+        }
+
+        // Извлекаем наиболее информативное сообщение (раскрываем AggregateException)
+        var targetException = exception;
+        if (targetException is AggregateException aggregate && aggregate.InnerExceptions.Count > 0)
+        {
+            targetException = aggregate.Flatten().InnerExceptions[0];
+        }
+
+        var message = targetException.Message?.Trim();
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return "Во время выполнения анализа произошла непредвиденная ошибка.";
+        }
+
+        // Если в сообщении присутствует стек вызовов, отсекаем его
+        message = StripStackTrace(message);
+
+        // Маскирование абсолютных путей файловой системы, чтобы не раскрывать структуру сервера и имена учетных записей
+        // Windows пути с диском: C:\Users\user\...\file.ext -> file.ext или [путь]
+        message = Regex.Replace(message, @"[A-Za-z]:\\[^:\r\n\t()]+?\\([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)", "$1");
+        message = Regex.Replace(message, @"[A-Za-z]:\\[^:\r\n\t()]+", "[путь]");
+
+        // Unix пути: /home/user/.../file.ext -> file.ext или [путь]
+        message = Regex.Replace(message, @"/(?:Users|home|var|tmp|etc|opt|usr|app|srv|root)/[^:\r\n\t()]+?/([a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)", "$1");
+        message = Regex.Replace(message, @"/(?:Users|home|var|tmp|etc|opt|usr|app|srv|root)/[^:\r\n\t()]+", "[путь]");
+
+        // UNC пути: \\server\share\... -> [путь]
+        message = Regex.Replace(message, @"\\\\[^:\r\n\t()]+", "[путь]");
+
+        // Ограничиваем длину сообщения для безопасности
+        if (message.Length > 500)
+        {
+            message = message[..500];
+        }
+
+        return message;
+    }
+
+    private static string StripStackTrace(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return message;
+        }
+
+        var stackTraceIndex = message.IndexOf("\n   at ", StringComparison.OrdinalIgnoreCase);
+        if (stackTraceIndex < 0)
+        {
+            stackTraceIndex = message.IndexOf("\r\n   at ", StringComparison.OrdinalIgnoreCase);
+        }
+        if (stackTraceIndex < 0)
+        {
+            stackTraceIndex = message.IndexOf("\n   в ", StringComparison.OrdinalIgnoreCase);
+        }
+        if (stackTraceIndex < 0)
+        {
+            stackTraceIndex = message.IndexOf("\r\n   в ", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (stackTraceIndex >= 0)
+        {
+            return message[..stackTraceIndex].Trim();
+        }
+
+        return message;
     }
 }

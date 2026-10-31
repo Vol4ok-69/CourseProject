@@ -1,7 +1,10 @@
-﻿using Domain.Enums;
+using Domain.Enums;
 
 namespace Domain.Entities;
 
+/// <summary>
+/// Сущность задачи анализа коммита в очереди задач.
+/// </summary>
 public class Analysis
 {
     public int Id { get; set; }
@@ -19,6 +22,11 @@ public class Analysis
     public DateTime? LeaseExpiration { get; set; }
 
     public Guid? ExecutionToken { get; set; }
+
+    /// <summary>
+    /// Сообщение об ошибке при сбое выполнения анализа. Равно null при успешном завершении.
+    /// </summary>
+    public string? ErrorMessage { get; set; }
 
     public Commit Commit { get; set; } = null!;
 

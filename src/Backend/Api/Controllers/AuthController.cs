@@ -1,7 +1,9 @@
+using Api.Common;
 using Application.DTOs;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace Api.Controllers;
@@ -22,7 +24,7 @@ public class AuthController(AuthService authService, UserService userService) : 
     /// <returns>Токен доступа созданного пользователя.</returns>
     [HttpPost("register")]
     [ProducesResponseType(typeof(AuthResponseDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<AuthResponseDto>> Register(RegisterDto dto, CancellationToken cancellationToken)
     {
         try
@@ -33,7 +35,21 @@ public class AuthController(AuthService authService, UserService userService) : 
         }
         catch (InvalidOperationException exception)
         {
-            return BadRequest(new { message = exception.Message });
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.UsernameAlreadyExists);
+        }
+        catch (DbUpdateException exception) when (IsUsernameUniqueConstraintViolation(exception))
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                "Пользователь с таким именем уже существует.",
+                ApiErrorCodes.UsernameAlreadyExists);
         }
     }
 
@@ -52,7 +68,12 @@ public class AuthController(AuthService authService, UserService userService) : 
 
         if (response is null)
         {
-            return Unauthorized(new { message = "Неверное имя пользователя или пароль." });
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status401Unauthorized,
+                "Ошибка аутентификации",
+                "Неверное имя пользователя или пароль.",
+                ApiErrorCodes.InvalidCredentials);
         }
 
         return Ok(response);
@@ -125,7 +146,21 @@ public class AuthController(AuthService authService, UserService userService) : 
         }
         catch (InvalidOperationException exception)
         {
-            return Conflict(exception.Message);
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.UsernameAlreadyExists);
+        }
+        catch (DbUpdateException exception) when (IsUsernameUniqueConstraintViolation(exception))
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                "Пользователь с таким именем уже существует.",
+                ApiErrorCodes.UsernameAlreadyExists);
         }
     }
 
@@ -159,7 +194,20 @@ public class AuthController(AuthService authService, UserService userService) : 
         }
         catch (InvalidOperationException exception)
         {
-            return BadRequest(exception.Message);
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Некорректный запрос",
+                exception.Message,
+                ApiErrorCodes.InvalidPassword);
         }
+    }
+
+    private static bool IsUsernameUniqueConstraintViolation(DbUpdateException exception)
+    {
+        return exception.InnerException is Npgsql.PostgresException postgresException &&
+               postgresException.SqlState == "23505" &&
+               (postgresException.ConstraintName == "IX_Users_Username" ||
+                postgresException.ConstraintName?.Contains("Users_Username", StringComparison.OrdinalIgnoreCase) == true);
     }
 }

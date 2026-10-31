@@ -1,4 +1,4 @@
-﻿using Domain.Entities;
+using Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Npgsql.EntityFrameworkCore.PostgreSQL;
@@ -31,6 +31,9 @@ public class AnalysisConfiguration : IEntityTypeConfiguration<Analysis>
             .IsRequired(false);
 
         builder.Property(analysis => analysis.ExecutionToken)
+            .IsRequired(false);
+
+        builder.Property(analysis => analysis.ErrorMessage)
             .IsRequired(false);
 
         builder.HasOne(analysis => analysis.Commit)

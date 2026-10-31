@@ -282,6 +282,11 @@ function Test-Authentication {
         }
 
     Assert-Status $invalidLogin 401 "Invalid credentials return 401 Unauthorized"
+    $invalidLoginObj = Get-Json $invalidLogin
+    if ($invalidLoginObj.code -ne "INVALID_CREDENTIALS") {
+        throw "Expected Problem Details error code INVALID_CREDENTIALS, got: $($invalidLoginObj.code)"
+    }
+    Write-TestResult "Invalid login returns RFC 9457 Problem Details with INVALID_CREDENTIALS" $true
 
     $adminUsersResponse = Invoke-Api `
         -Method "GET" `
@@ -316,7 +321,12 @@ function Test-Authentication {
             Password = "AnotherPassword123!"
         }
 
-    Assert-Status $dupRegister 400 "Duplicate username registration rejected (400)"
+    Assert-Status $dupRegister 409 "Duplicate username registration rejected (409 Conflict)"
+    $dupRegisterObj = Get-Json $dupRegister
+    if ($dupRegisterObj.code -ne "USERNAME_ALREADY_EXISTS") {
+        throw "Expected Problem Details error code USERNAME_ALREADY_EXISTS, got: $($dupRegisterObj.code)"
+    }
+    Write-TestResult "Duplicate registration returns RFC 9457 Problem Details with USERNAME_ALREADY_EXISTS" $true
 }
 
 
@@ -356,6 +366,11 @@ function Test-UserManagement {
         -Uri "/api/auth/me"
 
     Assert-Status $unauthMe 401 "Unauthenticated request to /api/auth/me returns 401"
+    $unauthMeObj = Get-Json $unauthMe
+    if ($unauthMeObj.code -ne "UNAUTHORIZED") {
+        throw "Expected Problem Details error code UNAUTHORIZED, got: $($unauthMeObj.code)"
+    }
+    Write-TestResult "Unauthenticated request returns RFC 9457 Problem Details with UNAUTHORIZED" $true
 
     $getUser = Invoke-Api `
         -Method "GET" `
@@ -396,6 +411,11 @@ function Test-UserManagement {
         -Token $script:User1Token
 
     Assert-Status $userAccessAdminUsers 403 "Regular user cannot access admin users list (403)"
+    $forbiddenObj = Get-Json $userAccessAdminUsers
+    if ($forbiddenObj.code -ne "FORBIDDEN") {
+        throw "Expected Problem Details error code FORBIDDEN, got: $($forbiddenObj.code)"
+    }
+    Write-TestResult "Forbidden request returns RFC 9457 Problem Details with FORBIDDEN" $true
 
     $userChangeRole = Invoke-Api `
         -Method "PUT" `
@@ -595,6 +615,11 @@ function Test-Projects {
         }
 
     Assert-Status $dupCreateResponse 409 "User 1 cannot create duplicate project with same name (409 Conflict)"
+    $dupCreateObj = Get-Json $dupCreateResponse
+    if ($dupCreateObj.code -ne "PROJECT_NAME_DUPLICATE") {
+        throw "Expected Problem Details error code PROJECT_NAME_DUPLICATE, got: $($dupCreateObj.code)"
+    }
+    Write-TestResult "Duplicate project creation returns RFC 9457 Problem Details with PROJECT_NAME_DUPLICATE" $true
 
     # Check 2: User 1 creates second project with different name
     $secondProjResponse = Invoke-Api `
@@ -621,6 +646,11 @@ function Test-Projects {
         }
 
     Assert-Status $dupUpdateResponse 409 "User 1 cannot update project to duplicate name of own project (409 Conflict)"
+    $dupUpdateObj = Get-Json $dupUpdateResponse
+    if ($dupUpdateObj.code -ne "PROJECT_NAME_DUPLICATE") {
+        throw "Expected Problem Details error code PROJECT_NAME_DUPLICATE, got: $($dupUpdateObj.code)"
+    }
+    Write-TestResult "Duplicate project rename returns RFC 9457 Problem Details with PROJECT_NAME_DUPLICATE" $true
 
     # Check 4: User 2 can create project with same name under different owner (201 Created)
     $u2ProjResponse = Invoke-Api `
@@ -677,7 +707,12 @@ function Test-Commits {
             CommitDate = (Get-Date).ToUniversalTime().ToString("o")
         }
 
-    Assert-Status $duplicateCommit 400 "Duplicate commit in same project rejected (400)"
+    Assert-Status $duplicateCommit 409 "Duplicate commit in same project rejected (409 Conflict)"
+    $dupCommitObj = Get-Json $duplicateCommit
+    if ($dupCommitObj.code -ne "COMMIT_ALREADY_EXISTS") {
+        throw "Expected Problem Details error code COMMIT_ALREADY_EXISTS, got: $($dupCommitObj.code)"
+    }
+    Write-TestResult "Duplicate commit returns RFC 9457 Problem Details with COMMIT_ALREADY_EXISTS" $true
 
     $getCommitsResponse = Invoke-Api `
         -Method "GET" `
@@ -766,8 +801,9 @@ function Test-Analyses {
 
     $script:TestAnalysisId = [int]$initialAnalysis.id
 
-    if ($initialAnalysis.status -ne 0 -and $initialAnalysis.status -ne 1) {
-        throw "Expected initial status Pending (0) or Running (1), got $($initialAnalysis.status)"
+    $statusStr = [string]$initialAnalysis.status
+    if ($statusStr -ne "Pending" -and $statusStr -ne "Running" -and $statusStr -ne "0" -and $statusStr -ne "1") {
+        throw "Expected initial status Pending or Running, got $($initialAnalysis.status)"
     }
 
     Write-TestResult "Initial analysis status is Pending or Running (Status: $($initialAnalysis.status))" $true
@@ -776,7 +812,7 @@ function Test-Analyses {
 
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $finalAnalysis = $null
-    $lastStatus = -1
+    $lastStatus = ""
 
     while ($stopwatch.Elapsed.TotalSeconds -lt $AnalysisTimeoutSec) {
         Start-Sleep -Seconds $AnalysisPollIntervalSec
@@ -791,15 +827,15 @@ function Test-Analyses {
         }
 
         $analysis = Get-Json $pollResponse
-        $lastStatus = [int]$analysis.status
+        $lastStatus = [string]$analysis.status
 
         Write-Host " - Elapsed: $([int]$stopwatch.Elapsed.TotalSeconds)s | Status: $lastStatus" -ForegroundColor DarkGray
 
-        if ($lastStatus -eq 2 -or $lastStatus -eq 3) {
+        if ($lastStatus -eq "Completed" -or $lastStatus -eq "2" -or $lastStatus -eq "Failed" -or $lastStatus -eq "3") {
             $finalAnalysis = $analysis
             break
         }
-        elseif ($lastStatus -eq 0 -or $lastStatus -eq 1) {
+        elseif ($lastStatus -eq "Pending" -or $lastStatus -eq "0" -or $lastStatus -eq "Running" -or $lastStatus -eq "1") {
             continue
         }
         else {
@@ -808,8 +844,8 @@ function Test-Analyses {
     }
     $stopwatch.Stop()
 
-    if ($lastStatus -eq 2) {
-        Write-TestResult "Background analysis completed successfully (Status 2)" $true
+    if ($lastStatus -eq "Completed" -or $lastStatus -eq "2") {
+        Write-TestResult "Background analysis completed successfully (Status: $lastStatus)" $true
 
         if ($null -eq $finalAnalysis.startedAt) {
             throw "Completed analysis has missing startedAt timestamp."
@@ -826,7 +862,7 @@ function Test-Analyses {
         }
         Write-TestResult "Completed analysis contains results collection (Findings: $($finalAnalysis.results.Count))" $true
     }
-    elseif ($lastStatus -eq 3) {
+    elseif ($lastStatus -eq "Failed" -or $lastStatus -eq "3") {
         $diagMsg = if ($finalAnalysis.errorMessage) { $finalAnalysis.errorMessage } else { "No detailed error message" }
         Write-TestResult "Background analysis failed" $false "Status 3 (Failed). Diagnosis: $diagMsg"
         throw "Analysis $script:TestAnalysisId failed during background execution. $diagMsg"
@@ -893,6 +929,11 @@ function Test-CrossUserAuthorization {
         -Token $script:User1Token
 
     Assert-Status $nonexistentProject 404 "Nonexistent project returns 404"
+    $nonexistentProjectObj = Get-Json $nonexistentProject
+    if ($nonexistentProjectObj.code -ne "PROJECT_NOT_FOUND") {
+        throw "Expected Problem Details error code PROJECT_NOT_FOUND, got: $($nonexistentProjectObj.code)"
+    }
+    Write-TestResult "Nonexistent project returns RFC 9457 Problem Details" $true
 
     $nonexistentCommit = Invoke-Api `
         -Method "GET" `
@@ -900,6 +941,11 @@ function Test-CrossUserAuthorization {
         -Token $script:User1Token
 
     Assert-Status $nonexistentCommit 404 "Nonexistent commit returns 404"
+    $nonexistentCommitObj = Get-Json $nonexistentCommit
+    if ($nonexistentCommitObj.code -ne "COMMIT_NOT_FOUND") {
+        throw "Expected Problem Details error code COMMIT_NOT_FOUND, got: $($nonexistentCommitObj.code)"
+    }
+    Write-TestResult "Nonexistent commit returns RFC 9457 Problem Details" $true
 
     $u2GetProject = Invoke-Api `
         -Method "GET" `

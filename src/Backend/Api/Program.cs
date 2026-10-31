@@ -1,4 +1,5 @@
 using Api.BackgroundServices;
+using Api.Common;
 using Application.Analyzers;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
@@ -12,12 +13,15 @@ using Infrastructure.GitHub;
 using Infrastructure.Repository;
 using Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -43,7 +47,6 @@ builder.Services.AddScoped<IDatabaseMetadataProvider, EfCoreMetadataProvider>();
 builder.Services.AddScoped<IDatabaseProjectResolver, EfCoreDatabaseProjectResolver>();
 builder.Services.AddScoped<IEfCoreModelInspector, EfCoreModelInspector>();
 builder.Services.AddScoped<EfCoreMetadataMapper>();
-
 
 var gitHubToken = builder.Configuration["GitHub:Token"]
     ?? throw new InvalidOperationException("GitHub token is not configured.");
@@ -105,13 +108,82 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         {
             Console.WriteLine($"JWT VALIDATED FOR: {context.Principal?.Identity?.Name}");
             return Task.CompletedTask;
+        },
+        OnChallenge = async context =>
+        {
+            if (context.Response.HasStarted)
+            {
+                return;
+            }
+
+            context.HandleResponse();
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.ContentType = "application/problem+json";
+
+            var traceId = context.HttpContext.TraceIdentifier ?? Guid.NewGuid().ToString();
+            var instance = context.Request.Path.Value ?? string.Empty;
+
+            var problemDetails = new ProblemDetails
+            {
+                Status = StatusCodes.Status401Unauthorized,
+                Title = "Требуется аутентификация",
+                Detail = "Для доступа к ресурсу необходимо предоставить действительный токен авторизации.",
+                Instance = instance,
+                Type = "https://httpstatuses.com/401"
+            };
+            problemDetails.Extensions["code"] = ApiErrorCodes.Unauthorized;
+            problemDetails.Extensions["traceId"] = traceId;
+
+            await context.Response.WriteAsJsonAsync(
+                problemDetails,
+                options: (JsonSerializerOptions?)null,
+                contentType: "application/problem+json",
+                cancellationToken: context.HttpContext.RequestAborted);
+        },
+        OnForbidden = async context =>
+        {
+            if (context.Response.HasStarted)
+            {
+                return;
+            }
+
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            context.Response.ContentType = "application/problem+json";
+
+            var traceId = context.HttpContext.TraceIdentifier ?? Guid.NewGuid().ToString();
+            var instance = context.Request.Path.Value ?? string.Empty;
+
+            var problemDetails = new ProblemDetails
+            {
+                Status = StatusCodes.Status403Forbidden,
+                Title = "Доступ запрещен",
+                Detail = "У вас недостаточно прав для выполнения данной операции.",
+                Instance = instance,
+                Type = "https://httpstatuses.com/403"
+            };
+            problemDetails.Extensions["code"] = ApiErrorCodes.Forbidden;
+            problemDetails.Extensions["traceId"] = traceId;
+
+            await context.Response.WriteAsJsonAsync(
+                problemDetails,
+                options: (JsonSerializerOptions?)null,
+                contentType: "application/problem+json",
+                cancellationToken: context.HttpContext.RequestAborted);
         }
     };
 });
 
 builder.Services.AddAuthorization();
 
-builder.Services.AddControllers();
+builder.Services.AddProblemDetails(ApiProblemDetails.ConfigureProblemDetails);
+
+builder.Services.Configure<ApiBehaviorOptions>(ApiProblemDetails.ConfigureInvalidModelStateResponse);
+
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    });
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
@@ -138,6 +210,9 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var app = builder.Build();
+
+app.UseExceptionHandler();
+app.UseStatusCodePages();
 
 if (app.Environment.IsDevelopment())
 {

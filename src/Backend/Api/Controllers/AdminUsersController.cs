@@ -1,10 +1,13 @@
-﻿using Application.DTOs;
+using Api.Common;
+using Application.DTOs;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace Api.Controllers;
+
 /// <summary>
 /// Предоставляет операции для управления пользователями в административной панели.
 /// </summary>
@@ -45,6 +48,7 @@ public class AdminUsersController(UserService userService) : ControllerBase
 
         return Ok(MapToDto(user));
     }
+
     /// <summary>
     /// Обновляет информацию о пользователе по его идентификатору.
     /// </summary>
@@ -71,9 +75,24 @@ public class AdminUsersController(UserService userService) : ControllerBase
         }
         catch (InvalidOperationException exception)
         {
-            return Conflict(exception.Message);
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.UsernameAlreadyExists);
+        }
+        catch (DbUpdateException exception) when (IsUsernameUniqueConstraintViolation(exception))
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                "Пользователь с таким именем уже существует.",
+                ApiErrorCodes.UsernameAlreadyExists);
         }
     }
+
     /// <summary>
     /// Обновляет роль пользователя по его идентификатору.
     /// </summary>
@@ -110,9 +129,15 @@ public class AdminUsersController(UserService userService) : ControllerBase
         }
         catch (InvalidOperationException exception)
         {
-            return NotFound(exception.Message);
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status404NotFound,
+                "Ресурс не найден",
+                exception.Message,
+                ApiErrorCodes.RoleNotFound);
         }
     }
+
     /// <summary>
     /// Удаляет пользователя по его идентификатору.
     /// </summary>
@@ -145,7 +170,12 @@ public class AdminUsersController(UserService userService) : ControllerBase
         }
         catch (InvalidOperationException exception)
         {
-            return Conflict(exception.Message);
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.UserHasProjects);
         }
     }
 
@@ -165,5 +195,13 @@ public class AdminUsersController(UserService userService) : ControllerBase
             RoleId = user.RoleId,
             RoleName = user.Role.Name
         };
+    }
+
+    private static bool IsUsernameUniqueConstraintViolation(DbUpdateException exception)
+    {
+        return exception.InnerException is Npgsql.PostgresException postgresException &&
+               postgresException.SqlState == "23505" &&
+               (postgresException.ConstraintName == "IX_Users_Username" ||
+                postgresException.ConstraintName?.Contains("Users_Username", StringComparison.OrdinalIgnoreCase) == true);
     }
 }

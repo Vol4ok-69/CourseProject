@@ -1,3 +1,4 @@
+using Api.Common;
 using Application.DTOs;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -177,11 +178,21 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
         }
         catch (InvalidOperationException exception)
         {
-            return Conflict(new { message = exception.Message });
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.ProjectNameDuplicate);
         }
         catch (DbUpdateException exception) when (IsProjectUniqueConstraintViolation(exception))
         {
-            return Conflict(new { message = "Проект с таким именем уже существует." });
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                "Проект с таким именем уже существует.",
+                ApiErrorCodes.ProjectNameDuplicate);
         }
     }
 
@@ -243,11 +254,21 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
         }
         catch (InvalidOperationException exception)
         {
-            return Conflict(new { message = exception.Message });
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.ProjectNameDuplicate);
         }
         catch (DbUpdateException exception) when (IsProjectUniqueConstraintViolation(exception))
         {
-            return Conflict(new { message = "Проект с таким именем уже существует." });
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                "Проект с таким именем уже существует.",
+                ApiErrorCodes.ProjectNameDuplicate);
         }
     }
 

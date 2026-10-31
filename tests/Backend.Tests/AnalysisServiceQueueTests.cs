@@ -151,7 +151,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(51, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(51, token, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.FailAsync(51, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 51, It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\TempRepo");
@@ -164,7 +164,7 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(51, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(51, token, It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(51, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.CleanupAsync(51, It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -375,7 +375,7 @@ public sealed class AnalysisServiceQueueTests
             service.ExecuteAnalysisAsync(88, token, shutdownCts.Token));
 
         // Гарантируем, что задача НЕ помечена как сбойная (Failed)
-        analysisRepo.Verify(x => x.FailAsync(88, token, It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(88, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
 
         // Гарантируем, что временные файлы всё равно очищены
         sourceService.Verify(x => x.CleanupAsync(88, It.IsAny<CancellationToken>()), Times.Once);
@@ -446,14 +446,14 @@ public sealed class AnalysisServiceQueueTests
 
         analysisRepo.Setup(x => x.GetByIdAsync(91, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
         commitRepo.Setup(x => x.GetByIdAsync(999, It.IsAny<CancellationToken>())).ReturnsAsync((Commit?)null);
-        analysisRepo.Setup(x => x.FailAsync(91, token, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.FailAsync(91, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object]);
 
         var success = await service.ExecuteAnalysisAsync(91, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(91, token, It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(91, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(91, It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -483,14 +483,14 @@ public sealed class AnalysisServiceQueueTests
 
         analysisRepo.Setup(x => x.GetByIdAsync(92, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
         commitRepo.Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(new Commit { Id = 1, CommitHash = "hash92", Project = null! });
-        analysisRepo.Setup(x => x.FailAsync(92, token, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.FailAsync(92, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object]);
 
         var success = await service.ExecuteAnalysisAsync(92, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(92, token, It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(92, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(92, It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -515,14 +515,14 @@ public sealed class AnalysisServiceQueueTests
 
         analysisRepo.Setup(x => x.GetByIdAsync(93, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
         commitRepo.Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>())).ThrowsAsync(new InvalidOperationException("DB unavailable"));
-        analysisRepo.Setup(x => x.FailAsync(93, token, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.FailAsync(93, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object]);
 
         var success = await service.ExecuteAnalysisAsync(93, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(93, token, It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(93, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(93, It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -575,7 +575,7 @@ public sealed class AnalysisServiceQueueTests
 
         Assert.False(success);
         // Не изменяем задачу чужого воркера
-        analysisRepo.Verify(x => x.FailAsync(94, token, It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(94, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
         // Не удаляем временные файлы, так как ими может пользоваться новый воркер
         sourceService.Verify(x => x.CleanupAsync(94, It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -620,7 +620,7 @@ public sealed class AnalysisServiceQueueTests
         Assert.False(success);
         // Не удаляем временные файлы, так как ими уже владеет другой воркер
         sourceService.Verify(x => x.CleanupAsync(95, It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.FailAsync(95, token, It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(95, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -653,7 +653,7 @@ public sealed class AnalysisServiceQueueTests
             .ThrowsAsync(new InvalidOperationException("Analysis error"));
 
         // Задача перехвачена в БД другим воркером, поэтому FailAsync возвращает false
-        analysisRepo.Setup(x => x.FailAsync(96, token, It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(96, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object]);
@@ -694,7 +694,7 @@ public sealed class AnalysisServiceQueueTests
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Fatal analysis error"));
 
-        analysisRepo.Setup(x => x.FailAsync(97, token, It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(97, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         // Исключение при очистке
@@ -706,7 +706,7 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(97, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(97, token, It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(97, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.CleanupAsync(97, It.IsAny<CancellationToken>()), Times.Once);
     }
 }
