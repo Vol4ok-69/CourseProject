@@ -3,6 +3,7 @@ using Domain.Entities;
 using Domain.Enums;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 
 namespace Infrastructure.Repository;
@@ -40,6 +41,47 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
     {
         context.Analyses.Update(analysis);
         await context.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<bool> HasActiveAnalysisAsync(int commitId, CancellationToken cancellationToken = default)
+    {
+        return await context.Analyses
+            .AnyAsync(a => a.CommitId == commitId &&
+                           (a.Status == AnalysisStatus.Pending || a.Status == AnalysisStatus.Running),
+                      cancellationToken);
+    }
+
+    public async Task<IAnalysisRepositoryTransaction> BeginEnqueueTransactionAsync(int commitId, CancellationToken cancellationToken = default)
+    {
+        if (context.Database.IsNpgsql())
+        {
+            var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+
+            await context.Database.ExecuteSqlRawAsync(
+                "SELECT pg_advisory_xact_lock(hashtext('analysis_enqueue_' || {0}::text));",
+                new object[] { commitId },
+                cancellationToken);
+
+            return new NpgsqlAnalysisRepositoryTransaction(transaction, context);
+        }
+        else
+        {
+            await _syncLock.WaitAsync(cancellationToken);
+
+            IDbContextTransaction? transaction = null;
+            try
+            {
+                if (context.Database.CurrentTransaction == null && context.Database.IsRelational())
+                {
+                    transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+                }
+            }
+            catch
+            {
+            }
+
+            return new InMemoryAnalysisRepositoryTransaction(_syncLock, transaction, context);
+        }
     }
 
     public async Task<Analysis?> TryAcquireNextPendingOrStaleAsync(
@@ -255,5 +297,96 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
         CancellationToken cancellationToken = default)
     {
         return FailAsync(analysisId, executionToken, null, cancellationToken);
+    }
+
+    private sealed class NpgsqlAnalysisRepositoryTransaction(IDbContextTransaction transaction, AppDbContext context) : IAnalysisRepositoryTransaction
+    {
+        private bool _completed;
+
+        public async Task CommitAsync(CancellationToken cancellationToken = default)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            _completed = true;
+        }
+
+        public async Task RollbackAsync(CancellationToken cancellationToken = default)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            context.ChangeTracker.Clear();
+            _completed = true;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (!_completed)
+            {
+                try
+                {
+                    await transaction.RollbackAsync();
+                    context.ChangeTracker.Clear();
+                }
+                catch
+                {
+                }
+            }
+
+            await transaction.DisposeAsync();
+        }
+    }
+
+    private sealed class InMemoryAnalysisRepositoryTransaction(SemaphoreSlim semaphore, IDbContextTransaction? transaction, AppDbContext context) : IAnalysisRepositoryTransaction
+    {
+        private bool _completed;
+        private int _disposed;
+
+        public async Task CommitAsync(CancellationToken cancellationToken = default)
+        {
+            if (transaction != null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            _completed = true;
+        }
+
+        public async Task RollbackAsync(CancellationToken cancellationToken = default)
+        {
+            if (transaction != null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+            }
+
+            context.ChangeTracker.Clear();
+            _completed = true;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                if (!_completed)
+                {
+                    if (transaction != null)
+                    {
+                        try
+                        {
+                            await transaction.RollbackAsync();
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    context.ChangeTracker.Clear();
+                }
+
+                if (transaction != null)
+                {
+                    await transaction.DisposeAsync();
+                }
+
+                semaphore.Release();
+            }
+        }
     }
 }

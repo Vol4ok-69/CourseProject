@@ -13,6 +13,17 @@ public interface IAnalysisRepository
     Task UpdateAsync(Analysis analysis, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Проверяет, существует ли активная задача анализа (со статусом Pending или Running) для указанного коммита.
+    /// </summary>
+    Task<bool> HasActiveAnalysisAsync(int commitId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Открывает транзакционную область блокировки для конкурентобезопасной постановки анализа в очередь.
+    /// В PostgreSQL использует advisory lock по идентификатору коммита.
+    /// </summary>
+    Task<IAnalysisRepositoryTransaction> BeginEnqueueTransactionAsync(int commitId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Атомарно захватывает следующую ожидающую (Pending) или зависшую (Running с истекшей арендой) задачу.
     /// Переводит её в статус Running, фиксирует StartedAt, новый срок аренды и уникальный ExecutionToken.
     /// </summary>

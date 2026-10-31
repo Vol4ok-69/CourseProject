@@ -1,4 +1,4 @@
-﻿using Application.DTOs;
+using Application.DTOs;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
@@ -43,8 +43,15 @@ public class GitHubSyncService(IGitHubService gitHubService, IProjectRepository 
                 CommitDate = githubCommit.Date.Value
             };
 
-            await commitRepository.AddAsync(commit, cancellationToken);
-            added++;
+            try
+            {
+                await commitRepository.AddAsync(commit, cancellationToken);
+                added++;
+            }
+            catch (Exception ex) when (IsCommitUniqueViolation(ex))
+            {
+                skipped++;
+            }
         }
 
         return new GitHubSyncResultDto
@@ -52,5 +59,23 @@ public class GitHubSyncService(IGitHubService gitHubService, IProjectRepository 
             Added = added,
             Skipped = skipped
         };
+    }
+
+    private static bool IsCommitUniqueViolation(Exception exception)
+    {
+        var current = exception;
+        while (current != null)
+        {
+            if (current.Message.Contains("23505") ||
+                current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("IX_Commits_ProjectId_CommitHash", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            current = current.InnerException;
+        }
+
+        return false;
     }
 }

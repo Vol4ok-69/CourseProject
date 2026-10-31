@@ -205,9 +205,20 @@ public class AuthController(AuthService authService, UserService userService) : 
 
     private static bool IsUsernameUniqueConstraintViolation(DbUpdateException exception)
     {
-        return exception.InnerException is Npgsql.PostgresException postgresException &&
-               postgresException.SqlState == "23505" &&
-               (postgresException.ConstraintName == "IX_Users_Username" ||
-                postgresException.ConstraintName?.Contains("Users_Username", StringComparison.OrdinalIgnoreCase) == true);
+        if (exception.InnerException is Npgsql.PostgresException postgresException)
+        {
+            return postgresException.SqlState == "23505" &&
+                   (postgresException.ConstraintName == "IX_Users_Username" ||
+                    postgresException.ConstraintName?.Contains("Users_Username", StringComparison.OrdinalIgnoreCase) == true);
+        }
+
+        var inner = exception.InnerException;
+        if (inner != null && inner.GetType().Name == "SqliteException")
+        {
+            return inner.Message.Contains("Users.Username", StringComparison.OrdinalIgnoreCase) ||
+                   inner.Message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
     }
 }

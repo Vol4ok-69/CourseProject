@@ -1,4 +1,5 @@
 using Application.Analyzers;
+using Application.Exceptions;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
@@ -22,20 +23,43 @@ public class AnalysisService(
         var commit = await commitRepository.GetByIdAsync(commitId, cancellationToken)
             ?? throw new InvalidOperationException("Коммит не найден.");
 
-        var analysis = new Analysis
+        var transaction = await analysisRepository.BeginEnqueueTransactionAsync(commitId, cancellationToken);
+        try
         {
-            CommitId = commitId,
-            Status = AnalysisStatus.Pending,
-            CreatedAt = DateTime.UtcNow,
-            StartedAt = null,
-            CompletedAt = null,
-            LeaseExpiration = null,
-            ExecutionToken = null,
-            ErrorMessage = null
-        };
+            var hasActive = await analysisRepository.HasActiveAnalysisAsync(commitId, cancellationToken);
+            if (hasActive)
+            {
+                throw new AnalysisAlreadyQueuedException("Анализ для данного коммита уже находится в очереди или выполняется.");
+            }
 
-        await analysisRepository.AddAsync(analysis, cancellationToken);
-        return analysis;
+            var analysis = new Analysis
+            {
+                CommitId = commitId,
+                Status = AnalysisStatus.Pending,
+                CreatedAt = DateTime.UtcNow,
+                StartedAt = null,
+                CompletedAt = null,
+                LeaseExpiration = null,
+                ExecutionToken = null,
+                ErrorMessage = null
+            };
+
+            await analysisRepository.AddAsync(analysis, cancellationToken);
+
+            if (transaction != null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            return analysis;
+        }
+        finally
+        {
+            if (transaction != null)
+            {
+                await transaction.DisposeAsync();
+            }
+        }
     }
 
     /// <summary>

@@ -1,4 +1,6 @@
+using Api.Common;
 using Application.DTOs;
+using Application.Exceptions;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -30,6 +32,7 @@ public class AnalysesController(
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<AnalysisDto>> Create(
         int projectId,
         int commitId,
@@ -63,14 +66,35 @@ public class AnalysesController(
             return NotFound();
         }
 
-        var analysis = await analysisService.EnqueueAsync(
-            commitId,
-            cancellationToken);
+        try
+        {
+            var analysis = await analysisService.EnqueueAsync(
+                commitId,
+                cancellationToken);
 
-        return AcceptedAtAction(
-            nameof(GetById),
-            new { projectId, commitId, analysisId = analysis.Id },
-            MapToDto(analysis));
+            return AcceptedAtAction(
+                nameof(GetById),
+                new { projectId, commitId, analysisId = analysis.Id },
+                MapToDto(analysis));
+        }
+        catch (AnalysisAlreadyQueuedException exception)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.AnalysisAlreadyQueued);
+        }
+        catch (InvalidOperationException exception) when (exception.Message == AnalysisAlreadyQueuedException.DefaultMessage)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.AnalysisAlreadyQueued);
+        }
     }
 
     /// <summary>

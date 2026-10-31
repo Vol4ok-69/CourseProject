@@ -211,9 +211,21 @@ public class CommitsController(CommitService commitService, ProjectService proje
 
     private static bool IsCommitUniqueConstraintViolation(DbUpdateException exception)
     {
-        return exception.InnerException is Npgsql.PostgresException postgresException &&
-               postgresException.SqlState == "23505" &&
-               (postgresException.ConstraintName == "IX_Commits_ProjectId_CommitHash" ||
-                postgresException.ConstraintName?.Contains("Commits_ProjectId_CommitHash", StringComparison.OrdinalIgnoreCase) == true);
+        if (exception.InnerException is Npgsql.PostgresException postgresException)
+        {
+            return postgresException.SqlState == "23505" &&
+                   (postgresException.ConstraintName == "IX_Commits_ProjectId_CommitHash" ||
+                    postgresException.ConstraintName?.Contains("Commits_ProjectId_CommitHash", StringComparison.OrdinalIgnoreCase) == true);
+        }
+
+        var inner = exception.InnerException;
+        if (inner != null && inner.GetType().Name == "SqliteException")
+        {
+            return inner.Message.Contains("Commits.ProjectId", StringComparison.OrdinalIgnoreCase) ||
+                   inner.Message.Contains("Commits.CommitHash", StringComparison.OrdinalIgnoreCase) ||
+                   inner.Message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
     }
 }

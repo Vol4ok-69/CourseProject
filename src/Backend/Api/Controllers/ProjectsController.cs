@@ -1,5 +1,6 @@
 using Api.Common;
 using Application.DTOs;
+using Application.Exceptions;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -323,9 +324,11 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
     /// <returns>Результат синхронизации.</returns>
     [HttpPost("{projectId:int}/github/sync")]
     [ProducesResponseType(typeof(GitHubSyncResultDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status502BadGateway)]
     public async Task<ActionResult<GitHubSyncResultDto>> SyncGitHub(int projectId, CancellationToken cancellationToken)
     {
         var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -349,21 +352,85 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
             return Forbid();
         }
 
-        var result = await gitHubSyncService.SyncAsync(projectId, cancellationToken);
-
-        if (result is null)
+        try
         {
-            return NotFound();
-        }
+            var result = await gitHubSyncService.SyncAsync(projectId, cancellationToken);
 
-        return Ok(result);
+            if (result is null)
+            {
+                return NotFound();
+            }
+
+            return Ok(result);
+        }
+        catch (GitHubIntegrationException exception)
+        {
+            return exception.Kind switch
+            {
+                GitHubErrorKind.InvalidRepoUrl => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status400BadRequest,
+                    "Некорректный запрос",
+                    exception.Message,
+                    ApiErrorCodes.InvalidRepoUrl),
+
+                GitHubErrorKind.RepoNotFound => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status404NotFound,
+                    "Ресурс не найден",
+                    exception.Message,
+                    ApiErrorCodes.GitHubRepoNotFound),
+
+                GitHubErrorKind.RateLimited => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status502BadGateway,
+                    "Ошибка внешнего сервиса",
+                    exception.Message,
+                    ApiErrorCodes.GitHubRateLimited),
+
+                GitHubErrorKind.AccessDenied => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status502BadGateway,
+                    "Ошибка внешнего сервиса",
+                    exception.Message,
+                    ApiErrorCodes.GitHubAccessDenied),
+
+                _ => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status502BadGateway,
+                    "Ошибка внешнего сервиса",
+                    exception.Message,
+                    ApiErrorCodes.GitHubServiceUnavailable)
+            };
+        }
+        catch (ArgumentException exception)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Некорректный запрос",
+                exception.Message,
+                ApiErrorCodes.InvalidRepoUrl);
+        }
     }
 
     private static bool IsProjectUniqueConstraintViolation(DbUpdateException exception)
     {
-        return exception.InnerException is Npgsql.PostgresException postgresException &&
-               postgresException.SqlState == "23505" &&
-               (postgresException.ConstraintName == "IX_Projects_OwnerId_Name" ||
-                postgresException.ConstraintName?.Contains("Projects_OwnerId_Name", StringComparison.OrdinalIgnoreCase) == true);
+        if (exception.InnerException is Npgsql.PostgresException postgresException)
+        {
+            return postgresException.SqlState == "23505" &&
+                   (postgresException.ConstraintName == "IX_Projects_OwnerId_Name" ||
+                    postgresException.ConstraintName?.Contains("Projects_OwnerId_Name", StringComparison.OrdinalIgnoreCase) == true);
+        }
+
+        var inner = exception.InnerException;
+        if (inner != null && inner.GetType().Name == "SqliteException")
+        {
+            return inner.Message.Contains("Projects.OwnerId", StringComparison.OrdinalIgnoreCase) ||
+                   inner.Message.Contains("Projects.Name", StringComparison.OrdinalIgnoreCase) ||
+                   inner.Message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
     }
 }
