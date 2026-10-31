@@ -1,4 +1,4 @@
-﻿using Domain.Entities;
+using Domain.Entities;
 
 namespace Application.Interfaces.Repositories;
 
@@ -11,4 +11,6 @@ public interface IUserRepository
     Task UpdateAsync(User user, CancellationToken cancellationToken = default);
     Task DeleteAsync(User user, CancellationToken cancellationToken = default);
     Task<bool> HasProjectsAsync(int userId, CancellationToken cancellationToken = default);
+    Task<int> CountAdminsAsync(CancellationToken cancellationToken = default);
+    Task<IUserRepositoryTransaction> BeginAdminProtectionTransactionAsync(CancellationToken cancellationToken = default);
 }

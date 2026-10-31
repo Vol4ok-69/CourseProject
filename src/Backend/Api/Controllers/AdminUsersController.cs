@@ -1,5 +1,6 @@
 using Api.Common;
 using Application.DTOs;
+using Application.Exceptions;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -127,6 +128,24 @@ public class AdminUsersController(UserService userService) : ControllerBase
 
             return Ok(MapToDto(user));
         }
+        catch (LastAdminProtectionException exception)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.LastAdminProtected);
+        }
+        catch (InvalidOperationException exception) when (exception.Message == LastAdminProtectionException.DefaultMessage)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.LastAdminProtected);
+        }
         catch (InvalidOperationException exception)
         {
             return ApiProblemDetails.Create(
@@ -167,6 +186,24 @@ public class AdminUsersController(UserService userService) : ControllerBase
             }
 
             return NoContent();
+        }
+        catch (LastAdminProtectionException exception)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.LastAdminProtected);
+        }
+        catch (InvalidOperationException exception) when (exception.Message == LastAdminProtectionException.DefaultMessage)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт данных",
+                exception.Message,
+                ApiErrorCodes.LastAdminProtected);
         }
         catch (InvalidOperationException exception)
         {
