@@ -25,13 +25,33 @@ public class UserRepository(AppDbContext context) : IUserRepository
             .FirstOrDefaultAsync(user => user.Username == username, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<User>> GetAllAsync(CancellationToken cancellationToken = default)
+    public async Task<(IReadOnlyList<User> Items, int TotalCount)> GetAllAsync(
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
     {
-        return await context.Users
-            .AsNoTracking()
+        ArgumentOutOfRangeException.ThrowIfLessThan(page, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+
+        var query = context.Users
+            .AsNoTracking();
+
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        var offset = ((long)page - 1) * pageSize;
+        if (offset >= totalCount || offset > int.MaxValue)
+        {
+            return ([], totalCount);
+        }
+
+        var items = await query
             .Include(user => user.Role)
             .OrderBy(user => user.Id)
+            .Skip((int)offset)
+            .Take(pageSize)
             .ToListAsync(cancellationToken);
+
+        return (items, totalCount);
     }
 
     public async Task AddAsync(User user, CancellationToken cancellationToken = default)

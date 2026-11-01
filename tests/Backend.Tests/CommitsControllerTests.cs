@@ -56,14 +56,17 @@ public sealed class CommitsControllerTests
         };
 
         projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
-        commitRepo.Setup(x => x.GetByProjectIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(commits);
+        commitRepo.Setup(x => x.GetByProjectIdAsync(10, 1, 20, It.IsAny<CancellationToken>())).ReturnsAsync((commits, 2));
 
-        var actionResult = await controller.GetByProjectId(10, CancellationToken.None);
+        var actionResult = await controller.GetByProjectId(10, 1, 20, CancellationToken.None);
 
         var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
-        var dtos = Assert.IsAssignableFrom<IReadOnlyList<CommitDto>>(okResult.Value);
-        Assert.Equal(2, dtos.Count);
-        Assert.Equal("hash1", dtos[0].CommitHash);
+        var pagedResult = Assert.IsType<PagedResultDto<CommitDto>>(okResult.Value);
+        Assert.Equal(2, pagedResult.TotalCount);
+        Assert.Equal(1, pagedResult.Page);
+        Assert.Equal(20, pagedResult.PageSize);
+        Assert.Equal(2, pagedResult.Items.Count);
+        Assert.Equal("hash1", pagedResult.Items[0].CommitHash);
     }
 
     [Fact]
@@ -71,7 +74,7 @@ public sealed class CommitsControllerTests
     {
         var (controller, _, _) = CreateController(userIdClaim: null);
 
-        var actionResult = await controller.GetByProjectId(10, CancellationToken.None);
+        var actionResult = await controller.GetByProjectId(10, 1, 20, CancellationToken.None);
 
         Assert.IsType<UnauthorizedResult>(actionResult.Result);
     }
@@ -83,7 +86,7 @@ public sealed class CommitsControllerTests
 
         projectRepo.Setup(x => x.GetByIdAsync(999, It.IsAny<CancellationToken>())).ReturnsAsync((Project?)null);
 
-        var actionResult = await controller.GetByProjectId(999, CancellationToken.None);
+        var actionResult = await controller.GetByProjectId(999, 1, 20, CancellationToken.None);
 
         Assert.IsType<NotFoundResult>(actionResult.Result);
     }
@@ -96,7 +99,7 @@ public sealed class CommitsControllerTests
         var project = new Project { Id = 10, Name = "P", RepoUrl = "https://github.com/o/r", OwnerId = 1 };
         projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
 
-        var actionResult = await controller.GetByProjectId(10, CancellationToken.None);
+        var actionResult = await controller.GetByProjectId(10, 1, 20, CancellationToken.None);
 
         Assert.IsType<ForbidResult>(actionResult.Result);
     }

@@ -6,7 +6,7 @@ public interface IAnalysisRepository
 {
     Task<Analysis?> GetByIdAsync(int id, CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<Analysis>> GetByCommitIdAsync(int commitId, CancellationToken cancellationToken = default);
+    Task<(IReadOnlyList<Analysis> Items, int TotalCount)> GetByCommitIdAsync(int commitId, int page, int pageSize, CancellationToken cancellationToken = default);
 
     Task AddAsync(Analysis analysis, CancellationToken cancellationToken = default);
 

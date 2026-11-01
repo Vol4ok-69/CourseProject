@@ -193,16 +193,19 @@ public sealed class AnalysesControllerTests
 
         projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
         commitRepo.Setup(x => x.GetByIdAsync(20, It.IsAny<CancellationToken>())).ReturnsAsync(commit);
-        analysisRepo.Setup(x => x.GetByCommitIdAsync(20, It.IsAny<CancellationToken>())).ReturnsAsync(analyses);
+        analysisRepo.Setup(x => x.GetByCommitIdAsync(20, 1, 20, It.IsAny<CancellationToken>())).ReturnsAsync((analyses, 2));
 
-        var actionResult = await controller.GetByCommitId(10, 20, CancellationToken.None);
+        var actionResult = await controller.GetByCommitId(10, 20, 1, 20, CancellationToken.None);
 
         var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
-        var dtos = Assert.IsAssignableFrom<IReadOnlyList<AnalysisDto>>(okResult.Value);
+        var pagedResult = Assert.IsType<PagedResultDto<AnalysisDto>>(okResult.Value);
 
-        Assert.Equal(2, dtos.Count);
-        Assert.Equal(2, dtos[0].Id);
-        Assert.Equal(1, dtos[1].Id);
+        Assert.Equal(2, pagedResult.TotalCount);
+        Assert.Equal(1, pagedResult.Page);
+        Assert.Equal(20, pagedResult.PageSize);
+        Assert.Equal(2, pagedResult.Items.Count);
+        Assert.Equal(2, pagedResult.Items[0].Id);
+        Assert.Equal(1, pagedResult.Items[1].Id);
     }
 
     [Fact]
@@ -256,7 +259,7 @@ public sealed class AnalysesControllerTests
     {
         var (controller, _, _, _) = CreateController(userId: null);
 
-        var actionResult = await controller.GetByCommitId(10, 20, CancellationToken.None);
+        var actionResult = await controller.GetByCommitId(10, 20, 1, 20, CancellationToken.None);
 
         Assert.IsType<UnauthorizedResult>(actionResult.Result);
     }
@@ -269,7 +272,7 @@ public sealed class AnalysesControllerTests
         var project = new Project { Id = 10, Name = "P", RepoUrl = "url", OwnerId = 1 };
         projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
 
-        var actionResult = await controller.GetByCommitId(10, 20, CancellationToken.None);
+        var actionResult = await controller.GetByCommitId(10, 20, 1, 20, CancellationToken.None);
 
         Assert.IsType<ForbidResult>(actionResult.Result);
     }
@@ -280,7 +283,7 @@ public sealed class AnalysesControllerTests
         var (controller, _, _, projectRepo) = CreateController(userId: 1, isAdmin: false);
         projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync((Project?)null);
 
-        var actionResult = await controller.GetByCommitId(10, 20, CancellationToken.None);
+        var actionResult = await controller.GetByCommitId(10, 20, 1, 20, CancellationToken.None);
 
         Assert.IsType<NotFoundResult>(actionResult.Result);
     }

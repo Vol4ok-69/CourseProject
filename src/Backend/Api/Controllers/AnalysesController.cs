@@ -98,21 +98,26 @@ public class AnalysesController(
     }
 
     /// <summary>
-    /// Возвращает список анализов коммита.
+    /// Возвращает список анализов коммита с постраничной пагинацией.
     /// </summary>
     /// <param name="projectId">Идентификатор проекта.</param>
     /// <param name="commitId">Идентификатор коммита.</param>
+    /// <param name="page">Номер страницы (по умолчанию 1).</param>
+    /// <param name="pageSize">Размер страницы (по умолчанию 20, максимум 100).</param>
     /// <param name="cancellationToken">Токен отмены операции.</param>
-    /// <returns>Список анализов.</returns>
+    /// <returns>Страница анализов коммита с метаданными пагинации.</returns>
     [HttpGet]
-    [ProducesResponseType(typeof(IReadOnlyList<AnalysisDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(PagedResultDto<AnalysisDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<IReadOnlyList<AnalysisDto>>> GetByCommitId(
+    public async Task<ActionResult<PagedResultDto<AnalysisDto>>> GetByCommitId(
         int projectId,
         int commitId,
-        CancellationToken cancellationToken)
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
     {
         var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
@@ -142,9 +147,33 @@ public class AnalysesController(
             return NotFound();
         }
 
-        var analyses = await analysisService.GetByCommitIdAsync(commitId, cancellationToken);
+        if (page < 1)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Ошибка валидации",
+                "Номер страницы (page) должен быть больше или равен 1.",
+                ApiErrorCodes.ValidationFailed);
+        }
 
-        return Ok(analyses.Select(MapToDto).ToList());
+        if (pageSize < 1)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Ошибка валидации",
+                "Размер страницы (pageSize) должен быть больше или равен 1.",
+                ApiErrorCodes.ValidationFailed);
+        }
+
+        var actualPageSize = Math.Min(pageSize, 100);
+
+        var (analyses, totalCount) = await analysisService.GetByCommitIdAsync(commitId, page, actualPageSize, cancellationToken);
+
+        var analysisDtos = analyses.Select(MapToDto).ToList();
+
+        return Ok(new PagedResultDto<AnalysisDto>(analysisDtos, totalCount, page, actualPageSize));
     }
 
     /// <summary>

@@ -7,9 +7,15 @@ namespace Application.Services;
 
 public class UserService(IUserRepository userRepository, IRoleRepository roleRepository)
 {
-    public async Task<IReadOnlyList<User>> GetAllAsync(CancellationToken cancellationToken = default)
+    public async Task<(IReadOnlyList<User> Items, int TotalCount)> GetAllAsync(
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
     {
-        return await userRepository.GetAllAsync(cancellationToken);
+        ArgumentOutOfRangeException.ThrowIfLessThan(page, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+
+        return await userRepository.GetAllAsync(page, pageSize, cancellationToken);
     }
 
     public async Task<User?> GetByIdAsync(int id, CancellationToken cancellationToken = default)

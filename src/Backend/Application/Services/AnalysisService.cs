@@ -337,11 +337,16 @@ public class AnalysisService(
         return await analysisRepository.GetByIdAsync(analysisId, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<Analysis>> GetByCommitIdAsync(
+    public async Task<(IReadOnlyList<Analysis> Items, int TotalCount)> GetByCommitIdAsync(
         int commitId,
+        int page,
+        int pageSize,
         CancellationToken cancellationToken = default)
     {
-        return await analysisRepository.GetByCommitIdAsync(commitId, cancellationToken);
+        ArgumentOutOfRangeException.ThrowIfLessThan(page, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+
+        return await analysisRepository.GetByCommitIdAsync(commitId, page, pageSize, cancellationToken);
     }
 
     public static string SanitizeErrorMessage(Exception exception)

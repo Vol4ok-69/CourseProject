@@ -1,4 +1,4 @@
-﻿using Application.DTOs;
+using Application.DTOs;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
 
@@ -11,9 +11,16 @@ public class CommitService(ICommitRepository commitRepository, IProjectRepositor
         return await commitRepository.GetByIdAsync(id, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<Commit>> GetByProjectIdAsync(int projectId, CancellationToken cancellationToken = default)
+    public async Task<(IReadOnlyList<Commit> Items, int TotalCount)> GetByProjectIdAsync(
+        int projectId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
     {
-        return await commitRepository.GetByProjectIdAsync(projectId, cancellationToken);
+        ArgumentOutOfRangeException.ThrowIfLessThan(page, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+
+        return await commitRepository.GetByProjectIdAsync(projectId, page, pageSize, cancellationToken);
     }
 
     public async Task<Commit?> CreateAsync(

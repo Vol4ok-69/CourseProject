@@ -20,19 +20,49 @@ namespace Api.Controllers;
 public class AdminUsersController(UserService userService) : ControllerBase
 {
     /// <summary>
-    /// Получает список всех пользователей.
+    /// Получает список всех пользователей с постраничной пагинацией.
     /// </summary>
+    /// <param name="page">Номер страницы (по умолчанию 1).</param>
+    /// <param name="pageSize">Размер страницы (по умолчанию 20, максимум 100).</param>
     /// <param name="cancellationToken">Токен отмены операции</param>
-    /// <returns>Список пользователей</returns>
+    /// <returns>Страница пользователей с метаданными пагинации.</returns>
     [HttpGet]
-    [ProducesResponseType(typeof(IReadOnlyList<UserDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(PagedResultDto<UserDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<IReadOnlyList<UserDto>>> GetAll(CancellationToken cancellationToken)
+    public async Task<ActionResult<PagedResultDto<UserDto>>> GetAll(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
     {
-        var users = await userService.GetAllAsync(cancellationToken);
+        if (page < 1)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Ошибка валидации",
+                "Номер страницы (page) должен быть больше или равен 1.",
+                ApiErrorCodes.ValidationFailed);
+        }
 
-        return Ok(users.Select(MapToDto).ToList());
+        if (pageSize < 1)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Ошибка валидации",
+                "Размер страницы (pageSize) должен быть больше или равен 1.",
+                ApiErrorCodes.ValidationFailed);
+        }
+
+        var actualPageSize = Math.Min(pageSize, 100);
+
+        var (users, totalCount) = await userService.GetAllAsync(page, actualPageSize, cancellationToken);
+
+        var userDtos = users.Select(MapToDto).ToList();
+
+        return Ok(new PagedResultDto<UserDto>(userDtos, totalCount, page, actualPageSize));
     }
 
     /// <summary>

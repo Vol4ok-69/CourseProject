@@ -18,19 +18,24 @@ namespace Api.Controllers;
 public class CommitsController(CommitService commitService, ProjectService projectService) : ControllerBase
 {
     /// <summary>
-    /// Возвращает список коммитов проекта.
+    /// Возвращает список коммитов проекта с постраничной пагинацией.
     /// </summary>
     /// <param name="projectId">Идентификатор проекта.</param>
+    /// <param name="page">Номер страницы (по умолчанию 1).</param>
+    /// <param name="pageSize">Размер страницы (по умолчанию 20, максимум 100).</param>
     /// <param name="cancellationToken">Токен отмены операции.</param>
-    /// <returns>Список коммитов проекта.</returns>
+    /// <returns>Страница коммитов проекта с метаданными пагинации.</returns>
     [HttpGet]
-    [ProducesResponseType(typeof(IReadOnlyList<CommitDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(PagedResultDto<CommitDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<IReadOnlyList<CommitDto>>> GetByProjectId(
+    public async Task<ActionResult<PagedResultDto<CommitDto>>> GetByProjectId(
         int projectId,
-        CancellationToken cancellationToken)
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
     {
         var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
@@ -53,7 +58,29 @@ public class CommitsController(CommitService commitService, ProjectService proje
             return Forbid();
         }
 
-        var commits = await commitService.GetByProjectIdAsync(projectId, cancellationToken);
+        if (page < 1)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Ошибка валидации",
+                "Номер страницы (page) должен быть больше или равен 1.",
+                ApiErrorCodes.ValidationFailed);
+        }
+
+        if (pageSize < 1)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Ошибка валидации",
+                "Размер страницы (pageSize) должен быть больше или равен 1.",
+                ApiErrorCodes.ValidationFailed);
+        }
+
+        var actualPageSize = Math.Min(pageSize, 100);
+
+        var (commits, totalCount) = await commitService.GetByProjectIdAsync(projectId, page, actualPageSize, cancellationToken);
 
         var commitDtos = commits
             .Select(commit => new CommitDto
@@ -65,7 +92,7 @@ public class CommitsController(CommitService commitService, ProjectService proje
             })
             .ToList();
 
-        return Ok(commitDtos);
+        return Ok(new PagedResultDto<CommitDto>(commitDtos, totalCount, page, actualPageSize));
     }
 
     /// <summary>

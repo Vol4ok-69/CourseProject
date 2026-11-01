@@ -21,14 +21,36 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
             .FirstOrDefaultAsync(analysis => analysis.Id == id, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<Analysis>> GetByCommitIdAsync(int commitId, CancellationToken cancellationToken = default)
+    public async Task<(IReadOnlyList<Analysis> Items, int TotalCount)> GetByCommitIdAsync(
+        int commitId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
     {
-        return await context.Analyses
+        ArgumentOutOfRangeException.ThrowIfLessThan(page, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+
+        var query = context.Analyses
             .AsNoTracking()
+            .Where(analysis => analysis.CommitId == commitId);
+
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        var offset = ((long)page - 1) * pageSize;
+        if (offset >= totalCount || offset > int.MaxValue)
+        {
+            return ([], totalCount);
+        }
+
+        var items = await query
             .Include(analysis => analysis.Results)
-            .Where(analysis => analysis.CommitId == commitId)
             .OrderByDescending(analysis => analysis.CreatedAt)
+            .ThenByDescending(analysis => analysis.Id)
+            .Skip((int)offset)
+            .Take(pageSize)
             .ToListAsync(cancellationToken);
+
+        return (items, totalCount);
     }
 
     public async Task AddAsync(Analysis analysis, CancellationToken cancellationToken = default)

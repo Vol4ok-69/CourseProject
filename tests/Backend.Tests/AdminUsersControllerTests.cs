@@ -53,15 +53,18 @@ public sealed class AdminUsersControllerTests
             new() { Id = 2, Username = "user1", RoleId = 2, Role = new Role { Id = 2, Name = "User" } }
         };
 
-        userRepo.Setup(x => x.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(users);
+        userRepo.Setup(x => x.GetAllAsync(1, 20, It.IsAny<CancellationToken>())).ReturnsAsync((users, 2));
 
-        var result = await controller.GetAll(CancellationToken.None);
+        var result = await controller.GetAll(1, 20, CancellationToken.None);
 
         var okResult = Assert.IsType<OkObjectResult>(result.Result);
-        var dtos = Assert.IsAssignableFrom<IReadOnlyList<UserDto>>(okResult.Value);
-        Assert.Equal(2, dtos.Count);
-        Assert.Equal("admin", dtos[0].Username);
-        Assert.Equal("user1", dtos[1].Username);
+        var pagedResult = Assert.IsType<PagedResultDto<UserDto>>(okResult.Value);
+        Assert.Equal(2, pagedResult.TotalCount);
+        Assert.Equal(1, pagedResult.Page);
+        Assert.Equal(20, pagedResult.PageSize);
+        Assert.Equal(2, pagedResult.Items.Count);
+        Assert.Equal("admin", pagedResult.Items[0].Username);
+        Assert.Equal("user1", pagedResult.Items[1].Username);
     }
 
     [Fact]
