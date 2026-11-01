@@ -28,10 +28,10 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
     public async Task<string> DownloadAndExtractAsync(string repositoryUrl, string commitHash, int analysisId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(repositoryUrl))
-            throw new ArgumentException("Repository URL is required.", nameof(repositoryUrl));
+            throw new ArgumentException("Не указан URL репозитория.", nameof(repositoryUrl));
 
         if (string.IsNullOrWhiteSpace(commitHash))
-            throw new ArgumentException("Commit hash is required.", nameof(commitHash));
+            throw new ArgumentException("Не указан хэш коммита.", nameof(commitHash));
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(analysisId);
 

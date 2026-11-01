@@ -1,4 +1,4 @@
-﻿using Application.Interfaces;
+using Application.Interfaces;
 using Domain.Entities;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
@@ -13,13 +13,13 @@ public class JwtTokenService(IConfiguration configuration) : ITokenService
     public string GenerateToken(User user)
     {
         var key = configuration["Jwt:Key"]
-            ?? throw new InvalidOperationException("JWT key is not configured.");
+            ?? throw new InvalidOperationException("Секретный ключ JWT не настроен.");
 
         var issuer = configuration["Jwt:Issuer"]
-            ?? throw new InvalidOperationException("JWT issuer is not configured.");
+            ?? throw new InvalidOperationException("Издатель токена JWT (issuer) не настроен.");
 
         var audience = configuration["Jwt:Audience"]
-            ?? throw new InvalidOperationException("JWT audience is not configured.");
+            ?? throw new InvalidOperationException("Аудитория токена JWT (audience) не настроена.");
 
         var claims = new[]
         {

@@ -1,5 +1,7 @@
+using Api.Common;
 using Api.Controllers;
 using Application.DTOs;
+using Application.Exceptions;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Application.Services;
@@ -184,5 +186,246 @@ public sealed class ProjectsControllerTests
         Assert.IsType<UnauthorizedResult>(actionResult.Result);
         projectRepo.Verify(x => x.GetByOwnerIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         projectRepo.Verify(x => x.GetAllAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetById_OwnProject_Returns200WithProjectDto()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "1", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "MyProject", RepoUrl = "https://github.com/u/p", OwnerId = 1 };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        var actionResult = await controller.GetById(10, CancellationToken.None);
+
+        var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
+        var dto = Assert.IsType<ProjectDto>(okResult.Value);
+        Assert.Equal(10, dto.Id);
+        Assert.Equal("MyProject", dto.Name);
+    }
+
+    [Fact]
+    public async Task GetById_AdminViewingOtherUserProject_Returns200WithProjectDto()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "99", isAdmin: true);
+
+        var project = new Project { Id = 10, Name = "UserProject", RepoUrl = "https://github.com/u/p", OwnerId = 1 };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        var actionResult = await controller.GetById(10, CancellationToken.None);
+
+        var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
+        var dto = Assert.IsType<ProjectDto>(okResult.Value);
+        Assert.Equal(10, dto.Id);
+        Assert.Equal(1, dto.OwnerId);
+    }
+
+    [Fact]
+    public async Task GetById_OtherUserProject_Returns403Forbidden()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "2", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "User1Project", RepoUrl = "https://github.com/u/p", OwnerId = 1 };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        var actionResult = await controller.GetById(10, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task GetById_NotFound_Returns404NotFound()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "1");
+
+        projectRepo.Setup(x => x.GetByIdAsync(999, It.IsAny<CancellationToken>())).ReturnsAsync((Project?)null);
+
+        var actionResult = await controller.GetById(999, CancellationToken.None);
+
+        Assert.IsType<NotFoundResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task GetByOwnerId_OwnProjects_Returns200WithList()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "1", isAdmin: false);
+
+        var projects = new List<Project>
+        {
+            new() { Id = 1, Name = "P1", RepoUrl = "https://github.com/u/p1", OwnerId = 1 }
+        };
+        projectRepo.Setup(x => x.GetByOwnerIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(projects);
+
+        var actionResult = await controller.GetByOwnerId(1, CancellationToken.None);
+
+        var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
+        var dtos = Assert.IsAssignableFrom<IReadOnlyList<ProjectDto>>(okResult.Value);
+        Assert.Single(dtos);
+    }
+
+    [Fact]
+    public async Task GetByOwnerId_OtherUser_Returns403Forbidden()
+    {
+        var (controller, _, _) = CreateController(userIdClaim: "2", isAdmin: false);
+
+        var actionResult = await controller.GetByOwnerId(1, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task Create_ValidDto_Returns201CreatedWithProjectDto()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "1");
+
+        projectRepo.Setup(x => x.GetByOwnerIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(new List<Project>());
+        projectRepo.Setup(x => x.AddAsync(It.IsAny<Project>(), It.IsAny<CancellationToken>()))
+            .Callback<Project, CancellationToken>((p, _) => p.Id = 25)
+            .Returns(Task.CompletedTask);
+
+        var dto = new CreateProjectDto { Name = "NewProject", RepoUrl = "https://github.com/owner/repo" };
+        var actionResult = await controller.Create(dto, CancellationToken.None);
+
+        var createdResult = Assert.IsType<CreatedAtActionResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status201Created, createdResult.StatusCode);
+
+        var projectDto = Assert.IsType<ProjectDto>(createdResult.Value);
+        Assert.Equal(25, projectDto.Id);
+        Assert.Equal("NewProject", projectDto.Name);
+    }
+
+    [Fact]
+    public async Task Create_DuplicateName_Returns409ConflictWithProjectNameDuplicateCode()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "1");
+
+        var existing = new Project { Id = 10, Name = "DupProject", OwnerId = 1, RepoUrl = "https://github.com/o/r" };
+        projectRepo.Setup(x => x.GetByOwnerIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(new List<Project> { existing });
+
+        var dto = new CreateProjectDto { Name = "DupProject", RepoUrl = "https://github.com/owner/repo" };
+        var actionResult = await controller.Create(dto, CancellationToken.None);
+
+        var conflictResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status409Conflict, conflictResult.StatusCode);
+
+        var problem = Assert.IsType<ProblemDetails>(conflictResult.Value);
+        Assert.Equal(ApiErrorCodes.ProjectNameDuplicate, problem.Extensions["code"]?.ToString());
+    }
+
+    [Fact]
+    public async Task Update_OwnProject_Returns200WithUpdatedProjectDto()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "1", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "OldName", OwnerId = 1, RepoUrl = "https://github.com/o/r" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+        projectRepo.Setup(x => x.GetByOwnerIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(new List<Project> { project });
+        projectRepo.Setup(x => x.UpdateAsync(It.IsAny<Project>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+
+        var dto = new UpdateProjectDto { Name = "UpdatedName", RepoUrl = "https://github.com/o/r" };
+        var actionResult = await controller.Update(10, dto, CancellationToken.None);
+
+        var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
+        var projectDto = Assert.IsType<ProjectDto>(okResult.Value);
+        Assert.Equal("UpdatedName", projectDto.Name);
+    }
+
+    [Fact]
+    public async Task Update_OtherUserProject_Returns403Forbidden()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "2", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "User1Project", OwnerId = 1, RepoUrl = "https://github.com/o/r" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        var dto = new UpdateProjectDto { Name = "UpdatedName", RepoUrl = "https://github.com/o/r" };
+        var actionResult = await controller.Update(10, dto, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task Delete_OwnProject_Returns204NoContent()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "1", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/o/r" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+        projectRepo.Setup(x => x.DeleteAsync(It.IsAny<Project>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+
+        var actionResult = await controller.Delete(10, CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(actionResult);
+    }
+
+    [Fact]
+    public async Task Delete_OtherUserProject_Returns403Forbidden()
+    {
+        var (controller, projectRepo, _) = CreateController(userIdClaim: "2", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/o/r" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        var actionResult = await controller.Delete(10, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(actionResult);
+    }
+
+    [Fact]
+    public async Task SyncGitHub_Success_Returns200WithResult()
+    {
+        var (controller, projectRepo, gitHubService) = CreateController(userIdClaim: "1", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/owner/repo" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GitHubCommitInfo>());
+
+        var actionResult = await controller.SyncGitHub(10, CancellationToken.None);
+
+        var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
+        var result = Assert.IsType<GitHubSyncResultDto>(okResult.Value);
+        Assert.Equal(0, result.Added);
+    }
+
+    [Fact]
+    public async Task SyncGitHub_RateLimited_Returns502WithGitHubRateLimitedCode()
+    {
+        var (controller, projectRepo, gitHubService) = CreateController(userIdClaim: "1", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/owner/repo" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.RateLimited, "Превышен лимит запросов."));
+
+        var actionResult = await controller.SyncGitHub(10, CancellationToken.None);
+
+        var errorResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status502BadGateway, errorResult.StatusCode);
+
+        var problem = Assert.IsType<ProblemDetails>(errorResult.Value);
+        Assert.Equal(ApiErrorCodes.GitHubRateLimited, problem.Extensions["code"]?.ToString());
+    }
+
+    [Fact]
+    public async Task SyncGitHub_RepoNotFound_Returns404WithGitHubRepoNotFoundCode()
+    {
+        var (controller, projectRepo, gitHubService) = CreateController(userIdClaim: "1", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/owner/repo" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.RepoNotFound, "Репозиторий не найден."));
+
+        var actionResult = await controller.SyncGitHub(10, CancellationToken.None);
+
+        var errorResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status404NotFound, errorResult.StatusCode);
+
+        var problem = Assert.IsType<ProblemDetails>(errorResult.Value);
+        Assert.Equal(ApiErrorCodes.GitHubRepoNotFound, problem.Extensions["code"]?.ToString());
     }
 }

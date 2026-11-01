@@ -16,6 +16,7 @@ namespace Api.Controllers;
 [ApiController]
 [Route("api/admin/users")]
 [Authorize(Roles = "Admin")]
+[Produces("application/json")]
 public class AdminUsersController(UserService userService) : ControllerBase
 {
     /// <summary>
@@ -24,6 +25,9 @@ public class AdminUsersController(UserService userService) : ControllerBase
     /// <param name="cancellationToken">Токен отмены операции</param>
     /// <returns>Список пользователей</returns>
     [HttpGet]
+    [ProducesResponseType(typeof(IReadOnlyList<UserDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<IReadOnlyList<UserDto>>> GetAll(CancellationToken cancellationToken)
     {
         var users = await userService.GetAllAsync(cancellationToken);
@@ -38,6 +42,10 @@ public class AdminUsersController(UserService userService) : ControllerBase
     /// <param name="cancellationToken">Токен отмены операции</param>
     /// <returns>Пользователь</returns>
     [HttpGet("{id:int}")]
+    [ProducesResponseType(typeof(UserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<UserDto>> GetById(int id, CancellationToken cancellationToken)
     {
         var user = await userService.GetByIdAsync(id, cancellationToken);
@@ -58,6 +66,12 @@ public class AdminUsersController(UserService userService) : ControllerBase
     /// <param name="cancellationToken">Токен отмены операции</param>
     /// <returns>Обновленный пользователь</returns>
     [HttpPut("{id:int}")]
+    [ProducesResponseType(typeof(UserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<UserDto>> Update(
         int id,
         UpdateUserDto dto,
@@ -102,6 +116,12 @@ public class AdminUsersController(UserService userService) : ControllerBase
     /// <param name="cancellationToken">Токен отмены операции</param>
     /// <returns>Обновленный пользователь</returns>
     [HttpPut("{id:int}/role")]
+    [ProducesResponseType(typeof(UserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<UserDto>> UpdateRole(
         int id,
         UpdateUserRoleDto dto,
@@ -164,6 +184,11 @@ public class AdminUsersController(UserService userService) : ControllerBase
     /// <param name="cancellationToken">Токен отмены операции</param>
     /// <returns>204 No Content, если пользователь успешно удален</returns>
     [HttpDelete("{id:int}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
     {
         if (!TryGetCurrentUserId(out var currentUserId))

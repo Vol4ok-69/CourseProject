@@ -1,4 +1,5 @@
-﻿using Api.Controllers;
+using Api.Common;
+using Api.Controllers;
 using Application.DTOs;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
@@ -15,7 +16,7 @@ namespace Backend.Tests;
 
 public sealed class AnalysesControllerTests
 {
-    private static (AnalysesController Controller, Mock<IAnalysisRepository> AnalysisRepo, Mock<ICommitRepository> CommitRepo, Mock<IProjectRepository> ProjectRepo) CreateController(int userId = 1, bool isAdmin = false)
+    private static (AnalysesController Controller, Mock<IAnalysisRepository> AnalysisRepo, Mock<ICommitRepository> CommitRepo, Mock<IProjectRepository> ProjectRepo) CreateController(int? userId = 1, bool isAdmin = false)
     {
         var analysisRepo = new Mock<IAnalysisRepository>();
         var commitRepo = new Mock<ICommitRepository>();
@@ -28,14 +29,16 @@ public sealed class AnalysesControllerTests
 
         var controller = new AnalysesController(analysisService, commitService, projectService);
 
-        var claims = new List<Claim>
-        {
-            new(ClaimTypes.NameIdentifier, userId.ToString()),
-            new(ClaimTypes.Name, "testuser"),
-            new(ClaimTypes.Role, isAdmin ? "Admin" : "User")
-        };
+        var claims = new List<Claim>();
 
-        var identity = new ClaimsIdentity(claims, "TestAuth");
+        if (userId.HasValue)
+        {
+            claims.Add(new(ClaimTypes.NameIdentifier, userId.Value.ToString()));
+            claims.Add(new(ClaimTypes.Name, "testuser"));
+            claims.Add(new(ClaimTypes.Role, isAdmin ? "Admin" : "User"));
+        }
+
+        var identity = new ClaimsIdentity(claims, userId.HasValue ? "TestAuth" : null);
         var claimsPrincipal = new ClaimsPrincipal(identity);
 
         controller.ControllerContext = new ControllerContext
@@ -200,5 +203,125 @@ public sealed class AnalysesControllerTests
         Assert.Equal(2, dtos.Count);
         Assert.Equal(2, dtos[0].Id);
         Assert.Equal(1, dtos[1].Id);
+    }
+
+    [Fact]
+    public async Task Create_MissingUserIdClaim_Returns401Unauthorized()
+    {
+        var (controller, _, _, _) = CreateController(userId: null);
+
+        var actionResult = await controller.Create(10, 20, CancellationToken.None);
+
+        Assert.IsType<UnauthorizedResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task Create_ProjectNotFound_Returns404NotFound()
+    {
+        var (controller, _, _, projectRepo) = CreateController(userId: 1, isAdmin: false);
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync((Project?)null);
+
+        var actionResult = await controller.Create(10, 20, CancellationToken.None);
+
+        Assert.IsType<NotFoundResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task Create_AnalysisAlreadyQueued_Returns409ConflictWithProblemDetails()
+    {
+        var (controller, analysisRepo, commitRepo, projectRepo) = CreateController(userId: 1, isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "P", RepoUrl = "url", OwnerId = 1 };
+        var commit = new Commit { Id = 20, ProjectId = 10, CommitHash = "c123" };
+
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+        commitRepo.Setup(x => x.GetByIdAsync(20, It.IsAny<CancellationToken>())).ReturnsAsync(commit);
+
+        var txMock = new Mock<IAnalysisRepositoryTransaction>();
+        txMock.Setup(x => x.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        analysisRepo.Setup(x => x.BeginEnqueueTransactionAsync(20, It.IsAny<CancellationToken>())).ReturnsAsync(txMock.Object);
+        analysisRepo.Setup(x => x.HasActiveAnalysisAsync(20, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+
+        var actionResult = await controller.Create(10, 20, CancellationToken.None);
+
+        var conflictResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status409Conflict, conflictResult.StatusCode);
+
+        var problem = Assert.IsType<ProblemDetails>(conflictResult.Value);
+        Assert.Equal(ApiErrorCodes.AnalysisAlreadyQueued, problem.Extensions["code"]?.ToString());
+    }
+
+    [Fact]
+    public async Task GetByCommitId_MissingUserIdClaim_Returns401Unauthorized()
+    {
+        var (controller, _, _, _) = CreateController(userId: null);
+
+        var actionResult = await controller.GetByCommitId(10, 20, CancellationToken.None);
+
+        Assert.IsType<UnauthorizedResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task GetByCommitId_UserDoesNotOwnProjectAndNotAdmin_ReturnsForbid()
+    {
+        var (controller, _, _, projectRepo) = CreateController(userId: 2, isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "P", RepoUrl = "url", OwnerId = 1 };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        var actionResult = await controller.GetByCommitId(10, 20, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task GetByCommitId_ProjectNotFound_Returns404NotFound()
+    {
+        var (controller, _, _, projectRepo) = CreateController(userId: 1, isAdmin: false);
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync((Project?)null);
+
+        var actionResult = await controller.GetByCommitId(10, 20, CancellationToken.None);
+
+        Assert.IsType<NotFoundResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task GetById_MissingUserIdClaim_Returns401Unauthorized()
+    {
+        var (controller, _, _, _) = CreateController(userId: null);
+
+        var actionResult = await controller.GetById(10, 20, 50, CancellationToken.None);
+
+        Assert.IsType<UnauthorizedResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task GetById_UserDoesNotOwnProjectAndNotAdmin_ReturnsForbid()
+    {
+        var (controller, _, _, projectRepo) = CreateController(userId: 2, isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "P", RepoUrl = "url", OwnerId = 1 };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        var actionResult = await controller.GetById(10, 20, 50, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(actionResult.Result);
+    }
+
+    [Fact]
+    public async Task GetById_AnalysisNotFoundOrCommitMismatch_Returns404NotFound()
+    {
+        var (controller, analysisRepo, commitRepo, projectRepo) = CreateController(userId: 1, isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "P", RepoUrl = "url", OwnerId = 1 };
+        var commit = new Commit { Id = 20, ProjectId = 10, CommitHash = "c123" };
+
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+        commitRepo.Setup(x => x.GetByIdAsync(20, It.IsAny<CancellationToken>())).ReturnsAsync(commit);
+        analysisRepo.Setup(x => x.GetByIdAsync(50, It.IsAny<CancellationToken>())).ReturnsAsync((Analysis?)null);
+
+        var actionResult = await controller.GetById(10, 20, 50, CancellationToken.None);
+
+        Assert.IsType<NotFoundResult>(actionResult.Result);
     }
 }

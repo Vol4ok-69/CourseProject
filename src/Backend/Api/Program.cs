@@ -26,7 +26,7 @@ using System.Text.Json.Serialization;
 var builder = WebApplication.CreateBuilder(args);
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' was not found.");
+    ?? throw new InvalidOperationException("Строка подключения 'DefaultConnection' не найдена.");
 
 builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
 
@@ -34,9 +34,7 @@ builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IProjectRepository, ProjectRepository>();
 builder.Services.AddScoped<ICommitRepository, CommitRepository>();
 builder.Services.AddScoped<IAnalysisRepository, AnalysisRepository>();
-builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IRoleRepository, RoleRepository>();
-builder.Services.AddScoped<IProjectRepository, ProjectRepository>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAnalyzer, CSharpAnalyzer>();
@@ -49,7 +47,7 @@ builder.Services.AddScoped<IEfCoreModelInspector, EfCoreModelInspector>();
 builder.Services.AddScoped<EfCoreMetadataMapper>();
 
 var gitHubToken = builder.Configuration["GitHub:Token"]
-    ?? throw new InvalidOperationException("GitHub token is not configured.");
+    ?? throw new InvalidOperationException("Токен GitHub не настроен.");
 
 builder.Services.AddHttpClient<IGitHubService, GitHubService>(client =>
 {
@@ -75,14 +73,24 @@ builder.Services.AddScoped<GitHubSyncService>();
 builder.Services.AddScoped<AnalysisService>();
 builder.Services.AddHostedService<AnalysisBackgroundService>();
 
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(ApiCorsPolicies.FrontendDevPolicy, policy =>
+    {
+        policy.WithOrigins(ApiCorsPolicies.AllowedOrigins)
+              .WithMethods(ApiCorsPolicies.AllowedMethods)
+              .WithHeaders(ApiCorsPolicies.AllowedHeaders);
+    });
+});
+
 var jwtKey = builder.Configuration["Jwt:Key"]
-    ?? throw new InvalidOperationException("JWT key is not configured.");
+    ?? throw new InvalidOperationException("Секретный ключ JWT не настроен.");
 
 var jwtIssuer = builder.Configuration["Jwt:Issuer"]
-    ?? throw new InvalidOperationException("JWT issuer is not configured.");
+    ?? throw new InvalidOperationException("Издатель токена JWT (issuer) не настроен.");
 
 var jwtAudience = builder.Configuration["Jwt:Audience"]
-    ?? throw new InvalidOperationException("JWT audience is not configured.");
+    ?? throw new InvalidOperationException("Аудитория токена JWT (audience) не настроена.");
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
@@ -188,10 +196,25 @@ builder.Services.AddControllers()
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "CourseProject API",
+        Version = "v1",
+        Description = "REST API сервиса автоматизированного аудита исходного кода и схем реляционных баз данных CourseProject."
+    });
+
     var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
     var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    if (File.Exists(xmlPath))
+    {
+        options.IncludeXmlComments(xmlPath);
+    }
 
-    options.IncludeXmlComments(xmlPath);
+    var appXmlPath = Path.Combine(AppContext.BaseDirectory, "Application.xml");
+    if (File.Exists(appXmlPath))
+    {
+        options.IncludeXmlComments(appXmlPath);
+    }
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
@@ -200,7 +223,7 @@ builder.Services.AddSwaggerGen(options =>
         Scheme = "bearer",
         BearerFormat = "JWT",
         In = ParameterLocation.Header,
-        Description = "Введите JWT-токен в формате: Bearer {token}"
+        Description = "Введите чистый JWT-токен (без префикса Bearer)"
     });
 
     options.AddSecurityRequirement(document => new OpenApiSecurityRequirement
@@ -221,6 +244,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseCors(ApiCorsPolicies.FrontendDevPolicy);
 
 app.UseAuthentication();
 app.UseAuthorization();
