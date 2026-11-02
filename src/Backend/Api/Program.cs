@@ -75,6 +75,7 @@ builder.Services.AddScoped<ProjectService>();
 builder.Services.AddScoped<GitHubSyncService>();
 builder.Services.AddScoped<AnalysisService>();
 builder.Services.AddHostedService<AnalysisBackgroundService>();
+builder.Services.AddScoped<ApiJwtEvents>();
 
 builder.Services.AddCors(options =>
 {
@@ -161,80 +162,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
     };
 
-    options.Events = new JwtBearerEvents
-    {
-        OnAuthenticationFailed = context =>
-        {
-            Console.WriteLine($"JWT ERROR: {context.Exception.Message} FOR {context.Principal?.Identity?.Name}");
-            return Task.CompletedTask;
-        },
-        OnTokenValidated = context =>
-        {
-            Console.WriteLine($"JWT VALIDATED FOR: {context.Principal?.Identity?.Name}");
-            return Task.CompletedTask;
-        },
-        OnChallenge = async context =>
-        {
-            if (context.Response.HasStarted)
-            {
-                return;
-            }
-
-            context.HandleResponse();
-            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            context.Response.ContentType = "application/problem+json";
-
-            var traceId = context.HttpContext.TraceIdentifier ?? Guid.NewGuid().ToString();
-            var instance = context.Request.Path.Value ?? string.Empty;
-
-            var problemDetails = new ProblemDetails
-            {
-                Status = StatusCodes.Status401Unauthorized,
-                Title = "Требуется аутентификация",
-                Detail = "Для доступа к ресурсу необходимо предоставить действительный токен авторизации.",
-                Instance = instance,
-                Type = "https://httpstatuses.com/401"
-            };
-            problemDetails.Extensions["code"] = ApiErrorCodes.Unauthorized;
-            problemDetails.Extensions["traceId"] = traceId;
-
-            await context.Response.WriteAsJsonAsync(
-                problemDetails,
-                options: (JsonSerializerOptions?)null,
-                contentType: "application/problem+json",
-                cancellationToken: context.HttpContext.RequestAborted);
-        },
-        OnForbidden = async context =>
-        {
-            if (context.Response.HasStarted)
-            {
-                return;
-            }
-
-            context.Response.StatusCode = StatusCodes.Status403Forbidden;
-            context.Response.ContentType = "application/problem+json";
-
-            var traceId = context.HttpContext.TraceIdentifier ?? Guid.NewGuid().ToString();
-            var instance = context.Request.Path.Value ?? string.Empty;
-
-            var problemDetails = new ProblemDetails
-            {
-                Status = StatusCodes.Status403Forbidden,
-                Title = "Доступ запрещен",
-                Detail = "У вас недостаточно прав для выполнения данной операции.",
-                Instance = instance,
-                Type = "https://httpstatuses.com/403"
-            };
-            problemDetails.Extensions["code"] = ApiErrorCodes.Forbidden;
-            problemDetails.Extensions["traceId"] = traceId;
-
-            await context.Response.WriteAsJsonAsync(
-                problemDetails,
-                options: (JsonSerializerOptions?)null,
-                contentType: "application/problem+json",
-                cancellationToken: context.HttpContext.RequestAborted);
-        }
-    };
+    options.EventsType = typeof(ApiJwtEvents);
 });
 
 builder.Services.AddAuthorization();
