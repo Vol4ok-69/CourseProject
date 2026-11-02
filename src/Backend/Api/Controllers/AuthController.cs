@@ -1,4 +1,5 @@
 using Api.Common;
+using Microsoft.AspNetCore.RateLimiting;
 using Application.DTOs;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -22,10 +23,12 @@ public class AuthController(AuthService authService, UserService userService) : 
     /// <param name="dto">Данные нового пользователя.</param>
     /// <param name="cancellationToken">Токен отмены операции.</param>
     /// <returns>Токен доступа созданного пользователя.</returns>
+    [EnableRateLimiting(RateLimitingPolicies.AuthPolicy)]
     [HttpPost("register")]
     [ProducesResponseType(typeof(AuthResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<AuthResponseDto>> Register(RegisterDto dto, CancellationToken cancellationToken)
     {
         try
@@ -60,10 +63,12 @@ public class AuthController(AuthService authService, UserService userService) : 
     /// <param name="dto">Учетные данные пользователя.</param>
     /// <param name="cancellationToken">Токен отмены операции.</param>
     /// <returns>Токен доступа аутентифицированного пользователя.</returns>
+    [EnableRateLimiting(RateLimitingPolicies.AuthPolicy)]
     [HttpPost("login")]
     [ProducesResponseType(typeof(AuthResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<AuthResponseDto>> Login(LoginDto dto, CancellationToken cancellationToken)
     {
         var response = await authService.LoginAsync(dto, cancellationToken);
@@ -178,11 +183,13 @@ public class AuthController(AuthService authService, UserService userService) : 
     /// <param name="cancellationToken">Токен отмены операции</param>
     /// <returns>Обновленный токен доступа</returns>
     [Authorize]
+    [EnableRateLimiting(RateLimitingPolicies.AuthPolicy)]
     [HttpPut("me/password")]
     [ProducesResponseType(typeof(AuthResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<AuthResponseDto>> ChangePassword(ChangePasswordDto dto, CancellationToken cancellationToken)
     {
         var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);

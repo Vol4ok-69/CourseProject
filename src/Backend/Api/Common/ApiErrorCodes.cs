@@ -65,6 +65,9 @@ public static class ApiErrorCodes
     /// <summary>Превышен лимит запросов к GitHub API (Rate Limit).</summary>
     public const string GitHubRateLimited = "GITHUB_RATE_LIMITED";
 
+    /// <summary>Превышен лимит частоты запросов к API (Rate Limit).</summary>
+    public const string RateLimitExceeded = "RATE_LIMIT_EXCEEDED";
+
     /// <summary>Доступ к репозиторию GitHub запрещен.</summary>
     public const string GitHubAccessDenied = "GITHUB_ACCESS_DENIED";
 

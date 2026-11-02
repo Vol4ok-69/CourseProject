@@ -14,14 +14,17 @@ using Infrastructure.Repository;
 using Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -80,6 +83,59 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(ApiCorsPolicies.AllowedOrigins)
               .WithMethods(ApiCorsPolicies.AllowedMethods)
               .WithHeaders(ApiCorsPolicies.AllowedHeaders);
+    });
+});
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.ContentType = "application/problem+json";
+
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfterSpan))
+        {
+            var seconds = Math.Max(1, (int)Math.Ceiling(retryAfterSpan.TotalSeconds));
+            context.HttpContext.Response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
+        }
+
+        var traceId = context.HttpContext.TraceIdentifier ?? Guid.NewGuid().ToString();
+        var instance = context.HttpContext.Request.Path.Value ?? string.Empty;
+
+        var problemDetails = new ProblemDetails
+        {
+            Status = StatusCodes.Status429TooManyRequests,
+            Title = "Слишком много запросов",
+            Detail = "Превышен лимит частоты запросов. Пожалуйста, повторите попытку позже.",
+            Instance = instance,
+            Type = "https://httpstatuses.com/429"
+        };
+        problemDetails.Extensions["code"] = ApiErrorCodes.RateLimitExceeded;
+        problemDetails.Extensions["traceId"] = traceId;
+
+        await context.HttpContext.Response.WriteAsJsonAsync(
+            problemDetails,
+            options: (JsonSerializerOptions?)null,
+            contentType: "application/problem+json",
+            cancellationToken: cancellationToken);
+    };
+
+    options.AddPolicy(RateLimitingPolicies.AuthPolicy, httpContext =>
+    {
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        return RateLimitPartition.GetTokenBucketLimiter(
+            remoteIp,
+            _ => new TokenBucketRateLimiterOptions
+            {
+                TokenLimit = 10,
+                TokensPerPeriod = 1,
+                ReplenishmentPeriod = TimeSpan.FromSeconds(1),
+                AutoReplenishment = true,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            });
     });
 });
 
@@ -249,6 +305,8 @@ app.UseCors(ApiCorsPolicies.FrontendDevPolicy);
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseRateLimiter();
 
 app.MapControllers();
 

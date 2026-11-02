@@ -197,6 +197,15 @@ public static class ApiProblemDetails
                     }
                     break;
 
+                case StatusCodes.Status429TooManyRequests:
+                    problemDetails.Title = "Слишком много запросов";
+                    problemDetails.Detail ??= "Превышен лимит частоты запросов. Пожалуйста, повторите попытку позже.";
+                    if (!problemDetails.Extensions.ContainsKey("code"))
+                    {
+                        problemDetails.Extensions["code"] = ApiErrorCodes.RateLimitExceeded;
+                    }
+                    break;
+
                 case StatusCodes.Status409Conflict:
                     problemDetails.Title = "Конфликт данных";
                     problemDetails.Detail ??= "Запрос конфликтует с текущим состоянием ресурса.";
