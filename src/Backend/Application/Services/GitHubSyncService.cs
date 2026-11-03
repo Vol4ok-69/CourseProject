@@ -21,37 +21,66 @@ public class GitHubSyncService(IGitHubService gitHubService, IProjectRepository 
         var added = 0;
         var skipped = 0;
 
+        // 1. Отбираем коммиты с валидной датой и учитываем внутрипакетные дубликаты
+        var validCommits = new List<GitHubCommitInfo>();
+        var candidateHashes = new HashSet<string>();
+
         foreach (var githubCommit in githubCommits)
         {
-            var existingCommit = await commitRepository.GetByHashAsync(projectId, githubCommit.Hash, cancellationToken);
-
-            if (existingCommit is not null)
-            {
-                skipped++;
-                continue;
-            }
-
             if (githubCommit.Date is null)
             {
                 continue;
             }
 
-            var commit = new Commit
+            if (!candidateHashes.Add(githubCommit.Hash))
             {
-                ProjectId = projectId,
-                CommitHash = githubCommit.Hash,
-                CommitDate = githubCommit.Date.Value
-            };
-
-            try
-            {
-                await commitRepository.AddAsync(commit, cancellationToken);
-                added++;
+                skipped++;
+                continue;
             }
-            catch (Exception ex) when (IsCommitUniqueViolation(ex))
+
+            validCommits.Add(githubCommit);
+        }
+
+        if (validCommits.Count == 0)
+        {
+            return new GitHubSyncResultDto
+            {
+                Added = 0,
+                Skipped = skipped
+            };
+        }
+
+        // 2. Пакетная проверка наличия коммитов в базе данных за один SQL-запрос
+        var existingHashes = await commitRepository.GetExistingHashesAsync(
+            projectId,
+            candidateHashes,
+            cancellationToken);
+
+        var commitsToInsert = new List<Commit>();
+
+        foreach (var commitInfo in validCommits)
+        {
+            if (existingHashes.Contains(commitInfo.Hash))
             {
                 skipped++;
             }
+            else
+            {
+                commitsToInsert.Add(new Commit
+                {
+                    ProjectId = projectId,
+                    CommitHash = commitInfo.Hash,
+                    CommitDate = commitInfo.Date!.Value
+                });
+            }
+        }
+
+        // 3. Пакетное сохранение новых коммитов
+        if (commitsToInsert.Count > 0)
+        {
+            var insertedCount = await commitRepository.AddRangeAsync(commitsToInsert, cancellationToken);
+            added += insertedCount;
+            skipped += Math.Max(0, commitsToInsert.Count - insertedCount);
         }
 
         return new GitHubSyncResultDto
@@ -59,23 +88,5 @@ public class GitHubSyncService(IGitHubService gitHubService, IProjectRepository 
             Added = added,
             Skipped = skipped
         };
-    }
-
-    private static bool IsCommitUniqueViolation(Exception exception)
-    {
-        var current = exception;
-        while (current != null)
-        {
-            if (current.Message.Contains("23505") ||
-                current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase) ||
-                current.Message.Contains("IX_Commits_ProjectId_CommitHash", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            current = current.InnerException;
-        }
-
-        return false;
     }
 }
