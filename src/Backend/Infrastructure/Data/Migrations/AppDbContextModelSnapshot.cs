@@ -194,6 +194,16 @@ namespace Infrastructure.Data.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("EncryptedGitHubToken")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("GitHubTokenCreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("GitHubUsername")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasColumnType("text");

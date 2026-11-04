@@ -71,6 +71,9 @@ public static class ApiErrorCodes
     /// <summary>Доступ к репозиторию GitHub запрещен.</summary>
     public const string GitHubAccessDenied = "GITHUB_ACCESS_DENIED";
 
+    /// <summary>Персональный токен GitHub недействителен или отозван.</summary>
+    public const string GitHubTokenExpired = "GITHUB_TOKEN_EXPIRED";
+
     /// <summary>Сервис GitHub недоступен.</summary>
     public const string GitHubServiceUnavailable = "GITHUB_SERVICE_UNAVAILABLE";
 

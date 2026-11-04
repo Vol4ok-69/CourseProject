@@ -1,4 +1,4 @@
-﻿namespace Domain.Entities;
+namespace Domain.Entities;
 
 public class User
 {
@@ -13,4 +13,10 @@ public class User
     public Role Role { get; set; } = null!;
 
     public ICollection<Project> Projects { get; set; } = new List<Project>();
+
+    public string? EncryptedGitHubToken { get; set; }
+
+    public string? GitHubUsername { get; set; }
+
+    public DateTime? GitHubTokenCreatedAt { get; set; }
 }

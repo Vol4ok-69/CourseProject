@@ -2,6 +2,8 @@ using Application.Exceptions;
 using Application.Interfaces;
 using Infrastructure.GitHub.Models;
 using System.IO.Compression;
+using System.Net;
+using System.Net.Http.Headers;
 
 namespace Infrastructure.GitHub;
 
@@ -25,13 +27,21 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
         "build"
     };
 
-    public async Task<string> DownloadAndExtractAsync(string repositoryUrl, string commitHash, int analysisId, CancellationToken cancellationToken = default)
+    public async Task<string> DownloadAndExtractAsync(
+        string repositoryUrl,
+        string commitHash,
+        int analysisId,
+        string personalAccessToken,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(repositoryUrl))
             throw new ArgumentException("Не указан URL репозитория.", nameof(repositoryUrl));
 
         if (string.IsNullOrWhiteSpace(commitHash))
             throw new ArgumentException("Не указан хэш коммита.", nameof(commitHash));
+
+        if (string.IsNullOrWhiteSpace(personalAccessToken))
+            throw new ArgumentException("Не указан персональный токен доступа GitHub (PAT).", nameof(personalAccessToken));
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(analysisId);
 
@@ -53,38 +63,63 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
         {
             var archiveUrl = $"repos/{repository.Owner}/{repository.Name}/zipball/{commitHash}";
 
-            using var response = await httpClient.GetAsync(archiveUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            using var request = new HttpRequestMessage(HttpMethod.Get, archiveUrl);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personalAccessToken);
 
-            if (response.Content.Headers.ContentLength.HasValue &&
-                response.Content.Headers.ContentLength.Value > MaxArchiveSizeBytes)
+            HttpResponseMessage response;
+            try
             {
-                throw new ArchiveLimitExceededException("Размер архива превышает допустимый лимит 50 МиБ.");
+                response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new GitHubIntegrationException(
+                    GitHubErrorKind.ServiceUnavailable,
+                    "Сервис GitHub недоступен или превышено время ожидания ответа при загрузке архива.",
+                    ex);
             }
 
-            // Потоковое скачивание с ограничением размера входного архива
-            await using (var networkStream = await response.Content.ReadAsStreamAsync(cancellationToken))
-            await using (var tempFileStream = new FileStream(
-                tempZipPath,
-                FileMode.Create,
-                FileAccess.ReadWrite,
-                FileShare.None,
-                81920,
-                useAsync: true))
+            using (response)
             {
-                var downloadBuffer = new byte[81920];
-                long totalDownloaded = 0;
-                int read;
-
-                while ((read = await networkStream.ReadAsync(downloadBuffer.AsMemory(0, downloadBuffer.Length), cancellationToken)) > 0)
+                if (!response.IsSuccessStatusCode)
                 {
-                    totalDownloaded += read;
-                    if (totalDownloaded > MaxArchiveSizeBytes)
-                    {
-                        throw new ArchiveLimitExceededException("Размер архива превышает допустимый лимит 50 МиБ.");
-                    }
+                    await HandleArchiveErrorResponseAsync(response, cancellationToken);
+                }
 
-                    await tempFileStream.WriteAsync(downloadBuffer.AsMemory(0, read), cancellationToken);
+                if (response.Content.Headers.ContentLength.HasValue &&
+                    response.Content.Headers.ContentLength.Value > MaxArchiveSizeBytes)
+                {
+                    throw new ArchiveLimitExceededException("Размер архива превышает допустимый лимит 50 МиБ.");
+                }
+
+                // Потоковое скачивание с ограничением размера входного архива
+                await using (var networkStream = await response.Content.ReadAsStreamAsync(cancellationToken))
+                await using (var tempFileStream = new FileStream(
+                    tempZipPath,
+                    FileMode.Create,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    81920,
+                    useAsync: true))
+                {
+                    var downloadBuffer = new byte[81920];
+                    long totalDownloaded = 0;
+                    int read;
+
+                    while ((read = await networkStream.ReadAsync(downloadBuffer.AsMemory(0, downloadBuffer.Length), cancellationToken)) > 0)
+                    {
+                        totalDownloaded += read;
+                        if (totalDownloaded > MaxArchiveSizeBytes)
+                        {
+                            throw new ArchiveLimitExceededException("Размер архива превышает допустимый лимит 50 МиБ.");
+                        }
+
+                        await tempFileStream.WriteAsync(downloadBuffer.AsMemory(0, read), cancellationToken);
+                    }
                 }
             }
 
@@ -120,6 +155,15 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
                 }
             }
         }
+    }
+
+    public Task<string> DownloadAndExtractAsync(
+        string repositoryUrl,
+        string commitHash,
+        int analysisId,
+        CancellationToken cancellationToken = default)
+    {
+        throw new InvalidOperationException("Для загрузки архива репозитория GitHub требуется персональный токен доступа (PAT).");
     }
 
     /// <summary>
@@ -256,6 +300,82 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
         }
 
         return Task.CompletedTask;
+    }
+
+    private static async Task HandleArchiveErrorResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var statusCode = response.StatusCode;
+
+        if (statusCode == HttpStatusCode.Unauthorized)
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.TokenExpired,
+                "Персональный токен GitHub недействителен или отозван.");
+        }
+
+        if (statusCode == HttpStatusCode.NotFound)
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.RepoNotFound,
+                "Репозиторий GitHub не найден или токен не имеет к нему доступа.");
+        }
+
+        if ((int)statusCode == 429)
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.RateLimited,
+                "Превышен лимит запросов к GitHub API (Rate Limit).");
+        }
+
+        if (statusCode == HttpStatusCode.Forbidden)
+        {
+            var isRateLimited = false;
+
+            if (response.Headers.TryGetValues("X-RateLimit-Remaining", out var remainingValues) &&
+                int.TryParse(remainingValues.FirstOrDefault(), out var remaining) &&
+                remaining == 0)
+            {
+                isRateLimited = true;
+            }
+
+            string body = string.Empty;
+            try
+            {
+                body = await response.Content.ReadAsStringAsync(cancellationToken);
+            }
+            catch
+            {
+            }
+
+            if (!isRateLimited && !string.IsNullOrEmpty(body) &&
+                (body.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
+                 body.Contains("API rate limit exceeded", StringComparison.OrdinalIgnoreCase)))
+            {
+                isRateLimited = true;
+            }
+
+            if (isRateLimited)
+            {
+                throw new GitHubIntegrationException(
+                    GitHubErrorKind.RateLimited,
+                    "Превышен лимит запросов к GitHub API (Rate Limit).");
+            }
+
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.AccessDenied,
+                "Доступ к репозиторию GitHub запрещен (недостаточно прав или ограничения организации).");
+        }
+
+        if ((int)statusCode >= 500)
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.ServiceUnavailable,
+                "Сервис GitHub временно недоступен.");
+        }
+
+        throw new GitHubIntegrationException(
+            GitHubErrorKind.ServiceUnavailable,
+            $"GitHub API вернул статус {(int)statusCode} {statusCode} при загрузке архива.");
     }
 
     private static string GetRelativePath(string archivePath)

@@ -9,14 +9,19 @@ using Infrastructure.GitHub;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Moq;
+using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Claims;
+using System.Text.Json;
 using Xunit;
 
 namespace Backend.Tests;
 
 public sealed class GitHubServiceTests
 {
+    private const string TestPat = "ghp_valid_test_token_1234567890abcdef";
+
     private sealed class TestHttpMessageHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handlerFunc) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -33,6 +38,103 @@ public sealed class GitHubServiceTests
         };
     }
 
+    [Fact]
+    public async Task GitHubService_GetCommitsAsync_WithoutPat_ThrowsInvalidOperationException_AndDoesNotSendHttpRequest()
+    {
+        var requestSent = false;
+        var httpClient = CreateHttpClient(_ =>
+        {
+            requestSent = true;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        var service = new GitHubService(httpClient);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.GetCommitsAsync("https://github.com/owner/repo"));
+
+        Assert.Contains("требуется персональный токен доступа (PAT)", ex.Message);
+        Assert.False(requestSent);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public async Task GitHubService_GetCommitsAsync_EmptyOrWhitespacePat_ThrowsArgumentException_AndDoesNotSendHttpRequest(string? invalidPat)
+    {
+        var requestSent = false;
+        var httpClient = CreateHttpClient(_ =>
+        {
+            requestSent = true;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        var service = new GitHubService(httpClient);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.GetCommitsAsync("https://github.com/owner/repo", invalidPat!));
+
+        Assert.False(requestSent);
+    }
+
+    [Fact]
+    public async Task GitHubService_GetCommitsAsync_SetsBearerAuthorizationHeader_OnHttpRequestMessage()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var httpClient = CreateHttpClient(req =>
+        {
+            capturedRequest = req;
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("[]")
+            };
+            return Task.FromResult(response);
+        });
+
+        var service = new GitHubService(httpClient);
+        await service.GetCommitsAsync("https://github.com/owner/repo", TestPat);
+
+        Assert.NotNull(capturedRequest);
+        Assert.NotNull(capturedRequest.Headers.Authorization);
+        Assert.Equal("Bearer", capturedRequest.Headers.Authorization.Scheme);
+        Assert.Equal(TestPat, capturedRequest.Headers.Authorization.Parameter);
+        Assert.Null(httpClient.DefaultRequestHeaders.Authorization);
+    }
+
+    [Fact]
+    public async Task GitHubService_GetCommitsAsync_SuccessfulResponse_ParsesCommitsCorrectly()
+    {
+        var commitsJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                sha = "abc1234567890",
+                commit = new
+                {
+                    author = new
+                    {
+                        date = "2026-11-03T12:00:00Z"
+                    }
+                }
+            }
+        });
+
+        var httpClient = CreateHttpClient(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(commitsJson)
+            };
+            return Task.FromResult(response);
+        });
+
+        var service = new GitHubService(httpClient);
+        var commits = await service.GetCommitsAsync("https://github.com/owner/repo", TestPat);
+
+        Assert.Single(commits);
+        Assert.Equal("abc1234567890", commits[0].Hash);
+        Assert.Equal(DateTime.Parse("2026-11-03T12:00:00Z").ToUniversalTime(), commits[0].Date?.ToUniversalTime());
+    }
+
     [Theory]
     [InlineData("not-a-valid-url")]
     [InlineData("https://gitlab.com/owner/repo")]
@@ -42,8 +144,23 @@ public sealed class GitHubServiceTests
         var httpClient = CreateHttpClient(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
         var service = new GitHubService(httpClient);
 
-        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.GetCommitsAsync(invalidUrl));
+        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
+            service.GetCommitsAsync(invalidUrl, TestPat));
+
         Assert.Equal(GitHubErrorKind.InvalidRepoUrl, ex.Kind);
+    }
+
+    [Fact]
+    public async Task GitHubService_GetCommitsAsync_401Unauthorized_ThrowsGitHubIntegrationException_TokenExpired()
+    {
+        var httpClient = CreateHttpClient(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)));
+        var service = new GitHubService(httpClient);
+
+        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
+            service.GetCommitsAsync("https://github.com/owner/repo", TestPat));
+
+        Assert.Equal(GitHubErrorKind.TokenExpired, ex.Kind);
+        Assert.DoesNotContain(TestPat, ex.Message);
     }
 
     [Fact]
@@ -53,7 +170,7 @@ public sealed class GitHubServiceTests
         var service = new GitHubService(httpClient);
 
         var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
-            service.GetCommitsAsync("https://github.com/owner/repo"));
+            service.GetCommitsAsync("https://github.com/owner/repo", TestPat));
 
         Assert.Equal(GitHubErrorKind.RepoNotFound, ex.Kind);
     }
@@ -66,7 +183,7 @@ public sealed class GitHubServiceTests
         var service = new GitHubService(httpClient);
 
         var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
-            service.GetCommitsAsync("https://github.com/owner/repo"));
+            service.GetCommitsAsync("https://github.com/owner/repo", TestPat));
 
         Assert.Equal(GitHubErrorKind.RateLimited, ex.Kind);
     }
@@ -83,7 +200,7 @@ public sealed class GitHubServiceTests
         var service = new GitHubService(httpClient);
 
         var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
-            service.GetCommitsAsync("https://github.com/owner/repo"));
+            service.GetCommitsAsync("https://github.com/owner/repo", TestPat));
 
         Assert.Equal(GitHubErrorKind.RateLimited, ex.Kind);
     }
@@ -100,7 +217,7 @@ public sealed class GitHubServiceTests
         var service = new GitHubService(httpClient);
 
         var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
-            service.GetCommitsAsync("https://github.com/owner/repo"));
+            service.GetCommitsAsync("https://github.com/owner/repo", TestPat));
 
         Assert.Equal(GitHubErrorKind.AccessDenied, ex.Kind);
     }
@@ -113,7 +230,7 @@ public sealed class GitHubServiceTests
         var service = new GitHubService(httpClient);
 
         var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
-            service.GetCommitsAsync("https://github.com/owner/repo"));
+            service.GetCommitsAsync("https://github.com/owner/repo", TestPat));
 
         Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
     }
@@ -126,9 +243,194 @@ public sealed class GitHubServiceTests
         var service = new GitHubService(httpClient);
 
         var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
-            service.GetCommitsAsync("https://github.com/owner/repo"));
+            service.GetCommitsAsync("https://github.com/owner/repo", TestPat));
 
         Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData((HttpStatusCode)429)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.BadGateway)]
+    public async Task GitHubService_GetCommitsAsync_ErrorStatuses_NeverLeakTokenInException(HttpStatusCode statusCode)
+    {
+        const string SecretToken = "ghp_super_secret_pat_never_leak_xyz_123456789";
+        var httpClient = CreateHttpClient(_ => Task.FromResult(new HttpResponseMessage(statusCode)
+        {
+            Content = new StringContent("{\"message\":\"error details with some sensitive data\"}")
+        }));
+
+        var service = new GitHubService(httpClient);
+        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
+            service.GetCommitsAsync("https://github.com/owner/repo", SecretToken));
+
+        Assert.DoesNotContain(SecretToken, ex.Message);
+        Assert.DoesNotContain(SecretToken, ex.ToString());
+    }
+
+    [Fact]
+    public async Task GitHubService_GetCommitsAsync_NetworkException_NeverLeaksTokenInException()
+    {
+        const string SecretToken = "ghp_super_secret_pat_never_leak_xyz_123456789";
+        var httpClient = CreateHttpClient(_ => throw new HttpRequestException("Socket error"));
+
+        var service = new GitHubService(httpClient);
+        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
+            service.GetCommitsAsync("https://github.com/owner/repo", SecretToken));
+
+        Assert.DoesNotContain(SecretToken, ex.Message);
+        Assert.DoesNotContain(SecretToken, ex.ToString());
+    }
+
+    [Fact]
+    public async Task GitHubService_SequentialRequests_WithDifferentTokens_UsesRespectiveTokens()
+    {
+        var capturedTokens = new List<string?>();
+        var httpClient = CreateHttpClient(req =>
+        {
+            capturedTokens.Add(req.Headers.Authorization?.Parameter);
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("[]")
+            };
+            return Task.FromResult(response);
+        });
+
+        var service = new GitHubService(httpClient);
+        await service.GetCommitsAsync("https://github.com/owner/repo1", "token-user-1");
+        await service.GetCommitsAsync("https://github.com/owner/repo2", "token-user-2");
+
+        Assert.Equal(2, capturedTokens.Count);
+        Assert.Equal("token-user-1", capturedTokens[0]);
+        Assert.Equal("token-user-2", capturedTokens[1]);
+        Assert.Null(httpClient.DefaultRequestHeaders.Authorization);
+    }
+
+    [Fact]
+    public async Task GitHubService_ConcurrentRequests_WithDifferentTokens_DoNotCrossContaminate()
+    {
+        var recordedTokens = new ConcurrentDictionary<string, string>();
+        var httpClient = CreateHttpClient(req =>
+        {
+            var url = req.RequestUri?.ToString() ?? string.Empty;
+            var token = req.Headers.Authorization?.Parameter ?? string.Empty;
+            recordedTokens[url] = token;
+
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("[]")
+            };
+            return Task.FromResult(response);
+        });
+
+        var service = new GitHubService(httpClient);
+        var tasks = Enumerable.Range(1, 20).Select(async i =>
+        {
+            var repoUrl = $"https://github.com/owner/repo{i}";
+            var token = $"user-pat-{i}";
+            await Task.Yield();
+            await service.GetCommitsAsync(repoUrl, token);
+        });
+
+        await Task.WhenAll(tasks);
+
+        Assert.Equal(20, recordedTokens.Count);
+        for (int i = 1; i <= 20; i++)
+        {
+            var expectedUrl = $"https://api.github.com/repos/owner/repo{i}/commits";
+            Assert.True(recordedTokens.TryGetValue(expectedUrl, out var actualToken));
+            Assert.Equal($"user-pat-{i}", actualToken);
+        }
+        Assert.Null(httpClient.DefaultRequestHeaders.Authorization);
+    }
+
+    [Fact]
+    public async Task GitHubService_VerifyTokenAndGetUsernameAsync_ValidToken_ReturnsLogin()
+    {
+        var userJson = JsonSerializer.Serialize(new
+        {
+            login = "octocat",
+            id = 1
+        });
+
+        HttpRequestMessage? capturedRequest = null;
+        var httpClient = CreateHttpClient(req =>
+        {
+            capturedRequest = req;
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(userJson)
+            };
+            return Task.FromResult(response);
+        });
+
+        var service = new GitHubService(httpClient);
+        var username = await service.VerifyTokenAndGetUsernameAsync(TestPat);
+
+        Assert.Equal("octocat", username);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("https://api.github.com/user", capturedRequest.RequestUri?.ToString());
+        Assert.Equal("Bearer", capturedRequest.Headers.Authorization?.Scheme);
+        Assert.Equal(TestPat, capturedRequest.Headers.Authorization?.Parameter);
+        Assert.Null(httpClient.DefaultRequestHeaders.Authorization);
+    }
+
+    [Fact]
+    public async Task GitHubService_VerifyTokenAndGetUsernameAsync_401Unauthorized_ThrowsTokenExpired()
+    {
+        var httpClient = CreateHttpClient(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)));
+        var service = new GitHubService(httpClient);
+
+        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
+            service.VerifyTokenAndGetUsernameAsync(TestPat));
+
+        Assert.Equal(GitHubErrorKind.TokenExpired, ex.Kind);
+        Assert.DoesNotContain(TestPat, ex.Message);
+        Assert.DoesNotContain(TestPat, ex.ToString());
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task GitHubService_VerifyTokenAndGetUsernameAsync_ErrorStatuses_NeverLeakTokenInException(HttpStatusCode statusCode)
+    {
+        const string SecretToken = "ghp_super_secret_pat_never_leak_xyz_123456789";
+        var httpClient = CreateHttpClient(_ => Task.FromResult(new HttpResponseMessage(statusCode)
+        {
+            Content = new StringContent("{\"message\":\"bad token\"}")
+        }));
+
+        var service = new GitHubService(httpClient);
+        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() =>
+            service.VerifyTokenAndGetUsernameAsync(SecretToken));
+
+        Assert.DoesNotContain(SecretToken, ex.Message);
+        Assert.DoesNotContain(SecretToken, ex.ToString());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public async Task GitHubService_VerifyTokenAndGetUsernameAsync_EmptyToken_ThrowsArgumentException_AndDoesNotSendHttpRequest(string? invalidPat)
+    {
+        var requestSent = false;
+        var httpClient = CreateHttpClient(_ =>
+        {
+            requestSent = true;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        var service = new GitHubService(httpClient);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.VerifyTokenAndGetUsernameAsync(invalidPat!));
+
+        Assert.False(requestSent);
     }
 
     private static ProjectsController CreateProjectsControllerWithGitHubMock(IGitHubService gitHubService, int userId = 1)

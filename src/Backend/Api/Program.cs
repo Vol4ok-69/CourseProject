@@ -49,15 +49,35 @@ builder.Services.AddScoped<IDatabaseProjectResolver, EfCoreDatabaseProjectResolv
 builder.Services.AddScoped<IEfCoreModelInspector, EfCoreModelInspector>();
 builder.Services.AddScoped<EfCoreMetadataMapper>();
 
-var gitHubToken = builder.Configuration["GitHub:Token"]
-    ?? throw new InvalidOperationException("Токен GitHub не настроен.");
+var tokenEncryptionKeyBase64 = builder.Configuration["Security:TokenEncryptionKey"];
+if (string.IsNullOrWhiteSpace(tokenEncryptionKeyBase64))
+{
+    throw new InvalidOperationException("Ключ шифрования токенов 'Security:TokenEncryptionKey' не настроен.");
+}
+
+byte[] tokenEncryptionKey;
+try
+{
+    tokenEncryptionKey = Convert.FromBase64String(tokenEncryptionKeyBase64);
+}
+catch (FormatException ex)
+{
+    throw new InvalidOperationException("Ключ шифрования токенов 'Security:TokenEncryptionKey' имеет некорректный формат Base64.", ex);
+}
+
+if (tokenEncryptionKey.Length != 32)
+{
+    throw new InvalidOperationException(
+        $"Ключ шифрования токенов должен иметь длину 32 байта (AES-256). Фактическая длина: {tokenEncryptionKey.Length} байт.");
+}
+
+builder.Services.AddSingleton<ITokenEncryptionService>(new AesGcmTokenEncryptionService(tokenEncryptionKey));
 
 builder.Services.AddHttpClient<IGitHubService, GitHubService>(client =>
 {
     client.BaseAddress = new Uri("https://api.github.com/");
     client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CourseProject", "1.0"));
     client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", gitHubToken);
 });
 
 builder.Services.AddHttpClient<IRepositorySourceService, RepositorySourceService>(client =>
@@ -65,7 +85,6 @@ builder.Services.AddHttpClient<IRepositorySourceService, RepositorySourceService
     client.BaseAddress = new Uri("https://api.github.com/");
     client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CourseProject", "1.0"));
     client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", gitHubToken);
 });
 
 builder.Services.AddScoped<UserService>();
@@ -74,6 +93,7 @@ builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ProjectService>();
 builder.Services.AddScoped<GitHubSyncService>();
 builder.Services.AddScoped<AnalysisService>();
+builder.Services.AddScoped<IGitHubCredentialService, GitHubCredentialService>();
 builder.Services.AddHostedService<AnalysisBackgroundService>();
 builder.Services.AddScoped<ApiJwtEvents>();
 

@@ -1,9 +1,11 @@
 using Api.Common;
-using Microsoft.AspNetCore.RateLimiting;
 using Application.DTOs;
+using Application.Exceptions;
+using Application.Interfaces;
 using Application.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
@@ -15,8 +17,20 @@ namespace Api.Controllers;
 [ApiController]
 [Route("api/auth")]
 [Produces("application/json")]
-public class AuthController(AuthService authService, UserService userService) : ControllerBase
+public class AuthController(
+    AuthService authService,
+    UserService userService,
+    IGitHubCredentialService gitHubCredentialService) : ControllerBase
 {
+    /// <summary>
+    /// Инициализирует новый экземпляр контроллера для обратной совместимости.
+    /// </summary>
+    /// <param name="authService">Сервис аутентификации.</param>
+    /// <param name="userService">Сервис пользователей.</param>
+    public AuthController(AuthService authService, UserService userService)
+        : this(authService, userService, null!)
+    {
+    }
     /// <summary>
     /// Регистрирует нового пользователя.
     /// </summary>
@@ -219,6 +233,178 @@ public class AuthController(AuthService authService, UserService userService) : 
                 exception.Message,
                 ApiErrorCodes.InvalidPassword);
         }
+    }
+
+    /// <summary>
+    /// Получает статус интеграции с GitHub текущего пользователя.
+    /// </summary>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Статус подключения персонального токена GitHub.</returns>
+    [Authorize]
+    [HttpGet("me/github")]
+    [ProducesResponseType(typeof(GitHubIntegrationStatusDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<GitHubIntegrationStatusDto>> GetGitHubStatus(CancellationToken cancellationToken)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var status = await gitHubCredentialService.GetIntegrationStatusAsync(userId, cancellationToken);
+
+        if (status is null)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status404NotFound,
+                "Ресурс не найден",
+                "Пользователь не найден.",
+                ApiErrorCodes.UserNotFound);
+        }
+
+        return Ok(status);
+    }
+
+    /// <summary>
+    /// Подключает или обновляет проверенный персональный токен доступа GitHub (PAT) текущего пользователя.
+    /// </summary>
+    /// <param name="dto">Запрос с токеном GitHub.</param>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Обновленный статус подключения к GitHub.</returns>
+    [Authorize]
+    [HttpPut("me/github")]
+    [ProducesResponseType(typeof(GitHubIntegrationStatusDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status502BadGateway)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
+    public async Task<ActionResult<GitHubIntegrationStatusDto>> SetGitHubToken(
+        [FromBody] GitHubTokenRequestDto dto,
+        CancellationToken cancellationToken)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        if (string.IsNullOrWhiteSpace(dto.Token))
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Ошибка валидации",
+                "Токен GitHub не может быть пустым.",
+                ApiErrorCodes.ValidationFailed);
+        }
+
+        try
+        {
+            var status = await gitHubCredentialService.SetUserTokenAsync(userId, dto.Token, cancellationToken);
+
+            if (status is null)
+            {
+                return ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status404NotFound,
+                    "Ресурс не найден",
+                    "Пользователь не найден.",
+                    ApiErrorCodes.UserNotFound);
+            }
+
+            return Ok(status);
+        }
+        catch (GitHubIntegrationException exception)
+        {
+            return exception.Kind switch
+            {
+                GitHubErrorKind.TokenExpired => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status400BadRequest,
+                    "Некорректный запрос",
+                    exception.Message,
+                    ApiErrorCodes.GitHubTokenExpired),
+
+                GitHubErrorKind.RateLimited => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status502BadGateway,
+                    "Ошибка внешнего сервиса",
+                    exception.Message,
+                    ApiErrorCodes.GitHubRateLimited),
+
+                GitHubErrorKind.AccessDenied => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status502BadGateway,
+                    "Ошибка внешнего сервиса",
+                    exception.Message,
+                    ApiErrorCodes.GitHubAccessDenied),
+
+                _ => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status502BadGateway,
+                    "Ошибка внешнего сервиса",
+                    exception.Message,
+                    ApiErrorCodes.GitHubServiceUnavailable)
+            };
+        }
+        catch (ArgumentException exception)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status400BadRequest,
+                "Некорректный запрос",
+                exception.Message,
+                ApiErrorCodes.ValidationFailed);
+        }
+        catch (Exception)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status500InternalServerError,
+                "Внутренняя ошибка сервера",
+                "Произошла ошибка при сохранении учетных данных GitHub.",
+                ApiErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Удаляет персональный токен доступа GitHub текущего пользователя.
+    /// </summary>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Актуальный статус интеграции с отключенным токеном.</returns>
+    [Authorize]
+    [HttpDelete("me/github")]
+    [ProducesResponseType(typeof(GitHubIntegrationStatusDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<GitHubIntegrationStatusDto>> RemoveGitHubToken(CancellationToken cancellationToken)
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!int.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var status = await gitHubCredentialService.RemoveUserTokenAsync(userId, cancellationToken);
+
+        if (status is null)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status404NotFound,
+                "Ресурс не найден",
+                "Пользователь не найден.",
+                ApiErrorCodes.UserNotFound);
+        }
+
+        return Ok(status);
     }
 
     private static bool IsUsernameUniqueConstraintViolation(DbUpdateException exception)

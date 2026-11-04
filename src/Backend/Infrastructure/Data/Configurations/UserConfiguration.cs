@@ -1,4 +1,4 @@
-﻿using Domain.Entities;
+using Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Npgsql.EntityFrameworkCore.PostgreSQL;
@@ -22,6 +22,16 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
 
         builder.Property(user => user.PasswordHash)
             .IsRequired();
+
+        builder.Property(user => user.EncryptedGitHubToken)
+            .IsRequired(false);
+
+        builder.Property(user => user.GitHubUsername)
+            .HasMaxLength(255)
+            .IsRequired(false);
+
+        builder.Property(user => user.GitHubTokenCreatedAt)
+            .IsRequired(false);
 
         builder.HasOne(user => user.Role)
             .WithMany(role => role.Users)

@@ -18,7 +18,10 @@ public enum GitHubErrorKind
     AccessDenied,
 
     /// <summary>Сервис GitHub недоступен, сбой сети или таймаут.</summary>
-    ServiceUnavailable
+    ServiceUnavailable,
+
+    /// <summary>Персональный токен GitHub недействителен или отозван.</summary>
+    TokenExpired
 }
 
 /// <summary>
