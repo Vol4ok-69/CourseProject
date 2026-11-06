@@ -34,7 +34,7 @@
         <mxCell id="layer_infrastructure" parent="box_backend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe3e3;strokeColor=#e03131;strokeWidth=1.5;" value="&lt;b&gt;Слой Infrastructure (src/Backend/Infrastructure)&lt;/b&gt;&lt;br&gt;Data: AppDbContext (EF Core 10, Npgsql), Migrations, Configurations (3НФ)&lt;br&gt;Services: RepositorySourceService (GitHub zipball), PasswordHasher (BCrypt), JwtTokenService" vertex="1">
           <mxGeometry height="55" width="720" x="30" y="290" as="geometry" />
         </mxCell>
-        <mxCell id="comp_bgservice" parent="box_backend" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=6 3;fillColor=#e7f5ff;strokeColor=#1971c2;strokeWidth=2;" value="&lt;b&gt;BackgroundService (Фоновый воркер)&lt;/b&gt;&lt;br&gt;Опрос очереди &amp;#39;Pending&amp;#39; в PostgreSQL, перевод в &amp;#39;Running&amp;#39;, запуск анализа&lt;br&gt;&lt;font color=&quot;#1971c2&quot;&gt;[Целевой MVP; в текущей версии вызов синхронный в контроллере HTTP]&lt;/font&gt;" vertex="1">
+        <mxCell id="comp_bgservice" parent="box_backend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d3f9d8;strokeColor=#2b8a3e;strokeWidth=1.5;" value="&lt;b&gt;AnalysisBackgroundService&lt;/b&gt;&lt;br&gt;Асинхронная обработка очереди в PostgreSQL (Lease, ExecutionToken)&lt;br&gt;&lt;font color=&quot;#2b8a3e&quot;&gt;[Реализовано: фоновая обработка]&lt;/font&gt;" vertex="1">
           <mxGeometry height="55" width="720" x="30" y="360" as="geometry" />
         </mxCell>
         <mxCell id="box_analyzers" parent="1" style="swimlane;whiteSpace=wrap;html=1;fillColor=#f8f9fa;strokeColor=#495057;fontStyle=1;fontSize=13;startSize=26;" value="Конвейер анализаторов (IAnalyzer)" vertex="1">
@@ -43,13 +43,13 @@
         <mxCell id="an_csharp" parent="box_analyzers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d3f9d8;strokeColor=#2b8a3e;strokeWidth=1.5;" value="&lt;b&gt;CSharpAnalyzer&lt;/b&gt;&lt;br&gt;src/Analyzers/CSharp (Roslyn AST)&lt;br&gt;• CSHARP001: LargeClass (&amp;gt; 500 строк)&lt;br&gt;• CSHARP002: LongMethod (&amp;gt; 50 строк)&lt;br&gt;&lt;font color=&quot;#2b8a3e&quot;&gt;[Реализовано, покрыто xUnit]&lt;/font&gt;" vertex="1">
           <mxGeometry height="75" width="360" x="20" y="35" as="geometry" />
         </mxCell>
-        <mxCell id="an_db" parent="box_analyzers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d3f9d8;strokeColor=#2b8a3e;strokeWidth=1.5;" value="&lt;b&gt;DatabaseAnalyzer&lt;/b&gt;&lt;br&gt;src/Analyzers/Database (EF Core Metadata)&lt;br&gt;• DB01: Отсутствие PK (Warning)&lt;br&gt;• DB02: FK без индекса (Warning)&lt;br&gt;• DB03: Неявные m:n (Info)&lt;br&gt;• DB04: FK с каскадом (Warning)&lt;br&gt;• DB05: Пустой контекст (Info)&lt;br&gt;&lt;font color=&quot;#2b8a3e&quot;&gt;[Реализовано, покрыто 59 тестами xUnit]&lt;/font&gt;" vertex="1">
+        <mxCell id="an_db" parent="box_analyzers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d3f9d8;strokeColor=#2b8a3e;strokeWidth=1.5;" value="&lt;b&gt;DatabaseAnalyzer&lt;/b&gt;&lt;br&gt;src/Analyzers/Database (EF Core Metadata)&lt;br&gt;• DB01: Отсутствие PK (Warning)&lt;br&gt;• DB02: FK без индекса (Warning)&lt;br&gt;• DB03: Неявные m:n (Info)&lt;br&gt;• DB04: FK с каскадом (Warning)&lt;br&gt;• DB05: Пустой контекст (Info)&lt;br&gt;&lt;font color=&quot;#2b8a3e&quot;&gt;[Реализовано, покрыто 64 тестами xUnit]&lt;/font&gt;" vertex="1">
           <mxGeometry height="116" width="360" x="20" y="125" as="geometry" />
         </mxCell>
-        <mxCell id="an_sql" parent="box_analyzers" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=6 3;fillColor=#e7f5ff;strokeColor=#1971c2;strokeWidth=2;" value="&lt;b&gt;SqlAnalyzer&lt;/b&gt;&lt;br&gt;src/Analyzers/Sql (Roslyn C# AST)&lt;br&gt;• SQL001: Интерполяция строк в FromSqlRaw&lt;br&gt;• SQL002: Использование SELECT *&lt;br&gt;&lt;font color=&quot;#1971c2&quot;&gt;[Целевой MVP в текущей итерации]&lt;/font&gt;" vertex="1">
+        <mxCell id="an_sql" parent="box_analyzers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d3f9d8;strokeColor=#2b8a3e;strokeWidth=1.5;" value="&lt;b&gt;SqlAnalyzer&lt;/b&gt;&lt;br&gt;src/Analyzers/Sql (Roslyn C# AST)&lt;br&gt;• SQL001: Небезопасный сырой SQL&lt;br&gt;• SQL002: Использование SELECT *&lt;br&gt;&lt;font color=&quot;#2b8a3e&quot;&gt;[Реализовано, покрыто 44 тестами xUnit]&lt;/font&gt;" vertex="1">
           <mxGeometry height="88" width="360" x="20" y="250" as="geometry" />
         </mxCell>
-        <mxCell id="an_sec" parent="box_analyzers" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=2 2;fillColor=#f3f0ff;strokeColor=#862e9c;strokeWidth=1.5;" value="&lt;b&gt;SecurityAnalyzer&lt;/b&gt;&lt;br&gt;src/Analyzers/Security&lt;br&gt;Поиск секретов, токены, пароли&lt;br&gt;&lt;font color=&quot;#862e9c&quot;&gt;[Будущие этапы]&lt;/font&gt;" vertex="1">
+        <mxCell id="an_sec" parent="box_analyzers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d3f9d8;strokeColor=#2b8a3e;strokeWidth=1.5;" value="&lt;b&gt;SecurityAnalyzer&lt;/b&gt;&lt;br&gt;src/Analyzers/Security (SEC001–SEC005)&lt;br&gt;Поиск секретов, токенов, CORS, паролей&lt;br&gt;&lt;font color=&quot;#2b8a3e&quot;&gt;[Реализовано, покрыто 56 тестами xUnit]&lt;/font&gt;" vertex="1">
           <mxGeometry height="69" width="360" x="20" y="350" as="geometry" />
         </mxCell>
         <mxCell id="box_storage" parent="1" style="swimlane;whiteSpace=wrap;html=1;fillColor=#f8f9fa;strokeColor=#495057;fontStyle=1;fontSize=13;startSize=26;" value="Хранилище данных и внешние сервисы" vertex="1">
@@ -59,7 +59,7 @@
           <mxGeometry height="109" width="550.74" x="30" y="35" as="geometry" />
         </mxCell>
         <mxCell id="ext_github" parent="box_storage" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor=#e7f5ff;strokeColor=#1971c2;strokeWidth=1.5;" value="&lt;b&gt;GitHub REST API&lt;/b&gt;&lt;br&gt;https://api.github.com/&lt;br&gt;Проверка доступности репозиториев&lt;br&gt;Скачивание архивов исходного кода (zipball)&lt;br&gt;&lt;font color=&quot;#2b8a3e&quot;&gt;[Интегрировано в Infrastructure]&lt;/font&gt;" vertex="1">
-          <mxGeometry height="118.75" width="350" x="600" y="35" as="geometry" />
+          <mxGeometry height="118.75" width="340" x="590" y="35" as="geometry" />
         </mxCell>
         <mxCell id="box_legend" parent="box_storage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#adb5bd;fontSize=11;align=left;" value="&lt;b&gt;Условные обозначения:&lt;/b&gt;&lt;br&gt;— &lt;font color=&quot;#2b8a3e&quot;&gt;&lt;b&gt;Сплошная рамка (Зелёный):&lt;/b&gt;&lt;/font&gt; Реализовано и проверено&lt;br&gt;-- &lt;font color=&quot;#1971c2&quot;&gt;&lt;b&gt;Штриховая рамка (Синий):&lt;/b&gt;&lt;/font&gt; Целевой MVP (в разработке / согласовано)&lt;br&gt;·· &lt;font color=&quot;#862e9c&quot;&gt;&lt;b&gt;Точечная рамка (Фиолетовый):&lt;/b&gt;&lt;/font&gt; Будущие этапы" vertex="1">
           <mxGeometry height="104" width="259" x="941" y="35" as="geometry" />
@@ -85,7 +85,7 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="edge_bg_postgres" edge="1" parent="1" source="comp_bgservice" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.6;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;dashed=1;strokeWidth=2;strokeColor=#1971c2;" target="db_postgres" value="3. Выборка задачи из&amp;nbsp;&lt;div&gt;очереди (Pending -&amp;gt; Running)&lt;/div&gt;">
+        <mxCell id="edge_bg_postgres" edge="1" parent="1" source="comp_bgservice" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.6;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;strokeWidth=2;strokeColor=#2b8a3e;" target="db_postgres" value="3. Выборка задачи из&amp;nbsp;&lt;div&gt;очереди (Pending -&amp;gt; Running)&lt;/div&gt;">
           <mxGeometry relative="1" x="0.2296" y="-2" as="geometry">
             <mxPoint as="offset" />
             <Array as="points">

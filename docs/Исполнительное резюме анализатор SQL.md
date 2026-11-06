@@ -1,7 +1,7 @@
-# Спецификация компонента SqlAnalyzer (Целевой компонент MVP)
+# Исполнительное резюме компонента SqlAnalyzer
 
-> **Статус документа:** Целевая техническая спецификация для реализации в рамках MVP.  
-> **Статус реализации в кодовой базе:** Запланирован к разработке (проект `src/Analyzers/Sql` зарезервирован в архитектуре, код и тесты не создавались в рамках текущей задачи).
+> **Статус документа:** Актуальное техническое описание реализованного компонента.<br>
+> **Статус реализации в кодовой базе:** Реализован в `src/Analyzers/Sql`, подключен в решение `CourseProject.slnx`, покрыт 44 юнит-тестами в `tests/SqlAnalyzer.Tests` (все тесты успешно проходят).
 
 ---
 
@@ -10,14 +10,14 @@
 Модуль **SqlAnalyzer** предназначен для статического анализа исходного кода C# с целью выявления потенциальных проблем безопасности и качества при формировании и выполнении SQL-запросов через Entity Framework Core.
 
 ### Архитектурное положение:
-- **Расположение проекта:** `src/Analyzers/Sql` (будет подключен к решению `CourseProject.slnx`).
+- **Расположение проекта:** `src/Analyzers/Sql` (подключен к решению `CourseProject.slnx`).
 - **Зависимости проекта:**
   - `Domain` (доступ к `AnalyzerType.Sql`, перечислению `Severity`);
   - `Application` (интерфейс `IAnalyzer`, модели `AnalyzerContext`, `AnalyzerFinding`);
-  - `Microsoft.CodeAnalysis.CSharp` (Roslyn AST и семантическая модель).
+  - `Microsoft.CodeAnalysis.CSharp` (Roslyn C# Syntax API / AST без построения `SemanticModel`).
 - **Контракт взаимодействия:** реализует единый интерфейс `IAnalyzer`:
   ```csharp
-  namespace Sql;
+  namespace SqlAnalyzer;
 
   public sealed class SqlAnalyzer : IAnalyzer
   {
@@ -28,7 +28,7 @@
           CancellationToken cancellationToken = default);
   }
   ```
-- **Способ анализа:** статический синтаксический и семантический анализ деревьев Roslyn (`CSharpSyntaxTree`, `SyntaxNode`, `InvocationExpressionSyntax`) без динамического перехвата запросов в runtime.
+- **Способ анализа:** статический синтаксический анализ синтаксических деревьев Roslyn (`CSharpSyntaxTree`, `SyntaxNode`, `InvocationExpressionSyntax`, `InterpolatedStringExpressionSyntax`) без динамического перехвата запросов в runtime и без построения тяжелой семантической модели (компиляция и восстановление NuGet-пакетов не требуются).
 
 ---
 
@@ -119,20 +119,36 @@
 
 ---
 
-## 3. План тестирования при реализации
+## 3. Фактическое покрытие тестами (`tests/SqlAnalyzer.Tests`)
 
-После создания проекта `src/Analyzers/Sql` в рамках следующего этапа разработки для него будет создан проект юнит-тестов `tests/SqlAnalyzer.Tests` с обязательным покрытием сценариев:
+Модуль полностью покрыт автоматизированными тестами xUnit в тестовом проекте `tests/SqlAnalyzer.Tests` (всего **44 теста**, все успешно пройдены):
 
-1. **Тесты для SQL001:**
-   - `AnalyzeAsync_InterpolatedStringInFromSqlRaw_ReturnsWarning()`
-   - `AnalyzeAsync_ConcatenatedStringInFromSqlRaw_ReturnsWarning()`
-   - `AnalyzeAsync_InterpolatedStringInExecuteSqlRawAsync_ReturnsWarning()`
-   - `AnalyzeAsync_FromSqlInterpolated_DoesNotReturnWarning()` (позитивный сценарий)
-   - `AnalyzeAsync_ConstantStringWithParameters_DoesNotReturnWarning()` (позитивный сценарий)
-2. **Тесты для SQL002:**
-   - `AnalyzeAsync_SelectStarInFromSqlRaw_ReturnsInfo()`
-   - `AnalyzeAsync_SelectStarCaseInsensitive_ReturnsInfo()`
-   - `AnalyzeAsync_ExplicitColumnsInFromSqlRaw_DoesNotReturnInfo()` (позитивный сценарий)
-   - `AnalyzeAsync_SelectCountStar_DoesNotReturnInfo()` (проверка исключения агрегатных функций)
-3. **Интеграционные тесты:**
-   - Проверка возврата `AnalyzerFinding` с типом `AnalyzerType.Sql`, корректным путем к C# файлу и номером строки в исходнике.
+1. **`Sql001UnsafeQueryRuleTests` (20 тестов):**
+   - обнаружение интерполяции строк в `FromSqlRaw`, `ExecuteSqlRaw`, `ExecuteSqlRawAsync`;
+   - обнаружение строковой конкатенации с бинарными операторами `+`;
+   - анализ локальных переменных, инициализированных небезопасными строками;
+   - корректный пропуск параметризованных вызовов `FromSqlInterpolated` и `ExecuteSqlInterpolatedAsync`;
+   - корректный пропуск запросов с константными строками и явными параметрами `DbParameter` / `NpgsqlParameter`.
+2. **`Sql002SelectStarRuleTests` (18 тестов):**
+   - обнаружение неявной выборки `SELECT *` в `FromSqlRaw` и `FromSqlInterpolated`;
+   - регистронезависимый поиск (`select *`, `SELECT *`, множественные пробелы и переносы строк);
+   - корректный пропуск агрегатных выражений (`SELECT COUNT(*)`, `COUNT(1)`);
+   - корректный пропуск запросов с явным перечислением столбцов.
+3. **`SqlAnalyzerTests` (6 тестов):**
+   - комплексный прогон анализатора по директории репозитория;
+   - игнорирование служебных каталогов (`bin`, `obj`, `.git`, `.vs`);
+   - корректное распространение токена отмены (`CancellationToken`);
+   - валидация входных аргументов (`ArgumentNullException`, `ArgumentException`, `DirectoryNotFoundException`).
+
+---
+
+## 4. Разделение реализованного функционала и планов развития
+
+| Компонент / Возможность | Статус | Примечание |
+| :--- | :---: | :--- |
+| Правило `SQL001` (Unsafe Raw SQL) | **Реализовано** | Чистый синтаксический анализ деревьев Roslyn AST. |
+| Правило `SQL002` (Select *) | **Реализовано** | Поиск неявных выборок через регулярное выражение в строковых литералах. |
+| Игнорирование служебных каталогов | **Реализовано** | Фильтрация `bin`, `obj`, `.git`, `.vs`, `node_modules` и др. |
+| Набор юнит-тестов (44 теста) | **Реализовано** | 100% тестов проходят в `tests/SqlAnalyzer.Tests`. |
+| Глубокий анализ потока данных (Taint Analysis) | *Планы* | Отслеживание передачи небезопасных строк через фабрики и параметры методов. |
+| Семантическая модель (`SemanticModel`) | *Планы* | Точное разрешение типов и перегрузок методов (потребует компиляции и NuGet restore). |
