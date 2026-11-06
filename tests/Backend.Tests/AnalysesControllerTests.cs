@@ -23,7 +23,7 @@ public sealed class AnalysesControllerTests
         var projectRepo = new Mock<IProjectRepository>();
         var sourceService = new Mock<IRepositorySourceService>();
 
-        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, []);
+        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], Mock.Of<IGitHubCredentialService>());
         var projectService = new ProjectService(projectRepo.Object);
         var commitService = new CommitService(commitRepo.Object, projectRepo.Object);
 

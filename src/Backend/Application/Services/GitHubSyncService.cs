@@ -1,12 +1,28 @@
 using Application.DTOs;
+using Application.Exceptions;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
 
 namespace Application.Services;
 
-public class GitHubSyncService(IGitHubService gitHubService, IProjectRepository projectRepository, ICommitRepository commitRepository)
+/// <summary>
+/// Сервис синхронизации коммитов проекта с GitHub.
+/// </summary>
+public class GitHubSyncService(
+    IGitHubService gitHubService,
+    IProjectRepository projectRepository,
+    ICommitRepository commitRepository,
+    IGitHubCredentialService gitHubCredentialService)
 {
+    private readonly IGitHubCredentialService _gitHubCredentialService = gitHubCredentialService ?? throw new ArgumentNullException(nameof(gitHubCredentialService));
+
+    /// <summary>
+    /// Выполняет синхронизацию коммитов проекта с GitHub с использованием персонального токена владельца проекта.
+    /// </summary>
+    /// <param name="projectId">Идентификатор синхронизируемого проекта.</param>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Результат синхронизации либо <c>null</c>, если проект не найден.</returns>
     public async Task<GitHubSyncResultDto?> SyncAsync(int projectId, CancellationToken cancellationToken = default)
     {
         var project = await projectRepository.GetByIdAsync(projectId, cancellationToken);
@@ -16,7 +32,16 @@ public class GitHubSyncService(IGitHubService gitHubService, IProjectRepository 
             return null;
         }
 
-        var githubCommits = await gitHubService.GetCommitsAsync(project.RepoUrl, cancellationToken);
+        var personalAccessToken = await _gitHubCredentialService.GetUserTokenAsync(project.OwnerId, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(personalAccessToken))
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.TokenRequired,
+                "Для синхронизации проекта требуется подключение персонального токена GitHub владельца проекта.");
+        }
+
+        var githubCommits = await gitHubService.GetCommitsAsync(project.RepoUrl, personalAccessToken, cancellationToken);
 
         var added = 0;
         var skipped = 0;

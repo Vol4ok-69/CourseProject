@@ -4,6 +4,7 @@ using Infrastructure.GitHub.Models;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Infrastructure.GitHub;
 
@@ -19,57 +20,91 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
 
         var repository = GitHubRepositoryReference.Parse(repositoryUrl);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"repos/{repository.Owner}/{repository.Name}/commits");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personalAccessToken);
+        var allCommits = new List<GitHubCommitInfo>();
+        var visitedUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        HttpResponseMessage response;
-        try
-        {
-            response = await httpClient.SendAsync(request, cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            throw new GitHubIntegrationException(
-                GitHubErrorKind.ServiceUnavailable,
-                "Сервис GitHub недоступен или превышено время ожидания ответа.",
-                ex);
-        }
+        var currentUrl = $"repos/{repository.Owner}/{repository.Name}/commits?per_page=100";
 
-        using (response)
+        while (!string.IsNullOrEmpty(currentUrl))
         {
-            if (!response.IsSuccessStatusCode)
-            {
-                await HandleErrorResponseAsync(response, cancellationToken);
-            }
+            cancellationToken.ThrowIfCancellationRequested();
 
-            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var request = new HttpRequestMessage(HttpMethod.Get, currentUrl);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personalAccessToken);
 
+            HttpResponseMessage response;
             try
             {
-                var commits = JsonSerializer.Deserialize<List<GitHubCommitResponse>>(
-                    json,
-                    new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true
-                    });
-
-                return commits?.Select(commit => new GitHubCommitInfo(
-                    commit.Sha,
-                    commit.Commit?.Author?.Date
-                )).ToList() ?? [];
+                response = await httpClient.SendAsync(request, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
                 throw new GitHubIntegrationException(
                     GitHubErrorKind.ServiceUnavailable,
-                    "Ошибка обработки ответа GitHub API.",
+                    "Сервис GitHub недоступен или превышено время ожидания ответа.",
                     ex);
             }
+
+            using (response)
+            {
+                if (!response.IsSuccessStatusCode)
+                {
+                    await HandleErrorResponseAsync(response, cancellationToken);
+                }
+
+                var json = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                List<GitHubCommitResponse>? pageCommits;
+                try
+                {
+                    pageCommits = JsonSerializer.Deserialize<List<GitHubCommitResponse>>(
+                        json,
+                        new JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true
+                        });
+                }
+                catch (Exception ex)
+                {
+                    throw new GitHubIntegrationException(
+                        GitHubErrorKind.ServiceUnavailable,
+                        "Ошибка обработки ответа GitHub API.",
+                        ex);
+                }
+
+                if (pageCommits is not null && pageCommits.Count > 0)
+                {
+                    foreach (var commit in pageCommits)
+                    {
+                        allCommits.Add(new GitHubCommitInfo(
+                            commit.Sha,
+                            commit.Commit?.Author?.Date
+                        ));
+                    }
+                }
+
+                var nextUrl = GetNextPageUrl(response.Headers);
+                if (string.IsNullOrEmpty(nextUrl))
+                {
+                    break;
+                }
+
+                ValidateNextPageUrl(nextUrl, repository);
+
+                if (!visitedUrls.Add(nextUrl))
+                {
+                    break;
+                }
+
+                currentUrl = nextUrl;
+            }
         }
+
+        return allCommits;
     }
 
     public async Task<string> VerifyTokenAndGetUsernameAsync(
@@ -221,5 +256,76 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
         throw new GitHubIntegrationException(
             GitHubErrorKind.ServiceUnavailable,
             $"GitHub API вернул статус {(int)statusCode} {statusCode}.");
+    }
+
+    private static string? GetNextPageUrl(HttpResponseHeaders headers)
+    {
+        if (!headers.TryGetValues("Link", out var linkValues))
+        {
+            return null;
+        }
+
+        foreach (var linkHeader in linkValues)
+        {
+            var parts = linkHeader.Split(',');
+            foreach (var part in parts)
+            {
+                var segments = part.Split(';');
+                if (segments.Length < 2)
+                {
+                    continue;
+                }
+
+                var linkMatch = Regex.Match(segments[0].Trim(), @"^<([^>]+)>$");
+                if (!linkMatch.Success)
+                {
+                    continue;
+                }
+
+                for (int i = 1; i < segments.Length; i++)
+                {
+                    var relMatch = Regex.Match(segments[i].Trim(), @"^rel\s*=\s*(?:""([^""]+)""|([^;,\s]+))$", RegexOptions.IgnoreCase);
+                    if (relMatch.Success)
+                    {
+                        var relValue = relMatch.Groups[1].Success ? relMatch.Groups[1].Value : relMatch.Groups[2].Value;
+                        if (string.Equals(relValue, "next", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return linkMatch.Groups[1].Value;
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static void ValidateNextPageUrl(string nextUrl, GitHubRepositoryReference repository)
+    {
+        if (!Uri.TryCreate(nextUrl, UriKind.Absolute, out var nextUri))
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.ServiceUnavailable,
+                "Обнаружен некорректный URL следующей страницы в заголовке Link GitHub API.");
+        }
+
+        if (!string.Equals(nextUri.Scheme, "https", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(nextUri.Host, "api.github.com", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.ServiceUnavailable,
+                "URL следующей страницы в заголовке Link GitHub API указывает на недопустимый хост или протокол.");
+        }
+
+        var expectedRepoPath = $"/repos/{repository.Owner}/{repository.Name}/commits";
+        var isStandardPath = nextUri.AbsolutePath.StartsWith(expectedRepoPath, StringComparison.OrdinalIgnoreCase);
+        var isRepositoriesIdPath = Regex.IsMatch(nextUri.AbsolutePath, @"^/repositories/\d+/commits(?:/)?$", RegexOptions.IgnoreCase);
+
+        if (!isStandardPath && !isRepositoriesIdPath)
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.ServiceUnavailable,
+                "URL следующей страницы в заголовке Link GitHub API указывает на недопустимый путь ресурса.");
+        }
     }
 }

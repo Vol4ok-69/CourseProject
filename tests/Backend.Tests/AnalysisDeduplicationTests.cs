@@ -83,7 +83,7 @@ public sealed class AnalysisDeduplicationTests
         var projectRepo = new ProjectRepository(context);
         var sourceService = Mock.Of<IRepositorySourceService>();
 
-        var analysisService = new AnalysisService(analysisRepo, commitRepo, sourceService, []);
+        var analysisService = new AnalysisService(analysisRepo, commitRepo, sourceService, [], Mock.Of<IGitHubCredentialService>());
         var commitService = new CommitService(commitRepo, projectRepo);
         var projectService = new ProjectService(projectRepo);
 

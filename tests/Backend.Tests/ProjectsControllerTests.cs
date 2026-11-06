@@ -16,14 +16,24 @@ namespace Backend.Tests;
 
 public sealed class ProjectsControllerTests
 {
-    private static (ProjectsController Controller, Mock<IProjectRepository> ProjectRepo, Mock<IGitHubService> GitHubService) CreateController(string? userIdClaim = "1", bool isAdmin = false)
+    private static (ProjectsController Controller, Mock<IProjectRepository> ProjectRepo, Mock<IGitHubService> GitHubService) CreateController(
+        string? userIdClaim = "1",
+        bool isAdmin = false,
+        Mock<IGitHubCredentialService>? credentialServiceMock = null)
     {
         var projectRepo = new Mock<IProjectRepository>();
         var commitRepo = new Mock<ICommitRepository>();
         var gitHubService = new Mock<IGitHubService>();
+        var credentialService = credentialServiceMock ?? new Mock<IGitHubCredentialService>();
+
+        if (credentialServiceMock is null)
+        {
+            credentialService.Setup(c => c.GetUserTokenAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("ghp_default_test_token");
+        }
 
         var projectService = new ProjectService(projectRepo.Object);
-        var gitHubSyncService = new GitHubSyncService(gitHubService.Object, projectRepo.Object, commitRepo.Object);
+        var gitHubSyncService = new GitHubSyncService(gitHubService.Object, projectRepo.Object, commitRepo.Object, credentialService.Object);
 
         var controller = new ProjectsController(projectService, gitHubSyncService);
 
@@ -379,7 +389,7 @@ public sealed class ProjectsControllerTests
         var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/owner/repo" };
         projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
 
-        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", It.IsAny<CancellationToken>()))
+        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", "ghp_default_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GitHubCommitInfo>());
 
         var actionResult = await controller.SyncGitHub(10, CancellationToken.None);
@@ -397,7 +407,7 @@ public sealed class ProjectsControllerTests
         var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/owner/repo" };
         projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
 
-        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", It.IsAny<CancellationToken>()))
+        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", "ghp_default_test_token", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.RateLimited, "Превышен лимит запросов."));
 
         var actionResult = await controller.SyncGitHub(10, CancellationToken.None);
@@ -417,7 +427,7 @@ public sealed class ProjectsControllerTests
         var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/owner/repo" };
         projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
 
-        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", It.IsAny<CancellationToken>()))
+        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", "ghp_default_test_token", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.RepoNotFound, "Репозиторий не найден."));
 
         var actionResult = await controller.SyncGitHub(10, CancellationToken.None);
@@ -427,5 +437,89 @@ public sealed class ProjectsControllerTests
 
         var problem = Assert.IsType<ProblemDetails>(errorResult.Value);
         Assert.Equal(ApiErrorCodes.GitHubRepoNotFound, problem.Extensions["code"]?.ToString());
+    }
+
+    [Fact]
+    public async Task SyncGitHub_TokenRequired_Returns400BadRequestWithGitHubTokenRequiredCode()
+    {
+        var credentialMock = new Mock<IGitHubCredentialService>();
+        credentialMock.Setup(c => c.GetUserTokenAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string?)null);
+
+        var (controller, projectRepo, gitHubService) = CreateController(
+            userIdClaim: "1",
+            isAdmin: false,
+            credentialServiceMock: credentialMock);
+
+        var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/owner/repo" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        var actionResult = await controller.SyncGitHub(10, CancellationToken.None);
+
+        var errorResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status400BadRequest, errorResult.StatusCode);
+
+        var problem = Assert.IsType<ProblemDetails>(errorResult.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal(ApiErrorCodes.GitHubTokenRequired, problem.Extensions["code"]?.ToString());
+
+        gitHubService.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SyncGitHub_TokenExpired_Returns400BadRequestWithGitHubTokenExpiredCode()
+    {
+        var (controller, projectRepo, gitHubService) = CreateController(userIdClaim: "1", isAdmin: false);
+
+        var project = new Project { Id = 10, Name = "Proj", OwnerId = 1, RepoUrl = "https://github.com/owner/repo" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", "ghp_default_test_token", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.TokenExpired, "Токен недействителен или отозван."));
+
+        var actionResult = await controller.SyncGitHub(10, CancellationToken.None);
+
+        var errorResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status400BadRequest, errorResult.StatusCode);
+
+        var problem = Assert.IsType<ProblemDetails>(errorResult.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal(ApiErrorCodes.GitHubTokenExpired, problem.Extensions["code"]?.ToString());
+    }
+
+    [Fact]
+    public async Task SyncGitHub_AdminSyncsOtherUserProject_UsesProjectOwnerPat()
+    {
+        var credentialMock = new Mock<IGitHubCredentialService>();
+        const int ownerId = 2;
+        const int adminId = 99;
+        const string ownerPat = "ghp_owner_pat_222";
+        const string adminPat = "ghp_admin_pat_999";
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ownerPat);
+        credentialMock.Setup(c => c.GetUserTokenAsync(adminId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(adminPat);
+
+        var (controller, projectRepo, gitHubService) = CreateController(
+            userIdClaim: adminId.ToString(),
+            isAdmin: true,
+            credentialServiceMock: credentialMock);
+
+        var project = new Project { Id = 10, Name = "User2Proj", OwnerId = ownerId, RepoUrl = "https://github.com/owner/repo" };
+        projectRepo.Setup(x => x.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(project);
+
+        gitHubService.Setup(x => x.GetCommitsAsync("https://github.com/owner/repo", ownerPat, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GitHubCommitInfo>());
+
+        var actionResult = await controller.SyncGitHub(10, CancellationToken.None);
+
+        var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status200OK, okResult.StatusCode);
+
+        credentialMock.Verify(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()), Times.Once);
+        credentialMock.Verify(c => c.GetUserTokenAsync(adminId, It.IsAny<CancellationToken>()), Times.Never);
+        gitHubService.Verify(g => g.GetCommitsAsync("https://github.com/owner/repo", ownerPat, It.IsAny<CancellationToken>()), Times.Once);
+        gitHubService.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), adminPat, It.IsAny<CancellationToken>()), Times.Never);
     }
 }

@@ -414,7 +414,7 @@ public sealed class DtoValidationAndAnalysisErrorTests
         commitRepo.Setup(x => x.GetByIdAsync(20, It.IsAny<CancellationToken>())).ReturnsAsync(commit);
         analysisRepo.Setup(x => x.GetByIdAsync(30, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
 
-        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, Mock.Of<IRepositorySourceService>(), []);
+        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, Mock.Of<IRepositorySourceService>(), [], Mock.Of<IGitHubCredentialService>());
         var commitService = new CommitService(commitRepo.Object, projectRepo.Object);
         var projectService = new ProjectService(projectRepo.Object);
 

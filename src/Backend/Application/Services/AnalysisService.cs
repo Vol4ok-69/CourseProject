@@ -12,8 +12,10 @@ public class AnalysisService(
     IAnalysisRepository analysisRepository,
     ICommitRepository commitRepository,
     IRepositorySourceService repositorySourceService,
-    IEnumerable<IAnalyzer> analyzers)
+    IEnumerable<IAnalyzer> analyzers,
+    IGitHubCredentialService gitHubCredentialService)
 {
+    private readonly IGitHubCredentialService _gitHubCredentialService = gitHubCredentialService ?? throw new ArgumentNullException(nameof(gitHubCredentialService));
     /// <summary>
     /// Создаёт задачу анализа коммита со статусом Pending и сохраняет её в очередь задач.
     /// Не выполняет запуск анализаторов и не скачивает исходный код.
@@ -111,10 +113,20 @@ public class AnalysisService(
                 throw new InvalidOperationException($"Проект для коммита {commit.Id} не найден.");
             }
 
+            var personalAccessToken = await _gitHubCredentialService.GetUserTokenAsync(commit.Project.OwnerId, leaseCts.Token);
+
+            if (string.IsNullOrWhiteSpace(personalAccessToken))
+            {
+                throw new GitHubIntegrationException(
+                    GitHubErrorKind.TokenRequired,
+                    "Для выполнения анализа требуется подключение персонального токена GitHub владельца проекта.");
+            }
+
             var repositoryPath = await repositorySourceService.DownloadAndExtractAsync(
                 commit.Project.RepoUrl,
                 commit.CommitHash,
                 analysis.Id,
+                personalAccessToken,
                 leaseCts.Token);
 
             var context = new AnalyzerContext
@@ -269,10 +281,20 @@ public class AnalysisService(
 
         try
         {
+            var personalAccessToken = await _gitHubCredentialService.GetUserTokenAsync(commit.Project.OwnerId, cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(personalAccessToken))
+            {
+                throw new GitHubIntegrationException(
+                    GitHubErrorKind.TokenRequired,
+                    "Для выполнения анализа требуется подключение персонального токена GitHub владельца проекта.");
+            }
+
             var repositoryPath = await repositorySourceService.DownloadAndExtractAsync(
                 commit.Project.RepoUrl,
                 commit.CommitHash,
                 analysis.Id,
+                personalAccessToken,
                 cancellationToken);
 
             var context = new AnalyzerContext
@@ -364,15 +386,6 @@ public class AnalysisService(
         }
 
         // Проверяем всю цепочку исключений на наличие конфиденциальных данных и технических параметров
-        var sensitivePatterns = new[]
-        {
-            "password", "pwd", "secret", "token", "bearer", "authorization",
-            "connectionstring", "host=", "server=", "database=", "user id=",
-            "username=", "port=", "ssl mode=", "stack trace", "at System.",
-            "exception:", "stacktrace", "credentials", "apikey", "api_key",
-            "private_key", "localhost", "127.0.0.1"
-        };
-
         var currentEx = exception;
         while (currentEx != null)
         {
@@ -380,16 +393,7 @@ public class AnalysisService(
             if (!string.IsNullOrEmpty(rawMsg))
             {
                 var msg = StripStackTrace(rawMsg);
-                foreach (var pattern in sensitivePatterns)
-                {
-                    if (msg.Contains(pattern, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return "Во время выполнения анализа произошла внутренняя ошибка.";
-                    }
-                }
-
-                // Проверка на внутренние приватные IP-адреса (10.x.x.x, 192.168.x.x, 172.16-31.x.x)
-                if (Regex.IsMatch(msg, @"\b(?:10\.\d{1,3}|192\.168\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1]))\.\d{1,3}\b"))
+                if (ContainsSensitiveData(msg))
                 {
                     return "Во время выполнения анализа произошла внутренняя ошибка.";
                 }
@@ -403,12 +407,9 @@ public class AnalysisService(
                     if (!string.IsNullOrEmpty(innerRaw))
                     {
                         var innerMsg = StripStackTrace(innerRaw);
-                        foreach (var pattern in sensitivePatterns)
+                        if (ContainsSensitiveData(innerMsg))
                         {
-                            if (innerMsg.Contains(pattern, StringComparison.OrdinalIgnoreCase))
-                            {
-                                return "Во время выполнения анализа произошла внутренняя ошибка.";
-                            }
+                            return "Во время выполнения анализа произошла внутренняя ошибка.";
                         }
                     }
                 }
@@ -481,5 +482,74 @@ public class AnalysisService(
         }
 
         return message;
+    }
+    private static bool ContainsSensitiveData(string msg)
+    {
+        if (string.IsNullOrWhiteSpace(msg))
+        {
+            return false;
+        }
+
+        // 1. Официальные префиксы GitHub PAT (безусловное маскирование)
+        var gitHubPatPrefixes = new[]
+        {
+            "ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_"
+        };
+
+        foreach (var prefix in gitHubPatPrefixes)
+        {
+            if (msg.Contains(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        // 2. Параметры строк подключения к базам данных и серверные параметры
+        var connectionStringPatterns = new[]
+        {
+            "connectionstring", "host=", "server=", "database=", "user id=",
+            "username=", "port=", "ssl mode=", "localhost", "127.0.0.1"
+        };
+
+        foreach (var pattern in connectionStringPatterns)
+        {
+            if (msg.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        // 3. Трассировка стека и системные дампы
+        var stackTracePatterns = new[]
+        {
+            "stack trace", "stacktrace", "at System.", "exception:"
+        };
+
+        foreach (var pattern in stackTracePatterns)
+        {
+            if (msg.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        // 4. Приватные IP-адреса локальных сетей (10.x.x.x, 192.168.x.x, 172.16-31.x.x)
+        if (Regex.IsMatch(msg, @"\b(?:10\.\d{1,3}|192\.168\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1]))\.\d{1,3}\b"))
+        {
+            return true;
+        }
+
+        // 5. Контекстное определение утечек авторизационных данных и токенов:
+        // - Bearer <token>
+        // - Authorization: <value>
+        // - key/secret/password/token/credentials с присваиванием значения через = или :
+        if (Regex.IsMatch(msg, @"\bbearer\s+\S+", RegexOptions.IgnoreCase) ||
+            Regex.IsMatch(msg, @"\bauthorization\s*:\s*\S+", RegexOptions.IgnoreCase) ||
+            Regex.IsMatch(msg, @"\b(?:password|pwd|secret|api[_-]?key|private[_-]?key|access[_-]?token|refresh[_-]?token|credentials|token)\s*[:=]\s*\S+", RegexOptions.IgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
     }
 }

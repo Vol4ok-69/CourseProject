@@ -1,4 +1,5 @@
-﻿using Application.Analyzers;
+using Application.Analyzers;
+using Application.Exceptions;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Application.Services;
@@ -17,6 +18,7 @@ public class AnalysisServiceTests
         var analysisRepository = new Mock<IAnalysisRepository>();
         var commitRepository = new Mock<ICommitRepository>();
         var repositorySourceService = new Mock<IRepositorySourceService>();
+        var credentialService = new Mock<IGitHubCredentialService>();
         var analyzer = new Mock<IAnalyzer>();
 
         var commit = new Commit
@@ -28,26 +30,28 @@ public class AnalysisServiceTests
             {
                 Id = 1,
                 Name = "Test",
-                RepoUrl = "https://github.com/test/repository"
+                RepoUrl = "https://github.com/test/repository",
+                OwnerId = 1
             }
         };
 
         commitRepository.Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(commit);
 
-        repositorySourceService.Setup(x => x.DownloadAndExtractAsync
-        (
-                "https://github.com/test/repository",
-                "abc123",
-                It.IsAny<int>(),
-                It.IsAny<CancellationToken>()
-        )).ReturnsAsync("C:\\Repository");
+        credentialService.Setup(x => x.GetUserTokenAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync("ghp_test_token");
 
-        analyzer.Setup(x => x.AnalyzeAsync
-        (
-                It.IsAny<AnalyzerContext>(),
-                It.IsAny<CancellationToken>()
-        )).ReturnsAsync
-        (
+        repositorySourceService.Setup(x => x.DownloadAndExtractAsync(
+            "https://github.com/test/repository",
+            "abc123",
+            It.IsAny<int>(),
+            "ghp_test_token",
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync("C:\\Repository");
+
+        analyzer.Setup(x => x.AnalyzeAsync(
+            It.IsAny<AnalyzerContext>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
             [
                 new AnalyzerFinding
                 {
@@ -58,16 +62,14 @@ public class AnalysisServiceTests
                     Severity = Severity.Warning,
                     Recommendation = "Test recommendation"
                 }
-            ]
-        );
+            ]);
 
-        var service = new AnalysisService
-        (
+        var service = new AnalysisService(
             analysisRepository.Object,
             commitRepository.Object,
             repositorySourceService.Object,
-            [analyzer.Object]
-        );
+            [analyzer.Object],
+            credentialService.Object);
 
         var result = await service.AnalyzeAsync(1);
 
@@ -83,37 +85,32 @@ public class AnalysisServiceTests
         Assert.Equal(Severity.Warning, finding.Severity);
         Assert.Equal(AnalyzerType.CSharp, finding.AnalyzerType);
 
-        analysisRepository.Verify(x => x.AddAsync
-        (
+        analysisRepository.Verify(x => x.AddAsync(
             It.IsAny<Analysis>(),
-            It.IsAny<CancellationToken>()
-        ),
-        Times.Once);
-
-        analysisRepository.Verify(
-            x => x.UpdateAsync(
-                It.IsAny<Analysis>(),
-                It.IsAny<CancellationToken>()),
+            It.IsAny<CancellationToken>()),
             Times.Once);
 
-        repositorySourceService.Verify(
-            x => x.DownloadAndExtractAsync(
-                "https://github.com/test/repository",
-                "abc123",
-                It.IsAny<int>(),
-                It.IsAny<CancellationToken>()),
+        analysisRepository.Verify(x => x.UpdateAsync(
+            It.IsAny<Analysis>(),
+            It.IsAny<CancellationToken>()),
             Times.Once);
 
-        repositorySourceService.Verify(
-            x => x.CleanupAsync(
-                It.IsAny<int>(),
-                It.IsAny<CancellationToken>()),
+        repositorySourceService.Verify(x => x.DownloadAndExtractAsync(
+            "https://github.com/test/repository",
+            "abc123",
+            It.IsAny<int>(),
+            "ghp_test_token",
+            It.IsAny<CancellationToken>()),
             Times.Once);
 
-        analyzer.Verify(
-            x => x.AnalyzeAsync(
-                It.IsAny<AnalyzerContext>(),
-                It.IsAny<CancellationToken>()),
+        repositorySourceService.Verify(x => x.CleanupAsync(
+            It.IsAny<int>(),
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        analyzer.Verify(x => x.AnalyzeAsync(
+            It.IsAny<AnalyzerContext>(),
+            It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -133,31 +130,87 @@ public class AnalysisServiceTests
             analysisRepository.Object,
             commitRepository.Object,
             repositorySourceService.Object,
-            [analyzer.Object]);
+            [analyzer.Object],
+            Mock.Of<IGitHubCredentialService>());
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
             () => service.AnalyzeAsync(1));
 
         Assert.Equal("Коммит не найден.", exception.Message);
 
-        analysisRepository.Verify(
-            x => x.AddAsync(
-                It.IsAny<Analysis>(),
-                It.IsAny<CancellationToken>()),
+        analysisRepository.Verify(x => x.AddAsync(
+            It.IsAny<Analysis>(),
+            It.IsAny<CancellationToken>()),
             Times.Never);
 
-        repositorySourceService.Verify(
-            x => x.DownloadAndExtractAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<int>(),
-                It.IsAny<CancellationToken>()),
+        repositorySourceService.Verify(x => x.DownloadAndExtractAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<int>(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()),
             Times.Never);
 
-        analyzer.Verify(
-            x => x.AnalyzeAsync(
-                It.IsAny<AnalyzerContext>(),
-                It.IsAny<CancellationToken>()),
+        analyzer.Verify(x => x.AnalyzeAsync(
+            It.IsAny<AnalyzerContext>(),
+            It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_WhenOwnerHasNoPat_ThrowsTokenRequiredException_AndNeverCallsSourceService()
+    {
+        var analysisRepository = new Mock<IAnalysisRepository>();
+        var commitRepository = new Mock<ICommitRepository>();
+        var repositorySourceService = new Mock<IRepositorySourceService>();
+        var credentialService = new Mock<IGitHubCredentialService>();
+        var analyzer = new Mock<IAnalyzer>();
+
+        var commit = new Commit
+        {
+            Id = 1,
+            ProjectId = 1,
+            CommitHash = "abc123",
+            Project = new Project
+            {
+                Id = 1,
+                Name = "Test",
+                RepoUrl = "https://github.com/test/repository",
+                OwnerId = 42
+            }
+        };
+
+        commitRepository.Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(commit);
+        credentialService.Setup(x => x.GetUserTokenAsync(42, It.IsAny<CancellationToken>())).ReturnsAsync((string?)null);
+
+        var service = new AnalysisService(
+            analysisRepository.Object,
+            commitRepository.Object,
+            repositorySourceService.Object,
+            [analyzer.Object],
+            credentialService.Object);
+
+        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.AnalyzeAsync(1));
+
+        Assert.Equal(GitHubErrorKind.TokenRequired, ex.Kind);
+        Assert.Contains("токена GitHub", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Источник не должен вызываться
+        repositorySourceService.Verify(x => x.DownloadAndExtractAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<int>(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        // Анализ должен быть помечен как Failed
+        analysisRepository.Verify(x => x.UpdateAsync(
+            It.Is<Analysis>(a => a.Status == AnalysisStatus.Failed),
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // Cleanup должен быть вызван в finally блоке
+        repositorySourceService.Verify(x => x.CleanupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

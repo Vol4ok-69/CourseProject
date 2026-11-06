@@ -367,6 +367,20 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
         {
             return exception.Kind switch
             {
+                GitHubErrorKind.TokenRequired => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status400BadRequest,
+                    "Некорректный запрос",
+                    exception.Message,
+                    ApiErrorCodes.GitHubTokenRequired),
+
+                GitHubErrorKind.TokenExpired => ApiProblemDetails.Create(
+                    this,
+                    StatusCodes.Status400BadRequest,
+                    "Некорректный запрос",
+                    exception.Message,
+                    ApiErrorCodes.GitHubTokenExpired),
+
                 GitHubErrorKind.InvalidRepoUrl => ApiProblemDetails.Create(
                     this,
                     StatusCodes.Status400BadRequest,

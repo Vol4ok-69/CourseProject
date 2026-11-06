@@ -74,6 +74,9 @@ public static class ApiErrorCodes
     /// <summary>Персональный токен GitHub недействителен или отозван.</summary>
     public const string GitHubTokenExpired = "GITHUB_TOKEN_EXPIRED";
 
+    /// <summary>У владельца проекта не настроен персональный токен GitHub (PAT).</summary>
+    public const string GitHubTokenRequired = "GITHUB_TOKEN_REQUIRED";
+
     /// <summary>Сервис GitHub недоступен.</summary>
     public const string GitHubServiceUnavailable = "GITHUB_SERVICE_UNAVAILABLE";
 

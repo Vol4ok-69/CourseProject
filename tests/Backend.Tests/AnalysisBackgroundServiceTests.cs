@@ -19,6 +19,7 @@ public sealed class AnalysisBackgroundServiceTests
         var analysisRepo = new Mock<IAnalysisRepository>();
         var commitRepo = new Mock<ICommitRepository>();
         var sourceService = new Mock<IRepositorySourceService>();
+        var credentialService = new Mock<IGitHubCredentialService>();
         var logger = new Mock<ILogger<AnalysisBackgroundService>>();
 
         var token = Guid.NewGuid();
@@ -32,7 +33,7 @@ public sealed class AnalysisBackgroundServiceTests
             {
                 Id = 1,
                 CommitHash = "hash101",
-                Project = new Project { RepoUrl = "https://github.com/repo" }
+                Project = new Project { RepoUrl = "https://github.com/repo", OwnerId = 1 }
             }
         };
 
@@ -51,14 +52,18 @@ public sealed class AnalysisBackgroundServiceTests
             .Callback(() => completedTcs.TrySetResult(true))
             .ReturnsAsync(true);
 
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 101, It.IsAny<CancellationToken>()))
+        credentialService.Setup(x => x.GetUserTokenAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync("ghp_test_token");
+
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 101, "ghp_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
 
         var services = new ServiceCollection();
         services.AddSingleton(analysisRepo.Object);
         services.AddSingleton(commitRepo.Object);
         services.AddSingleton(sourceService.Object);
-        services.AddSingleton(new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, []));
+        services.AddSingleton(credentialService.Object);
+        services.AddSingleton(new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], credentialService.Object));
 
         var serviceProvider = services.BuildServiceProvider();
         var scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -86,6 +91,7 @@ public sealed class AnalysisBackgroundServiceTests
 
         var token1 = Guid.NewGuid();
         var token2 = Guid.NewGuid();
+        var credentialService = new Mock<IGitHubCredentialService>();
 
         var failingTask = new Analysis
         {
@@ -93,7 +99,7 @@ public sealed class AnalysisBackgroundServiceTests
             CommitId = 1,
             Status = AnalysisStatus.Running,
             ExecutionToken = token1,
-            Commit = new Commit { Id = 1, CommitHash = "h1", Project = new Project { RepoUrl = "url" } }
+            Commit = new Commit { Id = 1, CommitHash = "h1", Project = new Project { RepoUrl = "url", OwnerId = 1 } }
         };
 
         var successTask = new Analysis
@@ -102,7 +108,7 @@ public sealed class AnalysisBackgroundServiceTests
             CommitId = 1,
             Status = AnalysisStatus.Running,
             ExecutionToken = token2,
-            Commit = new Commit { Id = 1, CommitHash = "h2", Project = new Project { RepoUrl = "url" } }
+            Commit = new Commit { Id = 1, CommitHash = "h2", Project = new Project { RepoUrl = "url", OwnerId = 1 } }
         };
 
         var task1FailedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -123,7 +129,10 @@ public sealed class AnalysisBackgroundServiceTests
         analysisRepo.Setup(x => x.FailAsync(201, token1, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Callback(() => task1FailedTcs.TrySetResult(true))
             .ReturnsAsync(true);
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), "h1", 201, It.IsAny<CancellationToken>()))
+        credentialService.Setup(x => x.GetUserTokenAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync("ghp_test_token");
+
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), "h1", 201, "ghp_test_token", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("GitHub download failed"));
 
         // Вторая задача выполняется успешно
@@ -131,14 +140,15 @@ public sealed class AnalysisBackgroundServiceTests
         analysisRepo.Setup(x => x.CompleteAsync(202, token2, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
             .Callback(() => task2CompletedTcs.TrySetResult(true))
             .ReturnsAsync(true);
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), "h2", 202, It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), "h2", 202, "ghp_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
 
         var services = new ServiceCollection();
         services.AddSingleton(analysisRepo.Object);
         services.AddSingleton(commitRepo.Object);
         services.AddSingleton(sourceService.Object);
-        services.AddSingleton(new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, []));
+        services.AddSingleton(credentialService.Object);
+        services.AddSingleton(new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], credentialService.Object));
 
         var serviceProvider = services.BuildServiceProvider();
         var scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();

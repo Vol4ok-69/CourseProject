@@ -639,7 +639,7 @@ public sealed class ProblemDetailsAndEnumTests
             .ReturnsAsync([new Project { Id = 1, Name = "ExistingProject", OwnerId = 1 }]);
 
         var projectService = new ProjectService(projectRepo.Object);
-        var gitHubSyncService = new GitHubSyncService(gitHubService.Object, projectRepo.Object, commitRepo.Object);
+        var gitHubSyncService = new GitHubSyncService(gitHubService.Object, projectRepo.Object, commitRepo.Object, Mock.Of<IGitHubCredentialService>());
 
         var controller = new ProjectsController(projectService, gitHubSyncService);
         var claims = new[]
@@ -686,7 +686,7 @@ public sealed class ProblemDetailsAndEnumTests
             .ReturnsAsync([existingProject1, existingProject2]);
 
         var projectService = new ProjectService(projectRepo.Object);
-        var gitHubSyncService = new GitHubSyncService(gitHubService.Object, projectRepo.Object, commitRepo.Object);
+        var gitHubSyncService = new GitHubSyncService(gitHubService.Object, projectRepo.Object, commitRepo.Object, Mock.Of<IGitHubCredentialService>());
 
         var controller = new ProjectsController(projectService, gitHubSyncService);
         var claims = new[]
@@ -855,7 +855,7 @@ public sealed class ProblemDetailsAndEnumTests
         analysisRepo.Setup(x => x.GetByIdAsync(30, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
 
         var sourceService = new Mock<IRepositorySourceService>();
-        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, []);
+        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], Mock.Of<IGitHubCredentialService>());
         var commitService = new CommitService(commitRepo.Object, projectRepo.Object);
         var projectService = new ProjectService(projectRepo.Object);
 

@@ -400,11 +400,35 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
 
     private static string GetSafeDestinationPath(string repositoryPath, string relativePath)
     {
-        var fullRepositoryPath = Path.GetFullPath(repositoryPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            throw new InvalidOperationException("Относительный путь файла в архиве не может быть пустым.");
+        }
 
-        var destinationPath = Path.GetFullPath(Path.Combine(repositoryPath, relativePath));
+        if (Path.IsPathRooted(relativePath))
+        {
+            throw new InvalidOperationException("Обнаружена попытка выхода за пределы целевой директории (Zip Slip): абсолютный путь.");
+        }
 
-        if (!destinationPath.StartsWith(fullRepositoryPath, StringComparison.Ordinal))
+        var fullRepositoryPath = Path.GetFullPath(repositoryPath);
+        var destinationPath = Path.GetFullPath(Path.Combine(fullRepositoryPath, relativePath));
+
+        var relativeToRoot = Path.GetRelativePath(fullRepositoryPath, destinationPath);
+
+        if (relativeToRoot.Equals("..", StringComparison.Ordinal) ||
+            relativeToRoot.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            relativeToRoot.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal) ||
+            Path.IsPathRooted(relativeToRoot))
+        {
+            throw new InvalidOperationException("Обнаружена попытка выхода за пределы целевой директории (Zip Slip).");
+        }
+
+        var canonicalRootDir = fullRepositoryPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!destinationPath.StartsWith(canonicalRootDir, comparison) &&
+            !destinationPath.Equals(fullRepositoryPath, comparison))
         {
             throw new InvalidOperationException("Обнаружена попытка выхода за пределы целевой директории (Zip Slip).");
         }

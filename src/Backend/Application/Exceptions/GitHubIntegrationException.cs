@@ -21,7 +21,10 @@ public enum GitHubErrorKind
     ServiceUnavailable,
 
     /// <summary>Персональный токен GitHub недействителен или отозван.</summary>
-    TokenExpired
+    TokenExpired,
+
+    /// <summary>У владельца проекта не настроен персональный токен доступа GitHub (PAT).</summary>
+    TokenRequired
 }
 
 /// <summary>

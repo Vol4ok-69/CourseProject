@@ -1,3 +1,5 @@
+using System.Reflection;
+using Application.Exceptions;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Application.Services;
@@ -33,21 +35,32 @@ public sealed class GitHubSyncServiceTests
         return (connection, options);
     }
 
+    private static Mock<IGitHubCredentialService> CreateCredentialServiceMock(int userId = 1, string token = "ghp_valid_test_token")
+    {
+        var mock = new Mock<IGitHubCredentialService>();
+        mock.Setup(c => c.GetUserTokenAsync(userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(token);
+        return mock;
+    }
+
     [Fact]
     public async Task SyncAsync_WhenProjectNotFound_ReturnsNull()
     {
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
         var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
 
         projectRepoMock.Setup(repo => repo.GetByIdAsync(1, It.IsAny<CancellationToken>()))
             .ReturnsAsync((Project?)null);
 
-        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object);
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
         var result = await service.SyncAsync(1);
 
         Assert.Null(result);
+        credentialMock.Verify(c => c.GetUserTokenAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         commitRepoMock.Verify(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -58,14 +71,15 @@ public sealed class GitHubSyncServiceTests
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
         var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = CreateCredentialServiceMock(1, "ghp_test_token");
 
         projectRepoMock.Setup(repo => repo.GetByIdAsync(1, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Project { Id = 1, RepoUrl = "https://github.com/test/repo" });
+            .ReturnsAsync(new Project { Id = 1, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
 
-        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object);
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
         var result = await service.SyncAsync(1);
 
@@ -82,9 +96,10 @@ public sealed class GitHubSyncServiceTests
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
         var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = CreateCredentialServiceMock(1, "ghp_test_token");
 
         projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo" });
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var date = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
         var gitHubCommits = new List<GitHubCommitInfo>
@@ -94,7 +109,7 @@ public sealed class GitHubSyncServiceTests
             new("hash3", date.AddHours(2))
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync(gitHubCommits);
 
         commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
@@ -103,7 +118,7 @@ public sealed class GitHubSyncServiceTests
         commitRepoMock.Setup(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(3);
 
-        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object);
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
         var result = await service.SyncAsync(10);
 
@@ -121,9 +136,10 @@ public sealed class GitHubSyncServiceTests
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
         var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = CreateCredentialServiceMock(1, "ghp_test_token");
 
         projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo" });
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var date = DateTime.UtcNow;
         var gitHubCommits = new List<GitHubCommitInfo>
@@ -132,13 +148,13 @@ public sealed class GitHubSyncServiceTests
             new("hash2", date)
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync(gitHubCommits);
 
         commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new HashSet<string> { "hash1", "hash2" });
 
-        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object);
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
         var result = await service.SyncAsync(10);
 
@@ -154,9 +170,10 @@ public sealed class GitHubSyncServiceTests
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
         var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = CreateCredentialServiceMock(1, "ghp_test_token");
 
         projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo" });
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var date = DateTime.UtcNow;
         var gitHubCommits = new List<GitHubCommitInfo>
@@ -167,7 +184,7 @@ public sealed class GitHubSyncServiceTests
             new("new2", date)
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync(gitHubCommits);
 
         commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
@@ -176,7 +193,7 @@ public sealed class GitHubSyncServiceTests
         commitRepoMock.Setup(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(2);
 
-        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object);
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
         var result = await service.SyncAsync(10);
 
@@ -195,9 +212,10 @@ public sealed class GitHubSyncServiceTests
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
         var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = CreateCredentialServiceMock(1, "ghp_test_token");
 
         projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo" });
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var gitHubCommits = new List<GitHubCommitInfo>
         {
@@ -206,7 +224,7 @@ public sealed class GitHubSyncServiceTests
             new("noDate2", null)
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync(gitHubCommits);
 
         commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
@@ -215,7 +233,7 @@ public sealed class GitHubSyncServiceTests
         commitRepoMock.Setup(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(1);
 
-        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object);
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
         var result = await service.SyncAsync(10);
 
@@ -231,9 +249,10 @@ public sealed class GitHubSyncServiceTests
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
         var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = CreateCredentialServiceMock(1, "ghp_test_token");
 
         projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo" });
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var date = DateTime.UtcNow;
         var gitHubCommits = new List<GitHubCommitInfo>
@@ -243,7 +262,7 @@ public sealed class GitHubSyncServiceTests
             new("hashB", date)
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync(gitHubCommits);
 
         commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
@@ -252,7 +271,7 @@ public sealed class GitHubSyncServiceTests
         commitRepoMock.Setup(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(2);
 
-        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object);
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
         var result = await service.SyncAsync(10);
 
@@ -281,6 +300,7 @@ public sealed class GitHubSyncServiceTests
             var projectRepo = new ProjectRepository(context);
             var commitRepo = new CommitRepository(context);
             var gitHubMock = new Mock<IGitHubService>();
+            var credentialMock = CreateCredentialServiceMock(1, "ghp_sqlite_token");
 
             var date = new DateTime(2026, 2, 1, 10, 0, 0, DateTimeKind.Utc);
             var initialCommits = new List<GitHubCommitInfo>
@@ -290,10 +310,10 @@ public sealed class GitHubSyncServiceTests
                 new("sha3", date.AddMinutes(2))
             };
 
-            gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/sync", It.IsAny<CancellationToken>()))
+            gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/sync", "ghp_sqlite_token", It.IsAny<CancellationToken>()))
                 .ReturnsAsync(initialCommits);
 
-            var service = new GitHubSyncService(gitHubMock.Object, projectRepo, commitRepo);
+            var service = new GitHubSyncService(gitHubMock.Object, projectRepo, commitRepo, credentialMock.Object);
 
             // Первый запуск синхронизации: 3 новых коммита
             var result1 = await service.SyncAsync(100);
@@ -318,7 +338,7 @@ public sealed class GitHubSyncServiceTests
                 new("sha4", date.AddMinutes(3))
             };
 
-            gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/sync", It.IsAny<CancellationToken>()))
+            gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/sync", "ghp_sqlite_token", It.IsAny<CancellationToken>()))
                 .ReturnsAsync(subsequentCommits);
 
             var result2 = await service.SyncAsync(100);
@@ -527,9 +547,10 @@ public sealed class GitHubSyncServiceTests
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
         var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = CreateCredentialServiceMock(1, "ghp_test_token");
 
         projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo" });
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var gitHubCommits = new List<GitHubCommitInfo>
         {
@@ -538,10 +559,10 @@ public sealed class GitHubSyncServiceTests
             new("nullDate3", null)
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
             .ReturnsAsync(gitHubCommits);
 
-        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object);
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
         var result = await service.SyncAsync(10);
 
@@ -553,4 +574,302 @@ public sealed class GitHubSyncServiceTests
         commitRepoMock.Verify(c => c.GetExistingHashesAsync(It.IsAny<int>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()), Times.Never);
         commitRepoMock.Verify(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    #region Сценарии этапа 8.4: Персональный PAT владельца проекта
+
+    [Fact]
+    public async Task SyncAsync_OwnerInitiatesSync_PassesOwnerPatToGitHubService()
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
+
+        const int ownerId = 42;
+        const string expectedPat = "ghp_owner_pat_424242";
+
+        projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/owner/project", OwnerId = ownerId });
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(expectedPat);
+
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/owner/project", expectedPat, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
+
+        var result = await service.SyncAsync(10);
+
+        Assert.NotNull(result);
+        credentialMock.Verify(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()), Times.Once);
+        gitHubMock.Verify(g => g.GetCommitsAsync("https://github.com/owner/project", expectedPat, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SyncAsync_AdminSyncsOtherUserProject_AlwaysUsesProjectOwnerPat_NeverAdminPat()
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
+
+        const int ownerId = 2;
+        const int adminId = 99;
+        const string ownerPat = "ghp_owner_pat_user2";
+        const string adminPat = "ghp_admin_pat_user99";
+
+        projectRepoMock.Setup(repo => repo.GetByIdAsync(100, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Project { Id = 100, RepoUrl = "https://github.com/user2/repo", OwnerId = ownerId });
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ownerPat);
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(adminId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(adminPat);
+
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/user2/repo", ownerPat, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
+
+        var result = await service.SyncAsync(100);
+
+        Assert.NotNull(result);
+
+        // Должен запрашиваться токен строго владельца проекта (ownerId = 2)
+        credentialMock.Verify(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()), Times.Once);
+        credentialMock.Verify(c => c.GetUserTokenAsync(adminId, It.IsAny<CancellationToken>()), Times.Never);
+
+        // В GitHubService передается строго PAT владельца
+        gitHubMock.Verify(g => g.GetCommitsAsync("https://github.com/user2/repo", ownerPat, It.IsAny<CancellationToken>()), Times.Once);
+        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), adminPat, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SyncAsync_WhenOwnerHasNoPat_ThrowsTokenRequiredException_AndNeverCallsGitHubApi()
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
+
+        const int ownerId = 5;
+
+        projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = ownerId });
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string?)null);
+
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
+
+        var exception = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.SyncAsync(10));
+
+        Assert.Equal(GitHubErrorKind.TokenRequired, exception.Kind);
+        Assert.Contains("токена GitHub", exception.Message, StringComparison.OrdinalIgnoreCase);
+
+        // GitHub API и хранилище коммитов не должны вызываться
+        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        commitRepoMock.Verify(c => c.GetExistingHashesAsync(It.IsAny<int>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()), Times.Never);
+        commitRepoMock.Verify(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t\n")]
+    public async Task SyncAsync_WhenOwnerPatIsWhitespace_ThrowsTokenRequiredException_AndNeverCallsGitHubApi(string whitespaceToken)
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
+
+        const int ownerId = 7;
+
+        projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = ownerId });
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(whitespaceToken);
+
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
+
+        var exception = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.SyncAsync(10));
+
+        Assert.Equal(GitHubErrorKind.TokenRequired, exception.Kind);
+        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SyncAsync_WhenCallerHasPat_ButOwnerHasNoPat_ThrowsTokenRequired_NoFallbackToCallerPat()
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
+
+        const int ownerId = 7;
+        const int callerId = 1;
+        const string callerPat = "ghp_caller_valid_pat";
+
+        projectRepoMock.Setup(repo => repo.GetByIdAsync(50, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Project { Id = 50, RepoUrl = "https://github.com/owner7/repo", OwnerId = ownerId });
+
+        // У вызывающего токен есть, а у владельца проекта - нет
+        credentialMock.Setup(c => c.GetUserTokenAsync(callerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(callerPat);
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string?)null);
+
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
+
+        var exception = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.SyncAsync(50));
+
+        Assert.Equal(GitHubErrorKind.TokenRequired, exception.Kind);
+
+        // Никакого fallback на токен вызывающего
+        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), callerPat, It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SyncAsync_WhenOwnerPatIsExpired_PropagatesTokenExpiredException()
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
+
+        const int ownerId = 8;
+        const string expiredPat = "ghp_expired_token_888";
+
+        projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = ownerId });
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(expiredPat);
+
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", expiredPat, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.TokenExpired, "Персональный токен GitHub недействителен или был отозван."));
+
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
+
+        var exception = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.SyncAsync(10));
+
+        Assert.Equal(GitHubErrorKind.TokenExpired, exception.Kind);
+        Assert.Contains("Персональный токен GitHub недействителен", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(GitHubErrorKind.RateLimited)]
+    [InlineData(GitHubErrorKind.AccessDenied)]
+    [InlineData(GitHubErrorKind.RepoNotFound)]
+    [InlineData(GitHubErrorKind.ServiceUnavailable)]
+    public async Task SyncAsync_WhenGitHubServiceFails_PropagatesGitHubIntegrationException(GitHubErrorKind errorKind)
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
+
+        const int ownerId = 3;
+        const string pat = "ghp_valid_pat";
+
+        projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = ownerId });
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(pat);
+
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", pat, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubIntegrationException(errorKind, $"Тестовая ошибка {errorKind}"));
+
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
+
+        var exception = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.SyncAsync(10));
+
+        Assert.Equal(errorKind, exception.Kind);
+    }
+
+    [Fact]
+    public async Task SyncAsync_PatIsNeverRetainedInServiceFields()
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
+
+        const int ownerId = 12;
+        const string secretPat = "ghp_super_secret_pat_value_99999";
+
+        projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = ownerId });
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(secretPat);
+
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", secretPat, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
+
+        await service.SyncAsync(10);
+
+        // Проверяем все поля сервиса через рефлексию
+        var fields = typeof(GitHubSyncService).GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+        foreach (var field in fields)
+        {
+            var value = field.GetValue(service);
+            if (value is string stringVal)
+            {
+                Assert.False(stringVal.Contains(secretPat, StringComparison.Ordinal),
+                    $"Поле {field.Name} сервиса GitHubSyncService содержит секретный токен PAT!");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExceptionsDoNotContainPat()
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+        var credentialMock = new Mock<IGitHubCredentialService>();
+
+        const int ownerId = 15;
+        const string secretPat = "ghp_leak_check_pat_123456789";
+
+        projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = ownerId });
+
+        credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(secretPat);
+
+        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", secretPat, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.AccessDenied, "Доступ к репозиторию запрещен."));
+
+        var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
+
+        var exception = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.SyncAsync(10));
+
+        Assert.DoesNotContain(secretPat, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(secretPat, exception.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GitHubSyncService_Constructor_ThrowsArgumentNullException_WhenCredentialServiceIsNull()
+    {
+        var gitHubMock = new Mock<IGitHubService>();
+        var projectRepoMock = new Mock<IProjectRepository>();
+        var commitRepoMock = new Mock<ICommitRepository>();
+
+        Assert.Throws<ArgumentNullException>(() =>
+            new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, null!));
+    }
+
+    #endregion
 }
