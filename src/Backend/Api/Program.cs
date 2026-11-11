@@ -259,3 +259,8 @@ app.UseRateLimiter();
 app.MapControllers();
 
 app.Run();
+
+/// <summary>
+/// Точка входа приложения, используемая для интеграционного тестирования WebApplicationFactory.
+/// </summary>
+public partial class Program { }

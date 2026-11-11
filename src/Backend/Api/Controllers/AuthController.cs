@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using System.Security.Claims;
 
 namespace Api.Controllers;
@@ -17,6 +18,7 @@ namespace Api.Controllers;
 [ApiController]
 [Route("api/auth")]
 [Produces("application/json")]
+[method: ActivatorUtilitiesConstructor]
 public class AuthController(
     AuthService authService,
     UserService userService,
