@@ -1,4 +1,4 @@
-﻿namespace DatabaseAnalyzer.Metadata;
+namespace DatabaseAnalyzer.Metadata;
 
 public sealed class DatabaseIndexMetadata
 {
@@ -7,4 +7,6 @@ public sealed class DatabaseIndexMetadata
     public IReadOnlyList<string> PropertyNames { get; init; } = [];
 
     public bool IsUnique { get; init; }
+
+    public string? Filter { get; init; }
 }
