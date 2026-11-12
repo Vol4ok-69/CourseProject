@@ -1,5 +1,6 @@
 using Api.BackgroundServices;
 using Api.Common;
+using Api.Health;
 using Application.Analyzers;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
@@ -13,6 +14,7 @@ using Infrastructure.GitHub;
 using Infrastructure.Repository;
 using Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -48,6 +50,8 @@ builder.Services.AddScoped<IDatabaseMetadataProvider, EfCoreMetadataProvider>();
 builder.Services.AddScoped<IDatabaseProjectResolver, EfCoreDatabaseProjectResolver>();
 builder.Services.AddScoped<IEfCoreModelInspector, EfCoreModelInspector>();
 builder.Services.AddScoped<EfCoreMetadataMapper>();
+builder.Services.AddScoped<IDatabaseInitializer, DatabaseInitializer>();
+builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("Database", tags: ["ready"]);
 
 var tokenEncryptionKeyBase64 = builder.Configuration["Security:TokenEncryptionKey"];
 if (string.IsNullOrWhiteSpace(tokenEncryptionKeyBase64))
@@ -238,10 +242,18 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+});
+
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
-if (app.Environment.IsDevelopment())
+var enableSwagger = app.Environment.IsDevelopment() ||
+    builder.Configuration.GetValue<bool>("Swagger:Enabled");
+
+if (enableSwagger)
 {
     app.UseSwagger();
     app.UseSwaggerUI();
@@ -256,7 +268,15 @@ app.UseAuthorization();
 
 app.UseRateLimiter();
 
+app.MapHealthChecks("/health");
+
 app.MapControllers();
+
+using (var scope = app.Services.CreateScope())
+{
+    var initializer = scope.ServiceProvider.GetRequiredService<IDatabaseInitializer>();
+    await initializer.InitializeAsync();
+}
 
 app.Run();
 

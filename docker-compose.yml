@@ -5,21 +5,62 @@ services:
     restart: unless-stopped
 
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB:-courseproject}
+      POSTGRES_USER: ${POSTGRES_USER:-courseproject}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-courseproject} -d ${POSTGRES_DB:-courseproject}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+    networks:
+      - courseproject-network
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: courseproject-backend
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-courseproject};Username=${POSTGRES_USER:-courseproject};Password=${POSTGRES_PASSWORD}"
+      Security__TokenEncryptionKey: ${TOKEN_ENCRYPTION_KEY}
+      Jwt__Key: ${JWT_KEY}
+      Jwt__Issuer: ${JWT_ISSUER:-CourseProjectApi}
+      Jwt__Audience: ${JWT_AUDIENCE:-CourseProjectClient}
+      Swagger__Enabled: ${SWAGGER_ENABLED:-false}
+
+    ports:
+      - "5000:8080"
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+    networks:
+      - courseproject-network
+
 volumes:
   postgres_data:
+
+networks:
+  courseproject-network:
+    driver: bridge
