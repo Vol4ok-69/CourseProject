@@ -124,8 +124,16 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
                     """
                     SELECT "Id"
                     FROM "Analyses"
-                    WHERE "Status" = 0
-                       OR ("Status" = 1 AND ("LeaseExpiration" IS NULL OR "LeaseExpiration" < {0}))
+                    WHERE ("Status" = 0
+                       OR ("Status" = 1 AND ("LeaseExpiration" IS NULL OR "LeaseExpiration" < {0})))
+                      AND NOT EXISTS (
+                          SELECT 1 FROM pg_locks
+                          WHERE locktype = 'advisory'
+                            AND classid = hashtext('netscope_analysis_workspace')
+                            AND objid = "Analyses"."Id"
+                            AND objsubid = 2
+                            AND granted = true
+                      )
                     ORDER BY "CreatedAt" ASC
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
@@ -140,6 +148,23 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
             }
 
             var candidateId = candidateIds[0];
+
+            // Атомарно захватываем transaction-level advisory lock в едином пространстве ключей netscope_analysis_workspace.
+            // Это исключает сценарий, когда Worker B перехватывает задачу и меняет ExecutionToken,
+            // пока Worker A готовится или выполняет защищённые файловые операции.
+            var isLockAcquired = await context.Database
+                .SqlQueryRaw<bool>(
+                    """
+                    SELECT pg_try_advisory_xact_lock(hashtext('netscope_analysis_workspace'), {0}) AS "Value"
+                    """,
+                    candidateId)
+                .SingleAsync(cancellationToken);
+
+            if (!isLockAcquired)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return null;
+            }
 
             var analysis = await context.Analyses
                 .Include(a => a.Commit)
@@ -236,6 +261,7 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
         var now = DateTime.UtcNow;
 
         await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+
 
         var affected = await context.Analyses
             .Where(a => a.Id == analysisId &&

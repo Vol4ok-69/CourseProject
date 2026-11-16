@@ -2,6 +2,8 @@ using Application.Analyzers;
 using DatabaseAnalyzer;
 using DatabaseAnalyzer.Metadata;
 using DatabaseAnalyzer.Providers;
+using DatabaseAnalyzer.Roslyn;
+using DatabaseAnalyzer.Rules;
 using Domain.Enums;
 using Moq;
 
@@ -10,80 +12,92 @@ namespace DatabaseAnalyzer.Tests;
 public sealed class DatabaseAnalyzerTests
 {
     [Fact]
-    public async Task Type_ShouldReturnDatabase()
+    public void Type_ShouldReturnDatabase()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
+        var mockExtractor = new Mock<IRoslynMetadataExtractor>();
+        var analyzer = new DatabaseAnalyzer(mockExtractor.Object);
 
         Assert.Equal(AnalyzerType.Database, analyzer.Type);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldCallMetadataProvider()
+    public async Task AnalyzeAsync_ShouldCallRoslynMetadataExtractor()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-
-        metadataProvider.Setup
-        (
-            provider => provider
-                .GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new DatabaseMetadata()
-        );
-
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-
-        var context = new AnalyzerContext
+        var mockExtractor = new Mock<IRoslynMetadataExtractor>();
+        var tempDir = Path.Combine(Path.GetTempPath(), "DbAnalyzerTest_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
         {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        };
+            mockExtractor
+                .Setup(e => e.ExtractAsync(tempDir, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new RoslynModelExtractionResult());
 
-        var result = await analyzer.AnalyzeAsync(context);
+            var analyzer = new DatabaseAnalyzer(mockExtractor.Object);
 
-        metadataProvider.Verify(
-            provider => provider.GetMetadataAsync(
-                context,
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+            var context = new AnalyzerContext
+            {
+                RepositoryPath = tempDir,
+                CommitHash = "test-commit"
+            };
 
-        Assert.Empty(result);
+            var result = await analyzer.AnalyzeAsync(context);
+
+            mockExtractor.Verify(
+                e => e.ExtractAsync(tempDir, It.IsAny<CancellationToken>()),
+                Times.Once);
+
+            Assert.Contains(result, f => f.Rule == DatabaseAnalyzer.ContainerUnavailableRule);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldPropagateMetadataProviderException()
+    public async Task AnalyzeAsync_WhenExtractorThrows_ReturnsDiagnosticWarningFinding()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-
-        metadataProvider.Setup(provider => provider.GetMetadataAsync
-        (
-                It.IsAny<AnalyzerContext>(),
-                It.IsAny<CancellationToken>()
-        )).ThrowsAsync(new InvalidOperationException("Test error"));
-
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-
-        var context = new AnalyzerContext
+        var mockExtractor = new Mock<IRoslynMetadataExtractor>();
+        var tempDir = Path.Combine(Path.GetTempPath(), "DbAnalyzerTest_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
         {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        };
+            mockExtractor
+                .Setup(e => e.ExtractAsync(tempDir, It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidOperationException("Test error"));
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => analyzer.AnalyzeAsync(context));
+            var analyzer = new DatabaseAnalyzer(mockExtractor.Object);
 
-        Assert.Equal("Test error", exception.Message);
+            var context = new AnalyzerContext
+            {
+                RepositoryPath = tempDir,
+                CommitHash = "test-commit"
+            };
+
+            var findings = await analyzer.AnalyzeAsync(context);
+
+            Assert.Contains(findings, f => f.Rule == DatabaseAnalyzer.ExtractionErrorRule);
+            var finding = findings.First(f => f.Rule == DatabaseAnalyzer.ExtractionErrorRule);
+            Assert.Contains("Test error", finding.Message);
+            Assert.Equal(Severity.Warning, finding.Severity);
+            Assert.Contains(findings, f => f.Rule == DatabaseAnalyzer.ContainerUnavailableRule);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportEntityWithoutPrimaryKey()
+    public void AnalyzeAsync_ShouldReportEntityWithoutPrimaryKey()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(
-                It.IsAny<AnalyzerContext>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -94,17 +108,9 @@ public sealed class DatabaseAnalyzerTests
                     Keys = []
                 }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-
-        var context = new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        };
-
-        var findings = await analyzer.AnalyzeAsync(context);
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(findings);
         Assert.Equal("DB01", finding.Rule);
@@ -115,15 +121,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldNotReportEntityWithPrimaryKey()
+    public void AnalyzeAsync_ShouldNotReportEntityWithPrimaryKey()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(
-                It.IsAny<AnalyzerContext>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -142,29 +142,18 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                     ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-
-        var context = new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        };
-
-        var findings = await analyzer.AnalyzeAsync(context);
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(findings);
     }
 
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportForeignKeyWithoutIndex()
+    public void AnalyzeAsync_ShouldReportForeignKeyWithoutIndex()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -195,14 +184,9 @@ public sealed class DatabaseAnalyzerTests
 
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB04", finding.Rule);
@@ -213,12 +197,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldNotReportForeignKeyWithMatchingIndex()
+    public void AnalyzeAsync_ShouldNotReportForeignKeyWithMatchingIndex()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -256,25 +237,17 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(result);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldAcceptCompositeIndexStartingWithForeignKeyColumns()
+    public void AnalyzeAsync_ShouldAcceptCompositeIndexStartingWithForeignKeyColumns()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -312,27 +285,18 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(result);
     }
 
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportDuplicateIndexes()
+    public void AnalyzeAsync_ShouldReportDuplicateIndexes()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -364,14 +328,9 @@ public sealed class DatabaseAnalyzerTests
                     ]
                 }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB05", finding.Rule);
@@ -382,13 +341,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldNotReportIndexesWithDifferentPropertyOrderAsDuplicates()
+    public void AnalyzeAsync_ShouldNotReportIndexesWithDifferentPropertyOrderAsDuplicates()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -420,26 +375,17 @@ public sealed class DatabaseAnalyzerTests
                     ]
                 }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(result);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldNotReportIndexesWithDifferentUniquenessAsDuplicates()
+    public void AnalyzeAsync_ShouldNotReportIndexesWithDifferentUniquenessAsDuplicates()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -473,25 +419,17 @@ public sealed class DatabaseAnalyzerTests
                     ]
                 }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(result);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportForeignKeyWithoutAnyNavigation()
+    public void AnalyzeAsync_ShouldReportForeignKeyWithoutAnyNavigation()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -530,14 +468,9 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB02", finding.Rule);
@@ -550,12 +483,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportForeignKeyWhenOnlyDependentNavigationExists()
+    public void AnalyzeAsync_ShouldReportForeignKeyWhenOnlyDependentNavigationExists()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -594,14 +524,9 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB02", finding.Rule);
@@ -611,12 +536,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldNotReportForeignKeyWhenPrincipalNavigationExistsEvenWithoutDependentNavigation()
+    public void AnalyzeAsync_ShouldNotReportForeignKeyWhenPrincipalNavigationExistsEvenWithoutDependentNavigation()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -655,25 +577,17 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(result);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldNotReportForeignKeyWhenBothNavigationsExist()
+    public void AnalyzeAsync_ShouldNotReportForeignKeyWhenBothNavigationsExist()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -712,25 +626,17 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(result);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldHandleMultipleForeignKeysIndependently()
+    public void AnalyzeAsync_ShouldHandleMultipleForeignKeysIndependently()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -783,14 +689,9 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB02", finding.Rule);
@@ -799,12 +700,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportDB03WithInfoSeverityForImplicitManyToMany()
+    public void AnalyzeAsync_ShouldReportDB03WithInfoSeverityForImplicitManyToMany()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -834,14 +732,9 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB03", finding.Rule);
@@ -854,12 +747,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportSingleFindingForBidirectionalImplicitManyToMany()
+    public void AnalyzeAsync_ShouldReportSingleFindingForBidirectionalImplicitManyToMany()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -914,14 +804,9 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB03", finding.Rule);
@@ -932,12 +817,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportFindingForUnidirectionalImplicitManyToMany()
+    public void AnalyzeAsync_ShouldReportFindingForUnidirectionalImplicitManyToMany()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -982,14 +864,9 @@ public sealed class DatabaseAnalyzerTests
                         SkipNavigations = []
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB03", finding.Rule);
@@ -1001,12 +878,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldNotReportDB03WhenNoSkipNavigations()
+    public void AnalyzeAsync_ShouldNotReportDB03WhenNoSkipNavigations()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -1026,25 +900,17 @@ public sealed class DatabaseAnalyzerTests
                         SkipNavigations = []
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(result);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldNotReportDB03ForExplicitJoinEntityWithOwnClrClass()
+    public void AnalyzeAsync_ShouldNotReportDB03ForExplicitJoinEntityWithOwnClrClass()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -1099,25 +965,17 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(result);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportDB03ForDictionarySharedTypeJoinEntityRegardlessOfName()
+    public void AnalyzeAsync_ShouldReportDB03ForDictionarySharedTypeJoinEntityRegardlessOfName()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -1172,14 +1030,9 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB03", finding.Rule);
@@ -1188,12 +1041,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldNotReportDB03ForOrdinaryOneToManyRelationship()
+    public void AnalyzeAsync_ShouldNotReportDB03ForOrdinaryOneToManyRelationship()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -1247,25 +1097,17 @@ public sealed class DatabaseAnalyzerTests
                         SkipNavigations = []
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.DoesNotContain(result, f => f.Rule == "DB03");
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportSingleFindingForSelfReferencingImplicitManyToMany()
+    public void AnalyzeAsync_ShouldReportSingleFindingForSelfReferencingImplicitManyToMany()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -1303,14 +1145,9 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(result);
         Assert.Equal("DB03", finding.Rule);
@@ -1319,12 +1156,9 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ShouldReportTwoFindingsForTwoDistinctManyToManyRelationshipsBetweenSameEntities()
+    public void AnalyzeAsync_ShouldReportTwoFindingsForTwoDistinctManyToManyRelationshipsBetweenSameEntities()
     {
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider
-            .Setup(provider => provider.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
+        var metadata = new DatabaseMetadata
             {
                 Entities =
                 [
@@ -1378,14 +1212,9 @@ public sealed class DatabaseAnalyzerTests
                         ]
                     }
                 ]
-            });
+            };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var result = await analyzer.AnalyzeAsync(new AnalyzerContext
-        {
-            RepositoryPath = @"C:\Test\Repository",
-            CommitHash = "test-commit"
-        });
+        var result = DatabaseRuleEvaluator.Evaluate(metadata);
 
         // Two distinct physical relationships between the same entity types should yield exactly two findings
         Assert.Equal(2, result.Count);

@@ -143,7 +143,7 @@ internal sealed class FluentApiParser
             return;
         }
 
-        // modelBuilder.Entity<T>() или modelBuilder.Entity(typeof(T))
+        // modelBuilder.Entity<T>() или modelBuilder.Entity(typeof(T)) или modelBuilder.Entity("Name")
         if (string.Equals(root.MethodName, "Entity", StringComparison.Ordinal))
         {
             string? entityTypeName = null;
@@ -157,6 +157,12 @@ internal sealed class FluentApiParser
             {
                 entityTypeName = ExtractTypeName(typeOfExpr.Type);
             }
+            else if (root.Arguments.Count > 0 &&
+                     ExpressionParsingHelper.TryGetStringLiteralOrNameof(root.Arguments[0].Expression, out var strEntityName) &&
+                     strEntityName is not null)
+            {
+                entityTypeName = strEntityName;
+            }
 
             if (string.IsNullOrWhiteSpace(entityTypeName))
             {
@@ -166,9 +172,9 @@ internal sealed class FluentApiParser
 
             var entity = _getOrAddEntity(entityTypeName);
 
-            // Случай А: modelBuilder.Entity<T>(b => { ... })
-            if (root.Arguments.Count == 1 &&
-                root.Arguments[0].Expression is LambdaExpressionSyntax lambda)
+            // Случай А: modelBuilder.Entity<T>(b => { ... }) или modelBuilder.Entity("Name", b => { ... })
+            var lambdaArg = root.Arguments.FirstOrDefault(a => a.Expression is LambdaExpressionSyntax);
+            if (lambdaArg?.Expression is LambdaExpressionSyntax lambda)
             {
                 ProcessEntityLambda(lambda, entity);
             }
@@ -177,6 +183,61 @@ internal sealed class FluentApiParser
             for (var i = 1; i < chain.Count; i++)
             {
                 ProcessEntityBuilderStep(chain, ref i, entity);
+            }
+        }
+        else if (string.Equals(root.MethodName, "SharedTypeEntity", StringComparison.Ordinal))
+        {
+            string? entityTypeName = null;
+            string? clrTypeName = null;
+
+            if (root.GenericTypeArgument is not null)
+            {
+                clrTypeName = root.GenericTypeArgument.ToString().Trim();
+            }
+
+            if (root.Arguments.Count > 0 &&
+                ExpressionParsingHelper.TryGetStringLiteralOrNameof(root.Arguments[0].Expression, out var strName) &&
+                strName is not null)
+            {
+                entityTypeName = strName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(entityTypeName))
+            {
+                var entity = _getOrAddEntity(entityTypeName);
+                entity.IsSharedType = true;
+                entity.ClrTypeName = clrTypeName;
+
+                var lambdaArg = root.Arguments.FirstOrDefault(a => a.Expression is LambdaExpressionSyntax);
+                if (lambdaArg?.Expression is LambdaExpressionSyntax lambda)
+                {
+                    ProcessEntityLambda(lambda, entity);
+                }
+
+                for (var i = 1; i < chain.Count; i++)
+                {
+                    ProcessEntityBuilderStep(chain, ref i, entity);
+                }
+            }
+        }
+        else if (string.Equals(root.MethodName, "Ignore", StringComparison.Ordinal))
+        {
+            string? entityTypeName = null;
+
+            if (root.GenericTypeArgument is not null)
+            {
+                entityTypeName = ExtractTypeName(root.GenericTypeArgument);
+            }
+            else if (root.Arguments.Count > 0 &&
+                     root.Arguments[0].Expression is TypeOfExpressionSyntax typeOfExpr)
+            {
+                entityTypeName = ExtractTypeName(typeOfExpr.Type);
+            }
+
+            if (!string.IsNullOrWhiteSpace(entityTypeName))
+            {
+                var entity = _getOrAddEntity(entityTypeName);
+                entity.MappingType = EntityMappingType.Unmapped;
             }
         }
         else if (string.Equals(root.MethodName, "ApplyConfiguration", StringComparison.Ordinal))
@@ -274,6 +335,7 @@ internal sealed class FluentApiParser
         {
             case "ToTable":
             {
+                entity.MappingType = EntityMappingType.Table;
                 if (step.Arguments.Count > 0 &&
                     ExpressionParsingHelper.TryGetStringLiteralOrNameof(step.Arguments[0].Expression, out var tableName) &&
                     tableName is not null)
@@ -287,6 +349,182 @@ internal sealed class FluentApiParser
                     {
                         entity.SchemaName = schema;
                         entity.IsSchemaNameConfiguredByFluentApi = true;
+                    }
+                }
+                break;
+            }
+
+            case "ToView":
+            {
+                entity.MappingType = EntityMappingType.View;
+                entity.TableName = null;
+                if (step.Arguments.Count > 0 &&
+                    ExpressionParsingHelper.TryGetStringLiteralOrNameof(step.Arguments[0].Expression, out var viewName) &&
+                    viewName is not null)
+                {
+                    entity.ViewName = viewName;
+                    if (step.Arguments.Count > 1 &&
+                        ExpressionParsingHelper.TryGetStringLiteralOrNameof(step.Arguments[1].Expression, out var schema) &&
+                        schema is not null)
+                    {
+                        entity.SchemaName = schema;
+                    }
+                }
+                break;
+            }
+
+            case "ToSqlQuery":
+            {
+                entity.MappingType = EntityMappingType.SqlQuery;
+                entity.TableName = null;
+                if (step.Arguments.Count > 0 &&
+                    ExpressionParsingHelper.TryGetStringLiteralOrNameof(step.Arguments[0].Expression, out var sqlQuery) &&
+                    sqlQuery is not null)
+                {
+                    entity.SqlQuery = sqlQuery;
+                }
+                break;
+            }
+
+            case "ToFunction":
+            {
+                entity.MappingType = EntityMappingType.Function;
+                entity.TableName = null;
+                if (step.Arguments.Count > 0 &&
+                    ExpressionParsingHelper.TryGetStringLiteralOrNameof(step.Arguments[0].Expression, out var fnName) &&
+                    fnName is not null)
+                {
+                    entity.FunctionName = fnName;
+                }
+                break;
+            }
+
+            case "HasNoKey":
+            {
+                entity.KeyType = EntityKeyType.Keyless;
+                entity.SetPrimaryKeyFromFluentApi(new DatabaseKeyMetadata
+                {
+                    Name = string.Empty,
+                    PropertyNames = [],
+                    IsPrimaryKey = false
+                });
+                break;
+            }
+
+            case "HasAlternateKey":
+            {
+                var propertyNames = new List<string>();
+                foreach (var arg in step.Arguments)
+                {
+                    propertyNames.AddRange(ExpressionParsingHelper.ExtractPropertyNames(arg.Expression));
+                }
+                if (propertyNames.Count > 0)
+                {
+                    var keyName = $"AK_{entity.TableName ?? entity.EntityName}_{string.Join("_", propertyNames)}";
+                    entity.AddKey(new DatabaseKeyMetadata
+                    {
+                        Name = keyName,
+                        PropertyNames = propertyNames,
+                        IsPrimaryKey = false,
+                        IsExplicitName = true
+                    });
+                }
+                break;
+            }
+
+            case "Property":
+            {
+                string? propName = null;
+                string? clrTypeName = null;
+                var isShadow = false;
+
+                if (step.GenericTypeArgument is not null)
+                {
+                    clrTypeName = step.GenericTypeArgument.ToString().Trim();
+                    isShadow = true;
+                }
+
+                if (step.Arguments.Count > 0)
+                {
+                    if (ExpressionParsingHelper.TryGetStringLiteralOrNameof(step.Arguments[0].Expression, out var literalName))
+                    {
+                        propName = literalName;
+                    }
+                    else
+                    {
+                        var extracted = ExpressionParsingHelper.ExtractPropertyNames(step.Arguments[0].Expression);
+                        if (extracted.Count > 0)
+                        {
+                            propName = extracted[0];
+                        }
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(propName))
+                {
+                    var columnName = propName;
+                    var isNullable = false;
+                    var isConcurrency = false;
+
+                    while (index + 1 < chain.Count)
+                    {
+                        var nextStep = chain[index + 1];
+                        if (string.Equals(nextStep.MethodName, "HasColumnName", StringComparison.Ordinal))
+                        {
+                            if (nextStep.Arguments.Count > 0 &&
+                                ExpressionParsingHelper.TryGetStringLiteralOrNameof(nextStep.Arguments[0].Expression, out var colVal) &&
+                                colVal is not null)
+                            {
+                                columnName = colVal;
+                            }
+                            index++;
+                        }
+                        else if (string.Equals(nextStep.MethodName, "IsRequired", StringComparison.Ordinal))
+                        {
+                            isNullable = false;
+                            index++;
+                        }
+                        else if (string.Equals(nextStep.MethodName, "IsConcurrencyToken", StringComparison.Ordinal))
+                        {
+                            isConcurrency = true;
+                            index++;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+
+                    var existingProp = entity.Properties.FirstOrDefault(p => string.Equals(p.PropertyName, propName, StringComparison.Ordinal));
+                    if (existingProp == null)
+                    {
+                        isShadow = true;
+                    }
+
+                    entity.AddOrUpdateProperty(new DatabasePropertyMetadata
+                    {
+                        PropertyName = propName,
+                        ColumnName = columnName ?? propName,
+                        ClrTypeName = clrTypeName ?? existingProp?.ClrTypeName,
+                        IsNullable = existingProp?.IsNullable ?? isNullable,
+                        IsShadowProperty = isShadow,
+                        IsConcurrencyToken = isConcurrency,
+                        IsPrimaryKey = existingProp?.IsPrimaryKey ?? false
+                    });
+                }
+                break;
+            }
+
+            case "Ignore":
+            {
+                if (step.Arguments.Count > 0)
+                {
+                    var propNames = ExpressionParsingHelper.ExtractPropertyNames(step.Arguments[0].Expression);
+                    if (propNames.Count == 0 &&
+                        ExpressionParsingHelper.TryGetStringLiteralOrNameof(step.Arguments[0].Expression, out var ignoredName) &&
+                        ignoredName is not null)
+                    {
+                        propNames = [ignoredName];
                     }
                 }
                 break;
@@ -535,12 +773,18 @@ internal sealed class FluentApiParser
 
             var otherEntity = _getOrAddEntity(otherEntityName);
 
+            var targetEntityId = otherEntity.ClrTypeName ?? otherEntity.FullEntityTypeName ?? otherEntity.EntityName;
+            var sourceEntityId = entity.ClrTypeName ?? entity.FullEntityTypeName ?? entity.EntityName;
+            var joinEntityId = explicitJoinTableName ?? joinTableName;
+
             entity.AddSkipNavigation(new DatabaseSkipNavigationMetadata
             {
                 NavigationName = navigationToOther ?? otherEntityName,
                 TargetEntityName = otherEntityName,
+                TargetEntityId = targetEntityId,
                 JoinEntityTableName = joinTableName,
                 JoinEntityName = joinTableName,
+                JoinEntityId = joinEntityId,
                 IsImplicitJoinEntity = isImplicit,
                 InverseNavigationName = navigationBack
             });
@@ -549,8 +793,10 @@ internal sealed class FluentApiParser
             {
                 NavigationName = navigationBack ?? entity.EntityName,
                 TargetEntityName = entity.EntityName,
+                TargetEntityId = sourceEntityId,
                 JoinEntityTableName = joinTableName,
                 JoinEntityName = joinTableName,
+                JoinEntityId = joinEntityId,
                 IsImplicitJoinEntity = isImplicit,
                 InverseNavigationName = navigationToOther
             });

@@ -43,7 +43,7 @@ public sealed class RepositoryArchiveSecurityTests : IDisposable
     }
 
     [Fact]
-    public async Task ExtractArchiveAsync_ValidArchiveWithinLimits_ExtractsSuccessfully()
+    public async Task ExtractArchiveAsync_WithoutGuard_ThrowsInvalidOperationExceptionAndFailsClosed()
     {
         var service = new RepositorySourceService(new HttpClient());
         var destination = Path.Combine(_testAnalysisDir, "repository");
@@ -55,7 +55,27 @@ public sealed class RepositoryArchiveSecurityTests : IDisposable
             writer.Write("console.log('hello');");
         });
 
-        await service.ExtractArchiveAsync(zipStream, destination, _testAnalysisId);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ExtractArchiveAsync(zipStream, destination, _testAnalysisId));
+
+        Assert.Contains("IAnalysisLeaseGuard", ex.Message);
+        Assert.False(Directory.Exists(destination), "Целевой каталог не должен создаваться без guard!");
+    }
+
+    [Fact]
+    public async Task ExtractArchiveInternalAsync_ValidArchiveWithinLimits_ExtractsSuccessfully()
+    {
+        var destination = Path.Combine(_testAnalysisDir, "repository");
+        Directory.CreateDirectory(destination);
+
+        using var zipStream = CreateZipStream(archive =>
+        {
+            var entry = archive.CreateEntry("root/src/index.js");
+            using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
+            writer.Write("console.log('hello');");
+        });
+
+        await RepositorySourceService.ExtractArchiveInternalAsync(zipStream, destination, CancellationToken.None);
 
         var extractedFile = Path.Combine(destination, "src", "index.js");
         Assert.True(File.Exists(extractedFile));
@@ -63,10 +83,10 @@ public sealed class RepositoryArchiveSecurityTests : IDisposable
     }
 
     [Fact]
-    public async Task ExtractArchiveAsync_ZipSlipAttack_ThrowsInvalidOperationExceptionAndCleansUp()
+    public async Task ExtractArchiveInternalAsync_ZipSlipAttack_ThrowsInvalidOperationException()
     {
-        var service = new RepositorySourceService(new HttpClient());
         var destination = Path.Combine(_testAnalysisDir, "repository");
+        Directory.CreateDirectory(destination);
 
         using var zipStream = CreateZipStream(archive =>
         {
@@ -76,17 +96,16 @@ public sealed class RepositoryArchiveSecurityTests : IDisposable
         });
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.ExtractArchiveAsync(zipStream, destination, _testAnalysisId));
+            RepositorySourceService.ExtractArchiveInternalAsync(zipStream, destination, CancellationToken.None));
 
         Assert.Contains("Zip Slip", ex.Message);
-        Assert.False(Directory.Exists(_testAnalysisDir));
     }
 
     [Fact]
-    public async Task ExtractArchiveAsync_FileCountExceedsLimit_ThrowsArchiveLimitExceededExceptionAndCleansUp()
+    public async Task ExtractArchiveInternalAsync_FileCountExceedsLimit_ThrowsArchiveLimitExceededException()
     {
-        var service = new RepositorySourceService(new HttpClient());
         var destination = Path.Combine(_testAnalysisDir, "repository");
+        Directory.CreateDirectory(destination);
 
         using var zipStream = CreateZipStream(archive =>
         {
@@ -98,17 +117,16 @@ public sealed class RepositoryArchiveSecurityTests : IDisposable
         });
 
         var ex = await Assert.ThrowsAsync<ArchiveLimitExceededException>(() =>
-            service.ExtractArchiveAsync(zipStream, destination, _testAnalysisId));
+            RepositorySourceService.ExtractArchiveInternalAsync(zipStream, destination, CancellationToken.None));
 
         Assert.Contains("10 000", ex.Message);
-        Assert.False(Directory.Exists(_testAnalysisDir));
     }
 
     [Fact]
-    public async Task ExtractArchiveAsync_SingleFileExceeds50MiB_ThrowsArchiveLimitExceededExceptionAndCleansUp()
+    public async Task ExtractArchiveInternalAsync_SingleFileExceeds50MiB_ThrowsArchiveLimitExceededException()
     {
-        var service = new RepositorySourceService(new HttpClient());
         var destination = Path.Combine(_testAnalysisDir, "repository");
+        Directory.CreateDirectory(destination);
 
         // Создаем сжатый блок в 51 МиБ нулей (сжатый размер ~52 КБ)
         using var zipStream = CreateZipStream(archive =>
@@ -129,17 +147,16 @@ public sealed class RepositoryArchiveSecurityTests : IDisposable
         });
 
         var ex = await Assert.ThrowsAsync<ArchiveLimitExceededException>(() =>
-            service.ExtractArchiveAsync(zipStream, destination, _testAnalysisId));
+            RepositorySourceService.ExtractArchiveInternalAsync(zipStream, destination, CancellationToken.None));
 
         Assert.Contains("50 МиБ", ex.Message);
-        Assert.False(Directory.Exists(_testAnalysisDir));
     }
 
     [Fact]
-    public async Task ExtractArchiveAsync_TotalExtractedExceeds250MiB_ThrowsArchiveLimitExceededExceptionAndCleansUp()
+    public async Task ExtractArchiveInternalAsync_TotalExtractedExceeds250MiB_ThrowsArchiveLimitExceededException()
     {
-        var service = new RepositorySourceService(new HttpClient());
         var destination = Path.Combine(_testAnalysisDir, "repository");
+        Directory.CreateDirectory(destination);
 
         // Создаем 6 файлов по 45 МиБ (суммарно 270 МиБ > 250 МиБ лимита, каждый файл < 50 МиБ)
         using var zipStream = CreateZipStream(archive =>
@@ -163,14 +180,13 @@ public sealed class RepositoryArchiveSecurityTests : IDisposable
         });
 
         var ex = await Assert.ThrowsAsync<ArchiveLimitExceededException>(() =>
-            service.ExtractArchiveAsync(zipStream, destination, _testAnalysisId));
+            RepositorySourceService.ExtractArchiveInternalAsync(zipStream, destination, CancellationToken.None));
 
         Assert.Contains("250 МиБ", ex.Message);
-        Assert.False(Directory.Exists(_testAnalysisDir));
     }
 
     [Fact]
-    public async Task CleanupAsync_DeletesAnalysisDirectory()
+    public async Task CleanupAsync_WithoutGuard_ThrowsInvalidOperationExceptionAndDoesNotDeleteDirectory()
     {
         var service = new RepositorySourceService(new HttpClient());
         var path = Path.Combine(_testAnalysisDir, "repository", "somefile.txt");
@@ -179,8 +195,10 @@ public sealed class RepositoryArchiveSecurityTests : IDisposable
 
         Assert.True(Directory.Exists(_testAnalysisDir));
 
-        await service.CleanupAsync(_testAnalysisId);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.CleanupAsync(_testAnalysisId));
 
-        Assert.False(Directory.Exists(_testAnalysisDir));
+        Assert.Contains("IAnalysisLeaseGuard", ex.Message);
+        Assert.True(Directory.Exists(_testAnalysisDir), "Каталог не должен удаляться старым CleanupAsync без guard!");
     }
 }

@@ -1,6 +1,7 @@
 using Application.Analyzers;
 using DatabaseAnalyzer.Mapping;
 using DatabaseAnalyzer.Providers;
+using DatabaseAnalyzer.Rules;
 using Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -36,7 +37,6 @@ public sealed class DatabaseAnalyzerIntegrationTests
         var inspector = new EfCoreModelInspector();
         var mapper = new EfCoreMetadataMapper();
         var provider = new EfCoreMetadataProvider(resolver.Object, inspector, mapper);
-        var analyzer = new DatabaseAnalyzer(provider);
 
         var context = new AnalyzerContext
         {
@@ -58,7 +58,7 @@ public sealed class DatabaseAnalyzerIntegrationTests
 
         // 2. SampleEfProject является корректно настроенным проектом: все сущности имеют PK, навигации заданы,
         // а EF Core по конвенции создал индекс для внешнего ключа. Нарушений быть не должно.
-        var findings = await analyzer.AnalyzeAsync(context);
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(findings);
     }
@@ -72,7 +72,6 @@ public sealed class DatabaseAnalyzerIntegrationTests
 
         using var db = new Db01Context(options);
         var provider = CreateProvider(db.Model);
-        var analyzer = new DatabaseAnalyzer(provider);
 
         var context = new AnalyzerContext
         {
@@ -80,7 +79,8 @@ public sealed class DatabaseAnalyzerIntegrationTests
             CommitHash = "test"
         };
 
-        var findings = await analyzer.AnalyzeAsync(context);
+        var metadata = await provider.GetMetadataAsync(context);
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(findings);
         Assert.Equal("DB01", finding.Rule);
@@ -98,7 +98,6 @@ public sealed class DatabaseAnalyzerIntegrationTests
 
         using var db = new Db02Context(options);
         var provider = CreateProvider(db.Model);
-        var analyzer = new DatabaseAnalyzer(provider);
 
         var context = new AnalyzerContext
         {
@@ -106,7 +105,8 @@ public sealed class DatabaseAnalyzerIntegrationTests
             CommitHash = "test"
         };
 
-        var findings = await analyzer.AnalyzeAsync(context);
+        var metadata = await provider.GetMetadataAsync(context);
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(findings);
         Assert.Equal("DB02", finding.Rule);
@@ -150,8 +150,7 @@ public sealed class DatabaseAnalyzerIntegrationTests
         Assert.Equal(nameof(Student.Courses), courseSkipNav.InverseNavigationName);
 
         // 2. Проверяем формирование единственного finding DB03 анализатором базы данных
-        var analyzer = new DatabaseAnalyzer(provider);
-        var findings = await analyzer.AnalyzeAsync(context);
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var db03Findings = findings.Where(f => f.Rule == "DB03").ToList();
         var finding = Assert.Single(db03Findings);
@@ -170,7 +169,6 @@ public sealed class DatabaseAnalyzerIntegrationTests
 
         using var db = new Db04Context(options);
         var provider = CreateProvider(db.Model);
-        var analyzer = new DatabaseAnalyzer(provider);
 
         var context = new AnalyzerContext
         {
@@ -178,7 +176,8 @@ public sealed class DatabaseAnalyzerIntegrationTests
             CommitHash = "test"
         };
 
-        var findings = await analyzer.AnalyzeAsync(context);
+        var metadata = await provider.GetMetadataAsync(context);
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(findings);
         Assert.Equal("DB04", finding.Rule);
@@ -196,7 +195,6 @@ public sealed class DatabaseAnalyzerIntegrationTests
 
         using var db = new Db05Context(options);
         var provider = CreateProvider(db.Model);
-        var analyzer = new DatabaseAnalyzer(provider);
 
         var context = new AnalyzerContext
         {
@@ -204,7 +202,8 @@ public sealed class DatabaseAnalyzerIntegrationTests
             CommitHash = "test"
         };
 
-        var findings = await analyzer.AnalyzeAsync(context);
+        var metadata = await provider.GetMetadataAsync(context);
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         var finding = Assert.Single(findings);
         Assert.Equal("DB05", finding.Rule);
@@ -222,7 +221,6 @@ public sealed class DatabaseAnalyzerIntegrationTests
 
         using var db = new CompliantContext(options);
         var provider = CreateProvider(db.Model);
-        var analyzer = new DatabaseAnalyzer(provider);
 
         var context = new AnalyzerContext
         {
@@ -230,7 +228,8 @@ public sealed class DatabaseAnalyzerIntegrationTests
             CommitHash = "test"
         };
 
-        var findings = await analyzer.AnalyzeAsync(context);
+        var metadata = await provider.GetMetadataAsync(context);
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.Empty(findings);
     }

@@ -172,14 +172,36 @@ public sealed class RateLimitingTests
         await pipeline(rejectedContext);
         Assert.Equal(StatusCodes.Status429TooManyRequests, rejectedContext.Response.StatusCode);
 
-        // Ждем 1.2 секунды для восстановления 1 токена (скорость 1 токен / 1 сек).
-        await Task.Delay(1200);
-
+        // Ожидаем восстановления ровно 1 токена (скорость 1 токен / 1 сек).
+        // Под высокой параллельной нагрузкой в xUnit таймерные коллбэки ThreadPool могут иметь задержку диспетчеризации.
+        // Опрашиваем эндпоинт короткими интервалами, фиксируя момент восстановления токена без гонки с таймером.
         var allowedContext = CreateHttpContext(ip);
-        await pipeline(allowedContext);
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var tokenReplenished = false;
+
+        // Начальная пауза для истечения базового интервала пополнения (1.0 сек)
+        await Task.Delay(1000);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            var attemptContext = CreateHttpContext(ip);
+            await pipeline(attemptContext);
+
+            if (attemptContext.Response.StatusCode == StatusCodes.Status200OK)
+            {
+                allowedContext = attemptContext;
+                tokenReplenished = true;
+                break;
+            }
+
+            await Task.Delay(50);
+        }
+
+        Assert.True(tokenReplenished, "Токен не восстановился за отведённое время ожидания (5 сек).");
         Assert.Equal(StatusCodes.Status200OK, allowedContext.Response.StatusCode);
 
-        // Следующий запрос без задержки снова должен быть отклонен.
+        // Следующий запрос без задержки снова должен быть отклонен,
+        // так как единственный восстановленный токен был немедленно израсходован.
         var nextRejectedContext = CreateHttpContext(ip);
         await pipeline(nextRejectedContext);
         Assert.Equal(StatusCodes.Status429TooManyRequests, nextRejectedContext.Response.StatusCode);

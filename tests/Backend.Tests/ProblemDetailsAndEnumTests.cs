@@ -1,3 +1,4 @@
+using DatabaseAnalyzer.Runner;
 using Api.Common;
 using Api.Controllers;
 using Application.DTOs;
@@ -855,7 +856,7 @@ public sealed class ProblemDetailsAndEnumTests
         analysisRepo.Setup(x => x.GetByIdAsync(30, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
 
         var sourceService = new Mock<IRepositorySourceService>();
-        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], Mock.Of<IGitHubCredentialService>());
+        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
         var commitService = new CommitService(commitRepo.Object, projectRepo.Object);
         var projectService = new ProjectService(projectRepo.Object);
 

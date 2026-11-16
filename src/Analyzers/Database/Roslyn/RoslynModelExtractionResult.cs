@@ -8,6 +8,10 @@ public sealed class RoslynModelExtractionResult
 
     public IReadOnlyList<string> Warnings { get; init; } = [];
 
+    public IReadOnlyList<string> MetadataCapabilities { get; init; } = [];
+
+    public IReadOnlyList<string> UnsupportedFeatures { get; init; } = [];
+
     public DatabaseMetadata? SingleContextMetadata =>
         Contexts.Count == 1 ? Contexts[0].ToDatabaseMetadata() : null;
 

@@ -21,6 +21,39 @@ public sealed class DiscoveredEntity
 
     public string? SchemaName { get; set; }
 
+    public EntityMappingType MappingType { get; set; } = EntityMappingType.Table;
+
+    public EntityKeyType KeyType { get; set; } = EntityKeyType.PrimaryKey;
+
+    public string? ViewName { get; set; }
+
+    public string? SqlQuery { get; set; }
+
+    public string? FunctionName { get; set; }
+
+    public bool IsSharedType { get; set; }
+
+    public string? ClrTypeName { get; set; }
+
+    public bool IsDerivedEntity { get; set; }
+
+    public string? BaseEntityName { get; set; }
+
+    public bool HasIncompleteMetadata { get; set; }
+    public bool HasIncompleteKeys { get; set; }
+    public bool HasIncompleteForeignKeys { get; set; }
+    public bool HasIncompleteIndexes { get; set; }
+    public bool HasIncompleteNavigations { get; set; }
+    public bool HasIncompleteSkipNavigations { get; set; }
+
+    public List<string> UnsupportedFeatures { get; } = [];
+
+    public SourceLocation? PrimaryLocation { get; set; }
+
+    public List<SourceLocation> Declarations { get; } = [];
+
+    public List<SourceLocation> Configurations { get; } = [];
+
     public bool IsTableNameConfiguredByFluentApi { get; set; }
 
     public bool IsSchemaNameConfiguredByFluentApi { get; set; }
@@ -113,6 +146,26 @@ public sealed class DiscoveredEntity
             EntityName = EntityName,
             TableName = resolvedTableName,
             SchemaName = SchemaName,
+            MappingType = MappingType,
+            KeyType = KeyType,
+            ViewName = ViewName,
+            SqlQuery = SqlQuery,
+            FunctionName = FunctionName,
+            IsSharedType = IsSharedType,
+            ClrTypeName = ClrTypeName,
+            IsDerivedEntity = IsDerivedEntity,
+            BaseEntityName = BaseEntityName,
+            HasIncompleteMetadata = HasIncompleteMetadata,
+            HasIncompleteKeys = HasIncompleteKeys,
+            HasIncompleteForeignKeys = HasIncompleteForeignKeys,
+            HasIncompleteIndexes = HasIncompleteIndexes,
+            HasIncompleteNavigations = HasIncompleteNavigations,
+            HasIncompleteSkipNavigations = HasIncompleteSkipNavigations,
+            UnsupportedFeatures = UnsupportedFeatures.ToList(),
+            AlternateKeys = _keys.Where(k => !k.IsPrimaryKey).ToList(),
+            PrimaryLocation = PrimaryLocation,
+            Declarations = Declarations.ToList(),
+            Configurations = Configurations.ToList(),
             Properties = _properties.ToList(),
             Keys = _keys.ToList(),
             ForeignKeys = _foreignKeys.ToList(),

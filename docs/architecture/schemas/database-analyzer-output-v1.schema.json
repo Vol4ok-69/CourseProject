@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://netscope.local/schemas/database-analyzer-output-v1.json",
+  "title": "DatabaseAnalyzerOutputV1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "analyzerVersion",
+    "analysisId",
+    "executionToken",
+    "status",
+    "completedAtUtc",
+    "metrics",
+    "findings",
+    "diagnostics",
+    "errors"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$"
+    },
+    "analyzerVersion": {
+      "type": "string"
+    },
+    "analysisId": {
+      "type": "integer"
+    },
+    "executionToken": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["Success", "PartialSuccess", "Failed"]
+    },
+    "completedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["durationMs", "entitiesAnalyzed", "rulesEvaluated", "findingsCount"],
+      "properties": {
+        "durationMs": { "type": "integer" },
+        "entitiesAnalyzed": { "type": "integer" },
+        "rulesEvaluated": { "type": "integer" },
+        "findingsCount": { "type": "integer" }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Finding" }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Diagnostic" }
+    },
+    "errors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Error" }
+    }
+  },
+  "$defs": {
+    "SourceLocation": {
+      "type": "object",
+      "required": ["filePath", "startLine", "startColumn", "endLine", "endColumn"],
+      "properties": {
+        "filePath": { "type": "string" },
+        "startLine": { "type": "integer" },
+        "startColumn": { "type": "integer" },
+        "endLine": { "type": "integer" },
+        "endColumn": { "type": "integer" }
+      }
+    },
+    "Finding": {
+      "type": "object",
+      "required": [
+        "id",
+        "ruleId",
+        "ruleName",
+        "severity",
+        "message",
+        "recommendation",
+        "contextId"
+      ],
+      "properties": {
+        "id": { "type": "integer" },
+        "ruleId": { "type": "string" },
+        "ruleName": { "type": "string" },
+        "severity": {
+          "type": "string",
+          "enum": ["Info", "Warning", "Error", "Critical"]
+        },
+        "message": { "type": "string" },
+        "recommendation": { "type": "string" },
+        "contextId": { "type": "string" },
+        "entityId": { "type": ["string", "null"] },
+        "targetEntityName": { "type": ["string", "null"] },
+        "targetTable": { "type": ["string", "null"] },
+        "location": {
+          "oneOf": [
+            { "$ref": "#/$defs/SourceLocation" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "Diagnostic": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "contextId": { "type": ["string", "null"] },
+        "entityId": { "type": ["string", "null"] },
+        "ruleId": { "type": ["string", "null"] }
+      }
+    },
+    "Error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

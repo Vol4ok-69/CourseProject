@@ -1,0 +1,29 @@
+# Stage 1: Build & Publish
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Кэширование слоёв restore: проект Runner полностью автономен (Zero Shared Code)
+COPY ["src/Analyzers/Database.Runner/Database.Runner.csproj", "src/Analyzers/Database.Runner/"]
+RUN dotnet restore "src/Analyzers/Database.Runner/Database.Runner.csproj"
+
+# Копирование исходного кода Runner
+COPY src/Analyzers/Database.Runner/ src/Analyzers/Database.Runner/
+
+# Публикация в Release конфигурации
+WORKDIR "/src/src/Analyzers/Database.Runner"
+RUN dotnet publish "Database.Runner.csproj" -c Release -o /app/publish --no-restore /p:UseAppHost=false
+
+# Stage 2: Isolated Runtime
+FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
+WORKDIR /app
+
+# Создание непривилегированного пользователя appuser (UID 10001, GID 10001)
+RUN groupadd -g 10001 appgroup && \
+    useradd -u 10001 -g appgroup -m -d /app appuser && \
+    chown -R 10001:10001 /app
+
+USER 10001:10001
+
+COPY --from=build --chown=10001:10001 /app/publish .
+
+ENTRYPOINT ["dotnet", "NetScope.DatabaseAnalyzer.Runner.dll"]

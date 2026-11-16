@@ -1,18 +1,46 @@
 using Application.Exceptions;
 using Application.Interfaces;
 using Infrastructure.GitHub.Models;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
 
 namespace Infrastructure.GitHub;
 
-public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceService
+public class RepositorySourceService : IRepositorySourceService
 {
     public const long MaxArchiveSizeBytes = 50 * 1024 * 1024; // 50 МиБ (52 428 800 байт)
     public const long MaxSingleFileSizeBytes = 50 * 1024 * 1024; // 50 МиБ (52 428 800 байт)
     public const long MaxTotalExtractedSizeBytes = 250 * 1024 * 1024; // 250 МиБ (262 144 000 байт)
     public const int MaxFileCount = 10_000;
+
+    private readonly HttpClient _httpClient;
+    private readonly string _baseStoragePath;
+    private readonly IAnalysisLeaseGuardProvider? _leaseGuardProvider;
+    private readonly ILogger<RepositorySourceService>? _logger;
+
+    public RepositorySourceService(
+        HttpClient httpClient,
+        IConfiguration? configuration = null,
+        IAnalysisLeaseGuardProvider? leaseGuardProvider = null,
+        ILogger<RepositorySourceService>? logger = null)
+    {
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        _leaseGuardProvider = leaseGuardProvider;
+        _logger = logger;
+
+        var configuredPath = configuration?["Storage:AnalysisPath"];
+        _baseStoragePath = !string.IsNullOrWhiteSpace(configuredPath)
+            ? Path.GetFullPath(configuredPath)
+            : Path.Combine(Path.GetTempPath(), "CourseProject", "analyses");
+    }
+
+    public RepositorySourceService(HttpClient httpClient)
+        : this(httpClient, null, null, null)
+    {
+    }
 
     private static readonly HashSet<string> ExcludedDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -27,11 +55,36 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
         "build"
     };
 
+    private string GetExecutionDirectory(int analysisId, Guid executionToken)
+    {
+        return Path.Combine(_baseStoragePath, analysisId.ToString(), executionToken.ToString("D"));
+    }
+
+    public Task<string> DownloadAndExtractAsync(
+        string repositoryUrl,
+        string commitHash,
+        int analysisId,
+        Guid executionToken,
+        string personalAccessToken,
+        CancellationToken cancellationToken = default)
+    {
+        return DownloadAndExtractAsync(
+            repositoryUrl,
+            commitHash,
+            analysisId,
+            executionToken,
+            personalAccessToken,
+            guard: null!,
+            cancellationToken);
+    }
+
     public async Task<string> DownloadAndExtractAsync(
         string repositoryUrl,
         string commitHash,
         int analysisId,
+        Guid executionToken,
         string personalAccessToken,
+        IAnalysisLeaseGuard guard,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(repositoryUrl))
@@ -45,19 +98,30 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(analysisId);
 
+        if (executionToken == Guid.Empty)
+            throw new ArgumentException("Не указан токен выполнения анализа.", nameof(executionToken));
+
+        if (guard == null || !guard.IsAcquired || guard.AnalysisId != analysisId || guard.ExecutionToken != executionToken)
+        {
+            throw new InvalidOperationException("Workspace ownership could not be verified.");
+        }
+
+        var isOwner = await guard.ValidateOwnershipAsync(
+            [(int)Domain.Enums.AnalysisStatus.Running],
+            cancellationToken);
+
+        if (!isOwner)
+        {
+            throw new InvalidOperationException("Workspace ownership could not be verified.");
+        }
+
         var repository = GitHubRepositoryReference.Parse(repositoryUrl);
 
-        var analysisDirectory = Path.Combine(
-            AppContext.BaseDirectory,
-            "data",
-            "analysis",
-            analysisId.ToString()
-        );
-
-        var repositoryPath = Path.Combine(analysisDirectory, "repository");
+        var executionDirectory = GetExecutionDirectory(analysisId, executionToken);
+        var repositoryPath = Path.Combine(executionDirectory, "repository");
         Directory.CreateDirectory(repositoryPath);
 
-        var tempZipPath = Path.Combine(analysisDirectory, "archive.zip");
+        var tempZipPath = Path.Combine(executionDirectory, "archive.zip");
 
         try
         {
@@ -69,7 +133,7 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
             HttpResponseMessage response;
             try
             {
-                response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -137,9 +201,29 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
 
             return repositoryPath;
         }
-        catch
+        catch (Exception ex)
         {
-            await CleanupAsync(analysisId, CancellationToken.None);
+            try
+            {
+                if (guard != null && guard.IsAcquired)
+                {
+                    var isStillOwner = await guard.ValidateOwnershipAsync(
+                        [(int)Domain.Enums.AnalysisStatus.Running],
+                        CancellationToken.None);
+
+                    if (isStillOwner)
+                    {
+                        await CleanupAsync(analysisId, executionToken, guard, CancellationToken.None);
+                    }
+                }
+            }
+            catch (Exception cleanupEx)
+            {
+                _logger?.LogError(cleanupEx,
+                    "Ошибка при токенизированной очистке каталога анализа {AnalysisId} (токен {ExecutionToken}) после сбоя загрузки архива.",
+                    analysisId, executionToken);
+                ex.Data["CleanupException"] = cleanupEx.Message;
+            }
             throw;
         }
         finally
@@ -161,38 +245,44 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
         string repositoryUrl,
         string commitHash,
         int analysisId,
+        string personalAccessToken,
         CancellationToken cancellationToken = default)
     {
-        throw new InvalidOperationException("Для загрузки архива репозитория GitHub требуется персональный токен доступа (PAT).");
+        throw new InvalidOperationException("Файловая операция рабочего пространства запрещена без действующего IAnalysisLeaseGuard.");
+    }
+
+    public Task<string> DownloadAndExtractAsync(
+        string repositoryUrl,
+        string commitHash,
+        int analysisId,
+        CancellationToken cancellationToken = default)
+    {
+        throw new InvalidOperationException("Файловая операция рабочего пространства запрещена без действующего IAnalysisLeaseGuard.");
     }
 
     /// <summary>
     /// Распаковывает архив из потока с проверкой ограничений размера и квот безопасности.
     /// </summary>
-    public async Task ExtractArchiveAsync(
+    public Task ExtractArchiveAsync(
         Stream archiveStream,
         string destinationRepositoryPath,
         int analysisId,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(archiveStream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(destinationRepositoryPath);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(analysisId);
-
-        Directory.CreateDirectory(destinationRepositoryPath);
-
-        try
-        {
-            await ExtractArchiveInternalAsync(archiveStream, destinationRepositoryPath, cancellationToken);
-        }
-        catch
-        {
-            await CleanupAsync(analysisId, CancellationToken.None);
-            throw;
-        }
+        throw new InvalidOperationException("Файловая операция рабочего пространства запрещена без действующего IAnalysisLeaseGuard.");
     }
 
-    private static async Task ExtractArchiveInternalAsync(
+    public Task ExtractArchiveAsync(
+        Stream archiveStream,
+        string destinationRepositoryPath,
+        int analysisId,
+        Guid executionToken,
+        CancellationToken cancellationToken = default)
+    {
+        throw new InvalidOperationException("Файловая операция рабочего пространства запрещена без действующего IAnalysisLeaseGuard.");
+    }
+
+    internal static async Task ExtractArchiveInternalAsync(
         Stream archiveStream,
         string repositoryPath,
         CancellationToken cancellationToken)
@@ -275,31 +365,138 @@ public class RepositorySourceService(HttpClient httpClient) : IRepositorySourceS
         }
     }
 
-    public Task CleanupAsync(int analysisId, CancellationToken cancellationToken = default)
+    public async Task CleanupAsync(
+        int analysisId,
+        Guid executionToken,
+        IAnalysisLeaseGuard activeGuard,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(analysisId);
 
-        var analysisDirectory = Path.Combine(
-            AppContext.BaseDirectory,
-            "data",
-            "analysis",
-            analysisId.ToString()
-        );
+        if (executionToken == Guid.Empty)
+        {
+            throw new ArgumentException("Не указан токен выполнения анализа.", nameof(executionToken));
+        }
 
-        if (Directory.Exists(analysisDirectory))
+        ArgumentNullException.ThrowIfNull(activeGuard);
+
+        if (activeGuard.AnalysisId != analysisId || activeGuard.ExecutionToken != executionToken)
+        {
+            throw new ArgumentException(
+                $"Указанный activeGuard ({activeGuard.AnalysisId}, {activeGuard.ExecutionToken}) не соответствует параметрам анализа ({analysisId}, {executionToken}).",
+                nameof(activeGuard));
+        }
+
+        if (!activeGuard.IsAcquired)
+        {
+            throw new InvalidOperationException(
+                $"Удаление рабочего каталога анализа {analysisId} (токен {executionToken}) отклонено: activeGuard не находится в состоянии IsAcquired.");
+        }
+
+        var executionDirectory = GetExecutionDirectory(analysisId, executionToken);
+        var fullTargetDir = Path.GetFullPath(executionDirectory);
+        var fullBaseDir = Path.GetFullPath(_baseStoragePath);
+
+        // Защита от path traversal: проверяем, что целевой каталог находится внутри базового хранилища
+        if (!fullTargetDir.StartsWith(fullBaseDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Целевой каталог {fullTargetDir} выходит за границы разрешённого хранилища {fullBaseDir}.");
+        }
+
+        // Защита от удаления базового или родительского каталога
+        if (fullTargetDir.Equals(fullBaseDir, StringComparison.OrdinalIgnoreCase) ||
+            fullTargetDir.Equals(Path.GetFullPath(Path.Combine(_baseStoragePath, analysisId.ToString())), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Целевой каталог {fullTargetDir} не является изолированным каталогом конкретного исполнения.");
+        }
+
+        if (!Directory.Exists(fullTargetDir))
+        {
+            // Повторная очистка уже удалённого каталога безопасна
+            return;
+        }
+
+        // Защита символических ссылок и reparse points
+        var dirInfo = new DirectoryInfo(fullTargetDir);
+        if (dirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            return;
+        }
+
+        var isOwner = await activeGuard.ValidateOwnershipAsync(cancellationToken);
+        if (!isOwner)
+        {
+            throw new InvalidOperationException(
+                $"Удаление рабочего каталога анализа {analysisId} (токен {executionToken}) отклонено: исполнитель больше не владеет задачей в PostgreSQL.");
+        }
+
+        // Удаление строго под защитой блокировки
+        Directory.Delete(fullTargetDir, recursive: true);
+
+        // Очищаем пустой родительский каталог анализа при отсутствии других исполнений под защитой блокировки
+        var analysisParentDir = Path.Combine(_baseStoragePath, analysisId.ToString());
+        try
+        {
+            if (Directory.Exists(analysisParentDir) && !Directory.EnumerateFileSystemEntries(analysisParentDir).Any())
+            {
+                Directory.Delete(analysisParentDir, recursive: false);
+            }
+        }
+        catch
+        {
+        }
+
+        // Также удаляем временный каталог обмена контейнера строго под защитой блокировки
+        var containerExchangeDir = Path.Combine(
+            Path.GetTempPath(),
+            "netscope-database-analyzer",
+            $"{analysisId}_{executionToken:N}");
+        if (Directory.Exists(containerExchangeDir))
         {
             try
             {
-                Directory.Delete(analysisDirectory, recursive: true);
+                var cDirInfo = new DirectoryInfo(containerExchangeDir);
+                if (!cDirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                {
+                    Directory.Delete(containerExchangeDir, recursive: true);
+                }
             }
             catch
             {
             }
         }
+    }
 
-        return Task.CompletedTask;
+    public async Task CleanupAsync(int analysisId, Guid executionToken, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(analysisId);
+
+        if (executionToken == Guid.Empty)
+        {
+            throw new ArgumentException("Не указан токен выполнения анализа.", nameof(executionToken));
+        }
+
+        if (_leaseGuardProvider == null)
+        {
+            throw new InvalidOperationException(
+                $"Безопасное удаление рабочего каталога анализа {analysisId} (токен {executionToken}) невозможно: не настроен IAnalysisLeaseGuardProvider (fail-closed).");
+        }
+
+        await using var guard = await _leaseGuardProvider.AcquireGuardAsync(analysisId, executionToken, cancellationToken);
+        if (guard == null || !guard.IsAcquired)
+        {
+            throw new InvalidOperationException(
+                $"Удаление рабочего каталога анализа {analysisId} (токен {executionToken}) отклонено: не удалось получить advisory lock (блокировка удерживается другим процессом).");
+        }
+
+        await CleanupAsync(analysisId, executionToken, guard, cancellationToken);
+    }
+
+    public Task CleanupAsync(int analysisId, CancellationToken cancellationToken = default)
+    {
+        throw new InvalidOperationException("Файловая операция рабочего пространства запрещена без действующего IAnalysisLeaseGuard.");
     }
 
     private static async Task HandleArchiveErrorResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)

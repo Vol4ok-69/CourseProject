@@ -335,9 +335,9 @@ public sealed class RoslynModelInspector
                         entity);
                 }
 
-                // 5. EF Core соглашение: если первичный ключ не задан явно,
+                // 5. EF Core соглашение: если первичный ключ не задан явно и сущность не Keyless,
                 // проверяем наличие свойства Id или {EntityName}Id
-                if (entity.Keys.Count == 0)
+                if (entity.KeyType != EntityKeyType.Keyless && entity.Keys.Count == 0)
                 {
                     var idProp = entity.Properties.FirstOrDefault(p =>
                         string.Equals(p.PropertyName, "Id", StringComparison.OrdinalIgnoreCase) ||
@@ -346,11 +346,13 @@ public sealed class RoslynModelInspector
                     if (idProp is not null)
                     {
                         var keyName = $"PK_{entity.TableName ?? entity.EntityName}";
+                        entity.KeyType = EntityKeyType.ImplicitKey;
                         entity.AddKey(new DatabaseKeyMetadata
                         {
                             Name = keyName,
                             PropertyNames = [idProp.PropertyName],
-                            IsPrimaryKey = true
+                            IsPrimaryKey = true,
+                            IsExplicitName = false
                         });
                     }
                 }
@@ -396,10 +398,34 @@ public sealed class RoslynModelInspector
             });
         }
 
+        var capabilities = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "CoreRelational"
+        };
+
+        foreach (var ctx in discoveredContexts)
+        {
+            foreach (var ent in ctx.Entities)
+            {
+                if (ent.KeyType == EntityKeyType.Keyless) capabilities.Add("KeylessEntities");
+                if (ent.MappingType == EntityMappingType.View) capabilities.Add("ViewMapping");
+                if (ent.MappingType == EntityMappingType.SqlQuery) capabilities.Add("SqlQueryMapping");
+                if (ent.MappingType == EntityMappingType.Function) capabilities.Add("FunctionMapping");
+                if (ent.Indexes.Any(i => !string.IsNullOrWhiteSpace(i.Filter))) capabilities.Add("FilteredIndexes");
+                if (ent.SkipNavigations.Any(s => s.IsImplicitJoinEntity)) capabilities.Add("ImplicitJoinEntities");
+                if (ent.Properties.Any(p => p.IsShadowProperty)) capabilities.Add("ShadowProperties");
+                if (ent.IsDerivedEntity) capabilities.Add("InheritanceHierarchy");
+                if (ent.IsSharedType) capabilities.Add("SharedTypeEntities");
+                if (ent.Keys.Any(k => k.PropertyNames.Count > 1)) capabilities.Add("CompositeKeys");
+                if (ent.ForeignKeys.Any(f => f.PropertyNames.Count > 1)) capabilities.Add("CompositeForeignKeys");
+            }
+        }
+
         return new RoslynModelExtractionResult
         {
             Contexts = discoveredContexts,
-            Warnings = warnings
+            Warnings = warnings,
+            MetadataCapabilities = capabilities.ToList()
         };
     }
 

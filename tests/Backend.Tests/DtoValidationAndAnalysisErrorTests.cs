@@ -1,3 +1,4 @@
+using DatabaseAnalyzer.Runner;
 using Api.Common;
 using Api.Controllers;
 using Application.DTOs;
@@ -414,7 +415,7 @@ public sealed class DtoValidationAndAnalysisErrorTests
         commitRepo.Setup(x => x.GetByIdAsync(20, It.IsAny<CancellationToken>())).ReturnsAsync(commit);
         analysisRepo.Setup(x => x.GetByIdAsync(30, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
 
-        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, Mock.Of<IRepositorySourceService>(), [], Mock.Of<IGitHubCredentialService>());
+        var analysisService = new AnalysisService(analysisRepo.Object, commitRepo.Object, Mock.Of<IRepositorySourceService>(), [], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
         var commitService = new CommitService(commitRepo.Object, projectRepo.Object);
         var projectService = new ProjectService(projectRepo.Object);
 

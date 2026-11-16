@@ -1,158 +1,248 @@
-
 using Application.Analyzers;
-using DatabaseAnalyzer.Metadata;
-using DatabaseAnalyzer.Providers;
+using DatabaseAnalyzer.Roslyn;
+using DatabaseAnalyzer.Runner;
 using Domain.Enums;
 
 namespace DatabaseAnalyzer;
 
-public sealed class DatabaseAnalyzer(IDatabaseMetadataProvider metadataProvider) : IAnalyzer
+/// <summary>
+/// Анализатор базы данных.
+/// В целевой архитектуре ADR-001 отвечает за координацию статического извлечения метаданных EF Core
+/// и взаимодействие с изолированным контейнером анализа БД.
+/// На этапе 1 (TD-001) выполняет безопасное Roslyn-извлечение метаданных без запуска сборки и динамической загрузки сборок.
+/// Проверки реляционной модели DB01–DB05 в основном процессе backend строго запрещены (ADR-001 п. 2.1, 2.2).
+/// При наличии подключённого IDatabaseContainerRunner делегирует выполнение правил DB01–DB05 изолированному контейнеру.
+/// При отсутствии подключённого контейнера формирует явное диагностическое предупреждение.
+/// </summary>
+public sealed class DatabaseAnalyzer : IAnalyzer
 {
+    public const string ContainerUnavailableRule = "DB_CONTAINER_UNAVAILABLE";
+    public const string MissingDbContextRule = "MISSING_DBCONTEXT";
+    public const string RoslynWarningRule = "DB_ROSLYN_WARNING";
+    public const string ExtractionErrorRule = "DB_EXTRACTION_ERROR";
+    public const string ContainerExecutionErrorRule = "DB_CONTAINER_ERROR";
+
+    private readonly IRoslynMetadataExtractor _metadataExtractor;
+
     public AnalyzerType Type => AnalyzerType.Database;
 
-    public async Task<IReadOnlyList<AnalyzerFinding>> AnalyzeAsync(AnalyzerContext context, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Опциональный исполнитель изолированного контейнера базы данных.
+    /// </summary>
+    public IDatabaseContainerRunner? ContainerRunner { get; init; }
+
+    /// <summary>
+    /// Основной конструктор для production pipeline (ADR-001).
+    /// Использует Roslyn-экстрактор для статического извлечения метаданных.
+    /// Выполнение DB01–DB05 в основном процессе backend строго исключено (ADR-001).
+    /// </summary>
+    public DatabaseAnalyzer(IRoslynMetadataExtractor metadataExtractor)
     {
+        _metadataExtractor = metadataExtractor ?? throw new ArgumentNullException(nameof(metadataExtractor));
+    }
+
+    public async Task<IReadOnlyList<AnalyzerFinding>> AnalyzeAsync(
+        AnalyzerContext context,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(context);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var metadata = await metadataProvider.GetMetadataAsync(context, cancellationToken);
         var findings = new List<AnalyzerFinding>();
 
-        foreach (var entity in metadata.Entities)
+        // Проверка пути к репозиторию
+        if (string.IsNullOrWhiteSpace(context.RepositoryPath))
         {
-            // DB01: сущность без первичного ключа.
-            if (!entity.Keys.Any(key => key.IsPrimaryKey))
+            findings.Add(new AnalyzerFinding
             {
-                findings.Add(new AnalyzerFinding
-                {
-                    Rule = "DB01",
-                    FilePath = entity.TableName,
-                    LineNumber = 0,
-                    Message = $"Сущность '{entity.EntityName}' (таблица '{entity.TableName}') не имеет первичного ключа.",
-                    Severity = Severity.Warning,
-                    Recommendation = "Проверьте, что сущность намеренно настроена без первичного ключа. Для таблицы с изменяемыми данными задайте первичный ключ; для представления или проекции убедитесь, что отсутствие ключа предусмотрено."
-                });
-            }
+                Rule = ExtractionErrorRule,
+                FilePath = string.Empty,
+                LineNumber = 0,
+                Message = "Каталог репозитория не указан (RepositoryPath пуст). Извлечение метаданных EF Core пропущено.",
+                Severity = Severity.Warning,
+                Recommendation = "Убедитесь, что репозиторий успешно загружен перед запуском анализа."
+            });
 
-            // DB02: внешний ключ без навигационного свойства к главной сущности (рекомендация соглашения проекта).
-            foreach (var foreignKey in entity.ForeignKeys)
+            findings.Add(CreateContainerUnavailableFinding());
+            return findings;
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(context.RepositoryPath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            findings.Add(new AnalyzerFinding
             {
-                if (string.IsNullOrWhiteSpace(foreignKey.NavigationToPrincipal))
+                Rule = ExtractionErrorRule,
+                FilePath = string.Empty,
+                LineNumber = 0,
+                Message = $"Некорректный путь к каталогу репозитория '{context.RepositoryPath}': {ex.Message}",
+                Severity = Severity.Warning,
+                Recommendation = "Проверьте корректность пути к рабочей директории анализа."
+            });
+
+            findings.Add(CreateContainerUnavailableFinding());
+            return findings;
+        }
+
+        if (!Directory.Exists(fullPath))
+        {
+            findings.Add(new AnalyzerFinding
+            {
+                Rule = ExtractionErrorRule,
+                FilePath = string.Empty,
+                LineNumber = 0,
+                Message = $"Каталог репозитория не найден: {fullPath}. Извлечение метаданных EF Core пропущено.",
+                Severity = Severity.Warning,
+                Recommendation = "Проверьте путь к рабочему каталогу репозитория и статус загрузки исходного кода."
+            });
+
+            findings.Add(CreateContainerUnavailableFinding());
+            return findings;
+        }
+
+        RoslynModelExtractionResult extraction;
+        try
+        {
+            extraction = await _metadataExtractor.ExtractAsync(fullPath, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            findings.Add(new AnalyzerFinding
+            {
+                Rule = ExtractionErrorRule,
+                FilePath = string.Empty,
+                LineNumber = 0,
+                Message = $"Ошибка статического извлечения метаданных EF Core: {ex.Message}",
+                Severity = Severity.Warning,
+                Recommendation = "Проверьте структуру файлов C# и синтаксическую корректность моделей Entity Framework Core."
+            });
+
+            findings.Add(CreateContainerUnavailableFinding());
+            return findings;
+        }
+
+        // 1. Предупреждения статического синтаксического анализа Roslyn
+        foreach (var warning in extraction.Warnings)
+        {
+            findings.Add(new AnalyzerFinding
+            {
+                Rule = RoslynWarningRule,
+                FilePath = string.Empty,
+                LineNumber = 0,
+                Message = warning,
+                Severity = Severity.Warning,
+                Recommendation = "Проверьте синтаксис C# и конфигурацию модели Entity Framework Core."
+            });
+        }
+
+        // 2. Отсутствие DbContext в репозитории (ADR-001 / TD-002: Partial Success)
+        if (extraction.Contexts.Count == 0)
+        {
+            findings.Add(new AnalyzerFinding
+            {
+                Rule = MissingDbContextRule,
+                FilePath = string.Empty,
+                LineNumber = 0,
+                Message = "В проекте не найдено контекстов данных Entity Framework Core (DbContext). Проверки схемы базы данных пропущены.",
+                Severity = Severity.Info,
+                Recommendation = "Если в репозитории используется база данных, убедитесь, что класс контекста наследует Microsoft.EntityFrameworkCore.DbContext."
+            });
+        }
+
+        // 3. Выполнение проверок DB01–DB05 через изолированный контейнер
+        if (ContainerRunner == null)
+        {
+            // Диагностическое предупреждение о том, что контейнер не подключён
+            findings.Add(CreateContainerUnavailableFinding());
+            return findings;
+        }
+
+        if (context.LeaseGuard == null)
+        {
+            findings.Add(CreateContainerUnavailableFinding());
+            return findings;
+        }
+
+        try
+        {
+            var analysisId = context.AnalysisId ?? 0;
+            var executionToken = context.ExecutionToken ?? Guid.NewGuid();
+
+            var containerResult = await ContainerRunner.RunAnalysisAsync(
+                extraction,
+                analysisId,
+                executionToken,
+                context.LeaseGuard,
+                cancellationToken);
+
+            if (containerResult.Status == "Success" || containerResult.Status == "PartialSuccess")
+            {
+                findings.AddRange(containerResult.Findings);
+
+                foreach (var diag in containerResult.Diagnostics)
                 {
                     findings.Add(new AnalyzerFinding
                     {
-                        Rule = "DB02",
-                        FilePath = entity.TableName,
+                        Rule = RoslynWarningRule,
+                        FilePath = string.Empty,
                         LineNumber = 0,
-                        Message = $"Рекомендация: внешний ключ '{foreignKey.Name}' сущности '{entity.EntityName}' не имеет навигационного свойства к главной сущности '{foreignKey.PrincipalEntityName}'. Это допустимо в EF Core, но не соответствует рекомендуемому проектному соглашению.",
-                        Severity = Severity.Warning,
-                        Recommendation = $"В рамках проектного соглашения рекомендуется добавить навигационное свойство в сущность '{entity.EntityName}' для внешнего ключа '{foreignKey.Name}'. Это обеспечивает типобезопасный доступ к связанной сущности '{foreignKey.PrincipalEntityName}' и поддержку удобной загрузки связанных данных через LINQ (.Include()). Это является рекомендацией по стилю моделирования и не нарушает целостность БД или требования EF Core."
-                    });
-                }
-            }
-
-            // DB03: неявная связь многие-ко-многим без явной промежуточной сущности.
-            foreach (var skipNav in entity.SkipNavigations)
-            {
-                if (!skipNav.IsImplicitJoinEntity)
-                {
-                    continue;
-                }
-
-                // Стабильная дедупликация физической связи:
-                // Для двунаправленной связи регистрируем finding только один раз для сущности с лексикографически меньшим именем.
-                // При равенстве имен (самоссылающаяся связь) регистрируем finding только для лексикографически меньшего имени навигации.
-                // Если между теми же типами сущностей настроено несколько связей, они различаются по JoinEntityTableName/JoinEntityName.
-                if (!string.IsNullOrWhiteSpace(skipNav.InverseNavigationName))
-                {
-                    var entityComparison = string.Compare(entity.EntityName, skipNav.TargetEntityName, StringComparison.Ordinal);
-                    if (entityComparison > 0)
-                    {
-                        continue;
-                    }
-
-                    if (entityComparison == 0 &&
-                        string.Compare(skipNav.NavigationName, skipNav.InverseNavigationName, StringComparison.Ordinal) > 0)
-                    {
-                        continue;
-                    }
-                }
-
-                findings.Add(new AnalyzerFinding
-                {
-                    Rule = "DB03",
-                    FilePath = entity.TableName,
-                    LineNumber = 0,
-                    Message = $"Рекомендация: связь многие-ко-многим между сущностями '{entity.EntityName}' и '{skipNav.TargetEntityName}' настроена через неявную промежуточную таблицу '{skipNav.JoinEntityTableName}'.",
-                    Severity = Severity.Info,
-                    Recommendation = $"Рассмотрите возможность создания явной связующей сущности (join entity) для таблицы '{skipNav.JoinEntityTableName}'. Это позволит явно управлять схемой связующей таблицы, индексами и добавлять дополнительные атрибуты связи (например, дату создания или статус) без изменения типа связи в будущем. Использование неявной связи допустимо в EF Core и является рекомендацией по проектированию модели."
-                });
-            }
-
-            // DB04: внешний ключ без подходящего индекса.
-            foreach (var foreignKey in entity.ForeignKeys)
-            {
-                var foreignKeyProperties = foreignKey.PropertyNames;
-
-                if (foreignKeyProperties.Count == 0)
-                {
-                    continue;
-                }
-
-                var hasMatchingIndex = entity.Indexes.Any(index =>
-                    index.PropertyNames.Count >= foreignKeyProperties.Count &&
-                    index.PropertyNames
-                        .Take(foreignKeyProperties.Count)
-                        .SequenceEqual(foreignKeyProperties, StringComparer.Ordinal));
-
-                if (hasMatchingIndex)
-                {
-                    continue;
-                }
-
-                findings.Add(new AnalyzerFinding
-                {
-                    Rule = "DB04",
-                    FilePath = entity.TableName,
-                    LineNumber = 0,
-                    Message = $"Внешний ключ '{foreignKey.Name}' сущности '{entity.EntityName}' не имеет подходящего индекса по столбцам: {string.Join(", ", foreignKeyProperties)}.",
-                    Severity = Severity.Warning,
-                    Recommendation = "Проверьте частоту соединений и фильтрации по столбцам внешнего ключа. При необходимости добавьте индекс, начинающийся со столбцов внешнего ключа в указанном порядке."
-                });
-            }
-
-
-            // DB05: дублирующиеся индексы.
-            for (var i = 0; i < entity.Indexes.Count; i++)
-            {
-                for (var j = i + 1; j < entity.Indexes.Count; j++)
-                {
-                    var firstIndex = entity.Indexes[i];
-                    var secondIndex = entity.Indexes[j];
-
-                    if (firstIndex.IsUnique != secondIndex.IsUnique)
-                    {
-                        continue;
-                    }
-
-                    if (!firstIndex.PropertyNames.SequenceEqual(secondIndex.PropertyNames, StringComparer.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    findings.Add(new AnalyzerFinding
-                    {
-                        Rule = "DB05",
-                        FilePath = entity.TableName,
-                        LineNumber = 0,
-                        Message = $"Индексы '{firstIndex.Name}' и '{secondIndex.Name}' сущности '{entity.EntityName}' дублируются по столбцам: {string.Join(", ", firstIndex.PropertyNames)}.",
+                        Message = diag,
                         Severity = Severity.Info,
-                        Recommendation = "Проверьте необходимость обоих индексов. Если они не отличаются по назначению или параметрам, рассмотрите удаление одного из них."
+                        Recommendation = "Диагностическое сообщение от изолированного анализатора базы данных."
                     });
                 }
             }
-
+            else
+            {
+                findings.Add(new AnalyzerFinding
+                {
+                    Rule = ContainerExecutionErrorRule,
+                    FilePath = string.Empty,
+                    LineNumber = 0,
+                    Message = $"Ошибка выполнения изолированного анализатора базы данных: {containerResult.ErrorMessage ?? containerResult.Status}",
+                    Severity = Severity.Warning,
+                    Recommendation = "Проверьте доступность контейнерной среды и корректность структуры моделей."
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            findings.Add(new AnalyzerFinding
+            {
+                Rule = ContainerExecutionErrorRule,
+                FilePath = string.Empty,
+                LineNumber = 0,
+                Message = $"Исключение при вызове изолированного контейнерного анализатора: {ex.Message}",
+                Severity = Severity.Warning,
+                Recommendation = "Проверьте конфигурацию Docker и параметры запуска контейнера NetScope."
+            });
         }
 
         return findings;
+    }
+
+    private static AnalyzerFinding CreateContainerUnavailableFinding()
+    {
+        return new AnalyzerFinding
+        {
+            Rule = ContainerUnavailableRule,
+            FilePath = string.Empty,
+            LineNumber = 0,
+            Message = "Изолированный контейнерный анализатор базы данных временно не подключён. Проверки реляционной модели DB01–DB05 в основном процессе backend не выполнялись в соответствии с ADR-001.",
+            Severity = Severity.Warning,
+            Recommendation = "Для выполнения проверок структуры базы данных DB01–DB05 требуется подключение изолированного контейнерного анализатора (ADR-001). Метаданные моделей EF Core извлечены статически через Roslyn."
+        };
     }
 }

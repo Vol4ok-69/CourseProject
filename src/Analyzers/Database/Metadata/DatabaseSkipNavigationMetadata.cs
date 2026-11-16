@@ -13,4 +13,10 @@ public sealed class DatabaseSkipNavigationMetadata
     public bool IsImplicitJoinEntity { get; init; }
 
     public string? InverseNavigationName { get; init; }
+
+    public string? TargetEntityId { get; init; }
+
+    public string? JoinEntityId { get; init; }
+
+    public SourceLocation? Location { get; init; }
 }

@@ -68,6 +68,14 @@ internal sealed class DataAnnotationParser
                         _warnings.Add($"Атрибут '[{attribute.Name}]' класса '{entity.EntityName}' пропущен: не подтверждена принадлежность к Microsoft.EntityFrameworkCore.");
                     }
                 }
+                else if (attrName is "Keyless" or "KeylessAttribute")
+                {
+                    entity.KeyType = EntityKeyType.Keyless;
+                }
+                else if (attrName is "NotMapped" or "NotMappedAttribute")
+                {
+                    entity.MappingType = EntityMappingType.Unmapped;
+                }
             }
         }
 
@@ -80,6 +88,7 @@ internal sealed class DataAnnotationParser
             var isNullable = property.Type is NullableTypeSyntax;
             var isKey = false;
             var isRequired = false;
+            var isNotMapped = false;
 
             foreach (var attributeList in property.AttributeLists)
             {
@@ -87,7 +96,11 @@ internal sealed class DataAnnotationParser
                 {
                     var attrName = GetSimpleAttributeName(attribute);
 
-                    if (attrName is "Key" or "KeyAttribute")
+                    if (attrName is "NotMapped" or "NotMappedAttribute")
+                    {
+                        isNotMapped = true;
+                    }
+                    else if (attrName is "Key" or "KeyAttribute")
                     {
                         if (IsKeyAttribute(attribute, fileSyntax))
                         {
@@ -123,6 +136,11 @@ internal sealed class DataAnnotationParser
                         }
                     }
                 }
+            }
+
+            if (isNotMapped)
+            {
+                continue;
             }
 
             var propMetadata = new DatabasePropertyMetadata
@@ -224,6 +242,9 @@ internal sealed class DataAnnotationParser
                 continue;
             }
 
+            entity.IsDerivedEntity = true;
+            entity.BaseEntityName ??= baseTypeName;
+
             foreach (var property in resolvedCandidate.SyntaxNode.Members.OfType<PropertyDeclarationSyntax>())
             {
                 var propName = property.Identifier.ValueText;
@@ -236,6 +257,7 @@ internal sealed class DataAnnotationParser
                 var isNullable = property.Type is NullableTypeSyntax;
                 var isKey = false;
                 var isRequired = false;
+                var isNotMapped = false;
 
                 foreach (var attributeList in property.AttributeLists)
                 {
@@ -243,7 +265,11 @@ internal sealed class DataAnnotationParser
                     {
                         var attrName = GetSimpleAttributeName(attribute);
 
-                        if (attrName is "Key" or "KeyAttribute" && IsKeyAttribute(attribute, resolvedCandidate.FileSyntax))
+                        if (attrName is "NotMapped" or "NotMappedAttribute")
+                        {
+                            isNotMapped = true;
+                        }
+                        else if (attrName is "Key" or "KeyAttribute" && IsKeyAttribute(attribute, resolvedCandidate.FileSyntax))
                         {
                             isKey = true;
                             if (!primaryKeyProperties.Contains(propName))
@@ -263,7 +289,12 @@ internal sealed class DataAnnotationParser
                     }
                 }
 
-                var propMetadata = new DatabasePropertyMetadata
+                if (isNotMapped)
+            {
+                continue;
+            }
+
+            var propMetadata = new DatabasePropertyMetadata
                 {
                     PropertyName = propName,
                     ColumnName = propName,

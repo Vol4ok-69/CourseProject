@@ -7,8 +7,9 @@ using Application.Interfaces.Repositories;
 using Application.Services;
 using CSharp;
 using DatabaseAnalyzer;
-using DatabaseAnalyzer.Mapping;
-using DatabaseAnalyzer.Providers;
+using DatabaseAnalyzer.Process;
+using DatabaseAnalyzer.Roslyn;
+using DatabaseAnalyzer.Runner;
 using Infrastructure.Data;
 using Infrastructure.GitHub;
 using Infrastructure.Repository;
@@ -43,13 +44,27 @@ builder.Services.AddScoped<IRoleRepository, RoleRepository>();
 builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAnalyzer, CSharpAnalyzer>();
-builder.Services.AddScoped<IAnalyzer, DatabaseAnalyzer.DatabaseAnalyzer>();
+builder.Services.AddScoped<RoslynModelInspector>();
+builder.Services.AddScoped<IRoslynMetadataExtractor, RoslynMetadataExtractor>();
+var analysisStoragePath = builder.Configuration["Storage:AnalysisPath"];
+
+builder.Services.AddSingleton<Application.Interfaces.IWorkspaceFileLockProvider>(
+    _ => new Infrastructure.Storage.WorkspaceFileLockProvider(analysisStoragePath));
+
+builder.Services.AddSingleton<DatabaseAnalyzer.Runner.IAnalysisLeaseGuardProvider>(
+    sp => new PostgreSqlAnalysisLeaseGuardProvider(
+        connectionString,
+        sp.GetRequiredService<Application.Interfaces.IWorkspaceFileLockProvider>()));
+builder.Services.AddSingleton<Application.Interfaces.IAnalysisLeaseGuardProvider>(sp => sp.GetRequiredService<DatabaseAnalyzer.Runner.IAnalysisLeaseGuardProvider>());
+builder.Services.AddScoped<IContainerProcessAdapter, DockerCliProcessAdapter>();
+builder.Services.AddScoped<IDatabaseContainerRunner, DatabaseContainerRunner>();
+builder.Services.AddScoped<IAnalyzer>(sp => new DatabaseAnalyzer.DatabaseAnalyzer(
+    sp.GetRequiredService<IRoslynMetadataExtractor>())
+{
+    ContainerRunner = sp.GetService<IDatabaseContainerRunner>()
+});
 builder.Services.AddScoped<IAnalyzer, SqlAnalyzer.SqlAnalyzer>();
 builder.Services.AddScoped<IAnalyzer, SecurityAnalyzer.SecurityAnalyzer>();
-builder.Services.AddScoped<IDatabaseMetadataProvider, EfCoreMetadataProvider>();
-builder.Services.AddScoped<IDatabaseProjectResolver, EfCoreDatabaseProjectResolver>();
-builder.Services.AddScoped<IEfCoreModelInspector, EfCoreModelInspector>();
-builder.Services.AddScoped<EfCoreMetadataMapper>();
 builder.Services.AddScoped<IDatabaseInitializer, DatabaseInitializer>();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("Database", tags: ["ready"]);
 
@@ -97,8 +112,10 @@ builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ProjectService>();
 builder.Services.AddScoped<GitHubSyncService>();
 builder.Services.AddScoped<AnalysisService>();
+builder.Services.AddScoped<IAnalysisCleanupService, Infrastructure.Storage.AnalysisCleanupService>();
 builder.Services.AddScoped<IGitHubCredentialService, GitHubCredentialService>();
 builder.Services.AddHostedService<AnalysisBackgroundService>();
+builder.Services.AddHostedService<AnalysisCleanupBackgroundService>();
 builder.Services.AddScoped<ApiJwtEvents>();
 
 builder.Services.AddCors(options =>

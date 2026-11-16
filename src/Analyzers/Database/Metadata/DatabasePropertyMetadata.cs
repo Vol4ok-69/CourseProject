@@ -1,4 +1,4 @@
-﻿namespace DatabaseAnalyzer.Metadata;
+namespace DatabaseAnalyzer.Metadata;
 
 public sealed class DatabasePropertyMetadata
 {
@@ -17,4 +17,12 @@ public sealed class DatabasePropertyMetadata
     public bool IsGenerated { get; init; }
 
     public string? DefaultValueSql { get; init; }
+
+    public bool IsShadowProperty { get; init; }
+
+    public bool IsConcurrencyToken { get; init; }
+
+    public string? ClrTypeName { get; init; }
+
+    public SourceLocation? Location { get; init; }
 }

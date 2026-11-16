@@ -13,9 +13,11 @@ public class AnalysisService(
     ICommitRepository commitRepository,
     IRepositorySourceService repositorySourceService,
     IEnumerable<IAnalyzer> analyzers,
-    IGitHubCredentialService gitHubCredentialService)
+    IGitHubCredentialService gitHubCredentialService,
+    IAnalysisLeaseGuardProvider leaseGuardProvider)
 {
     private readonly IGitHubCredentialService _gitHubCredentialService = gitHubCredentialService ?? throw new ArgumentNullException(nameof(gitHubCredentialService));
+    private readonly IAnalysisLeaseGuardProvider _leaseGuardProvider = leaseGuardProvider ?? throw new ArgumentNullException(nameof(leaseGuardProvider));
     /// <summary>
     /// Создаёт задачу анализа коммита со статусом Pending и сохраняет её в очередь задач.
     /// Не выполняет запуск анализаторов и не скачивает исходный код.
@@ -96,132 +98,181 @@ public class AnalysisService(
             return false;
         }
 
-        var effectiveLeaseDuration = leaseDuration ?? TimeSpan.FromMinutes(2);
-        using var leaseCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var leaseRenewalTask = StartLeaseRenewalAsync(analysisId, executionToken, effectiveLeaseDuration, leaseCts);
-
-        var ownershipLost = false;
+        var guard = await _leaseGuardProvider.AcquireGuardAsync(analysisId, executionToken, cancellationToken);
+        if (guard == null || !guard.IsAcquired)
+        {
+            return false;
+        }
 
         try
         {
-            var commit = (analysis.Commit?.Project != null ? analysis.Commit : null)
-                ?? await commitRepository.GetByIdAsync(analysis.CommitId, leaseCts.Token)
-                ?? throw new InvalidOperationException($"Коммит {analysis.CommitId} не найден.");
-
-            if (commit.Project == null)
+            var isInitialOwner = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], cancellationToken);
+            if (!isInitialOwner)
             {
-                throw new InvalidOperationException($"Проект для коммита {commit.Id} не найден.");
-            }
-
-            var personalAccessToken = await _gitHubCredentialService.GetUserTokenAsync(commit.Project.OwnerId, leaseCts.Token);
-
-            if (string.IsNullOrWhiteSpace(personalAccessToken))
-            {
-                throw new GitHubIntegrationException(
-                    GitHubErrorKind.TokenRequired,
-                    "Для выполнения анализа требуется подключение персонального токена GitHub владельца проекта.");
-            }
-
-            var repositoryPath = await repositorySourceService.DownloadAndExtractAsync(
-                commit.Project.RepoUrl,
-                commit.CommitHash,
-                analysis.Id,
-                personalAccessToken,
-                leaseCts.Token);
-
-            var context = new AnalyzerContext
-            {
-                RepositoryPath = repositoryPath,
-                CommitHash = commit.CommitHash
-            };
-
-            var results = new List<AnalysisResult>();
-
-            foreach (var analyzer in analyzers)
-            {
-                leaseCts.Token.ThrowIfCancellationRequested();
-
-                var findings = await analyzer.AnalyzeAsync(context, leaseCts.Token);
-
-                foreach (var finding in findings)
-                {
-                    results.Add(new AnalysisResult
-                    {
-                        AnalysisId = analysis.Id,
-                        FilePath = finding.FilePath,
-                        LineNumber = finding.LineNumber,
-                        Rule = finding.Rule,
-                        Message = finding.Message,
-                        Severity = finding.Severity,
-                        Recommendation = finding.Recommendation,
-                        AnalyzerType = analyzer.Type
-                    });
-                }
-            }
-
-            leaseCts.Cancel();
-            try { await leaseRenewalTask; } catch { }
-
-            var completed = await analysisRepository.CompleteAsync(analysis.Id, executionToken, results, CancellationToken.None);
-            if (!completed)
-            {
-                ownershipLost = true;
                 return false;
             }
 
-            return true;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            leaseCts.Cancel();
-            try { await leaseRenewalTask; } catch { }
+            var effectiveLeaseDuration = leaseDuration ?? TimeSpan.FromMinutes(2);
+            using var leaseCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var leaseRenewalTask = StartLeaseRenewalAsync(analysisId, executionToken, effectiveLeaseDuration, guard, leaseCts);
 
-            // При штатной остановке приложения НЕ помечаем задачу как Failed,
-            // чтобы после истечения аренды она могла быть повторно захвачена.
-            throw;
-        }
-        catch (OperationCanceledException) when (leaseCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            ownershipLost = true;
-            leaseCts.Cancel();
-            try { await leaseRenewalTask; } catch { }
+            var ownershipLost = false;
 
-            // Потеря или истечение аренды: не перезаписываем чужую задачу
-            return false;
-        }
-        catch (Exception ex)
-        {
-            leaseCts.Cancel();
-            try { await leaseRenewalTask; } catch { }
+            try
+            {
+                var commit = (analysis.Commit?.Project != null ? analysis.Commit : null)
+                    ?? await commitRepository.GetByIdAsync(analysis.CommitId, leaseCts.Token)
+                    ?? throw new InvalidOperationException($"Коммит {analysis.CommitId} не найден.");
 
-            // Ошибка подготовки коммита/проекта, скачивания или анализа:
-            // помечаем задачу как неудачную с защитой по ExecutionToken.
-            // Если владение уже утрачено, FailAsync вернёт false.
-            var errorMessage = SanitizeErrorMessage(ex);
-            var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, errorMessage, CancellationToken.None);
-            if (!failed)
+                if (commit.Project == null)
+                {
+                    throw new InvalidOperationException($"Проект для коммита {commit.Id} не найден.");
+                }
+
+                var personalAccessToken = await _gitHubCredentialService.GetUserTokenAsync(commit.Project.OwnerId, leaseCts.Token);
+
+                if (string.IsNullOrWhiteSpace(personalAccessToken))
+                {
+                    throw new GitHubIntegrationException(
+                        GitHubErrorKind.TokenRequired,
+                        "Для выполнения анализа требуется подключение персонального токена GitHub владельца проекта.");
+                }
+
+                var repositoryPath = await repositorySourceService.DownloadAndExtractAsync(
+                    commit.Project.RepoUrl,
+                    commit.CommitHash,
+                    analysis.Id,
+                    executionToken,
+                    personalAccessToken,
+                    guard,
+                    leaseCts.Token);
+
+                var context = new AnalyzerContext
+                {
+                    RepositoryPath = repositoryPath,
+                    CommitHash = commit.CommitHash,
+                    AnalysisId = analysis.Id,
+                    ExecutionToken = analysis.ExecutionToken,
+                    LeaseGuard = guard
+                };
+
+                var results = new List<AnalysisResult>();
+
+                foreach (var analyzer in analyzers)
+                {
+                    leaseCts.Token.ThrowIfCancellationRequested();
+
+                    var isStillOwner = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], leaseCts.Token);
+                    if (!isStillOwner)
+                    {
+                        ownershipLost = true;
+                        return false;
+                    }
+
+                    var findings = await analyzer.AnalyzeAsync(context, leaseCts.Token);
+
+                    foreach (var finding in findings)
+                    {
+                        results.Add(new AnalysisResult
+                        {
+                            AnalysisId = analysis.Id,
+                            FilePath = finding.FilePath,
+                            LineNumber = finding.LineNumber,
+                            Rule = finding.Rule,
+                            Message = finding.Message,
+                            Severity = finding.Severity,
+                            Recommendation = finding.Recommendation,
+                            AnalyzerType = analyzer.Type
+                        });
+                    }
+                }
+
+                var isStillOwnerBeforeComplete = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
+                if (!isStillOwnerBeforeComplete)
+                {
+                    ownershipLost = true;
+                    return false;
+                }
+
+                leaseCts.Cancel();
+                try { await leaseRenewalTask; } catch { }
+
+                var completed = await analysisRepository.CompleteAsync(analysis.Id, executionToken, results, CancellationToken.None);
+                if (!completed)
+                {
+                    ownershipLost = true;
+                    return false;
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                leaseCts.Cancel();
+                try { await leaseRenewalTask; } catch { }
+
+                // При штатной остановке приложения НЕ помечаем задачу как Failed,
+                // чтобы после истечения аренды она могла быть повторно захвачена.
+                throw;
+            }
+            catch (OperationCanceledException) when (leaseCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
                 ownershipLost = true;
-            }
+                leaseCts.Cancel();
+                try { await leaseRenewalTask; } catch { }
 
-            return false;
-        }
-        finally
-        {
-            // Очищаем временные файлы только если обработчик не потерял владение задачей
-            // (чтобы не удалить файлы другого воркера, перехватившего задачу)
-            if (!ownershipLost)
+                // Потеря или истечение аренды: не перезаписываем чужую задачу
+                return false;
+            }
+            catch (Exception ex)
             {
+                leaseCts.Cancel();
+                try { await leaseRenewalTask; } catch { }
+
+                bool isStillOwner = false;
                 try
                 {
-                    await repositorySourceService.CleanupAsync(analysis.Id, CancellationToken.None);
+                    isStillOwner = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
                 }
                 catch
                 {
-                    // Исключения из CleanupAsync не должны маскировать ошибки анализа
-                    // или приводить к смене статуса задачи
+                }
+
+                if (isStillOwner)
+                {
+                    var errorMessage = SanitizeErrorMessage(ex);
+                    var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, errorMessage, CancellationToken.None);
+                    if (!failed)
+                    {
+                        ownershipLost = true;
+                    }
+                }
+                else
+                {
+                    ownershipLost = true;
+                }
+
+                return false;
+            }
+            finally
+            {
+                // Очищаем временные файлы только если обработчик не потерял владение задачей
+                // (чтобы не удалить файлы другого воркера, перехватившего задачу)
+                if (!ownershipLost)
+                {
+                    try
+                    {
+                        await repositorySourceService.CleanupAsync(analysis.Id, executionToken, guard, CancellationToken.None);
+                    }
+                    catch
+                    {
+                    }
                 }
             }
+        }
+        finally
+        {
+            await guard.DisposeAsync();
         }
     }
 
@@ -229,10 +280,11 @@ public class AnalysisService(
         int analysisId,
         Guid executionToken,
         TimeSpan leaseDuration,
+        IAnalysisLeaseGuard guard,
         CancellationTokenSource linkedCts)
     {
-        var interval = leaseDuration.TotalSeconds >= 15
-            ? TimeSpan.FromSeconds(leaseDuration.TotalSeconds / 3)
+        var interval = leaseDuration.TotalSeconds >= 3
+            ? TimeSpan.FromSeconds(Math.Clamp(leaseDuration.TotalSeconds / 3, 1, 5))
             : TimeSpan.FromMilliseconds(Math.Max(10, leaseDuration.TotalMilliseconds / 3));
 
         try
@@ -241,22 +293,40 @@ public class AnalysisService(
             {
                 await Task.Delay(interval, linkedCts.Token);
 
+                using var validationTimeout = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(5));
+
+                var isOwner = await guard.ValidateOwnershipAsync(
+                    [(int)AnalysisStatus.Running],
+                    validationTimeout.Token);
+
+                if (!isOwner)
+                {
+                    linkedCts.Cancel();
+                    return;
+                }
+
                 var renewed = await analysisRepository.RenewLeaseAsync(
                     analysisId,
                     executionToken,
                     leaseDuration,
-                    CancellationToken.None);
+                    linkedCts.Token);
 
                 if (!renewed)
                 {
                     linkedCts.Cancel();
-                    break;
+                    return;
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
         {
-            // Ожидаемое завершение цикла продления аренды
+            // Штатная остановка цикла.
+        }
+        catch
+        {
+            // При невозможности подтвердить владение работа прекращается.
+            linkedCts.Cancel();
         }
     }
 
@@ -268,16 +338,24 @@ public class AnalysisService(
         var commit = await commitRepository.GetByIdAsync(commitId, cancellationToken)
             ?? throw new InvalidOperationException("Коммит не найден.");
 
+        var token = Guid.NewGuid();
         var analysis = new Analysis
         {
             CommitId = commitId,
             Status = AnalysisStatus.Running,
             CreatedAt = DateTime.UtcNow,
             StartedAt = DateTime.UtcNow,
+            ExecutionToken = token,
             ErrorMessage = null
         };
 
         await analysisRepository.AddAsync(analysis, cancellationToken);
+
+        await using var guard = await _leaseGuardProvider.AcquireGuardAsync(analysis.Id, token, cancellationToken);
+        if (guard == null || !guard.IsAcquired)
+        {
+            throw new InvalidOperationException("Failed to acquire workspace lease guard.");
+        }
 
         try
         {
@@ -294,13 +372,18 @@ public class AnalysisService(
                 commit.Project.RepoUrl,
                 commit.CommitHash,
                 analysis.Id,
+                token,
                 personalAccessToken,
+                guard,
                 cancellationToken);
 
             var context = new AnalyzerContext
             {
                 RepositoryPath = repositoryPath,
-                CommitHash = commit.CommitHash
+                CommitHash = commit.CommitHash,
+                AnalysisId = analysis.Id,
+                ExecutionToken = token,
+                LeaseGuard = guard
             };
 
             foreach (var analyzer in analyzers)
@@ -345,7 +428,7 @@ public class AnalysisService(
         {
             try
             {
-                await repositorySourceService.CleanupAsync(analysis.Id, CancellationToken.None);
+                await repositorySourceService.CleanupAsync(analysis.Id, token, guard, CancellationToken.None);
             }
             catch
             {

@@ -1,3 +1,5 @@
+﻿using DatabaseAnalyzer.Runner;
+using IAnalysisLeaseGuard = Application.Interfaces.IAnalysisLeaseGuard;
 using Api.BackgroundServices;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
@@ -55,7 +57,7 @@ public sealed class AnalysisBackgroundServiceTests
         credentialService.Setup(x => x.GetUserTokenAsync(1, It.IsAny<CancellationToken>()))
             .ReturnsAsync("ghp_test_token");
 
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 101, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 101, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
 
         var services = new ServiceCollection();
@@ -63,7 +65,7 @@ public sealed class AnalysisBackgroundServiceTests
         services.AddSingleton(commitRepo.Object);
         services.AddSingleton(sourceService.Object);
         services.AddSingleton(credentialService.Object);
-        services.AddSingleton(new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], credentialService.Object));
+        services.AddSingleton(new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider()));
 
         var serviceProvider = services.BuildServiceProvider();
         var scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -132,7 +134,7 @@ public sealed class AnalysisBackgroundServiceTests
         credentialService.Setup(x => x.GetUserTokenAsync(1, It.IsAny<CancellationToken>()))
             .ReturnsAsync("ghp_test_token");
 
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), "h1", 201, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), "h1", 201, token1, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("GitHub download failed"));
 
         // Вторая задача выполняется успешно
@@ -140,7 +142,7 @@ public sealed class AnalysisBackgroundServiceTests
         analysisRepo.Setup(x => x.CompleteAsync(202, token2, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
             .Callback(() => task2CompletedTcs.TrySetResult(true))
             .ReturnsAsync(true);
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), "h2", 202, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), "h2", 202, token2, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
 
         var services = new ServiceCollection();
@@ -148,7 +150,7 @@ public sealed class AnalysisBackgroundServiceTests
         services.AddSingleton(commitRepo.Object);
         services.AddSingleton(sourceService.Object);
         services.AddSingleton(credentialService.Object);
-        services.AddSingleton(new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], credentialService.Object));
+        services.AddSingleton(new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider()));
 
         var serviceProvider = services.BuildServiceProvider();
         var scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();

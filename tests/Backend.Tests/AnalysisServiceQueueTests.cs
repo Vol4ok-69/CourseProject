@@ -1,3 +1,5 @@
+﻿using IAnalysisLeaseGuard = Application.Interfaces.IAnalysisLeaseGuard;
+using DatabaseAnalyzer.Runner;
 using System.Reflection;
 using Application.Exceptions;
 ﻿using Application.Analyzers;
@@ -39,7 +41,7 @@ public sealed class AnalysisServiceQueueTests
             .Callback<Analysis, CancellationToken>((a, _) => a.Id = 100)
             .Returns(Task.CompletedTask);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>());
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
 
         var result = await service.EnqueueAsync(1);
 
@@ -67,7 +69,7 @@ public sealed class AnalysisServiceQueueTests
 
         commitRepo.Setup(x => x.GetByIdAsync(999, It.IsAny<CancellationToken>())).ReturnsAsync((Commit?)null);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>());
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.EnqueueAsync(999));
         Assert.Equal("Коммит не найден.", ex.Message);
@@ -108,7 +110,7 @@ public sealed class AnalysisServiceQueueTests
         analysisRepo.Setup(x => x.CompleteAsync(50, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
-        sourceService.Setup(x => x.DownloadAndExtractAsync("https://github.com/test/repo", "hash123", 50, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync("https://github.com/test/repo", "hash123", 50, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\TempRepo");
 
         analyzer.Setup(x => x.Type).Returns(AnalyzerType.CSharp);
@@ -125,14 +127,14 @@ public sealed class AnalysisServiceQueueTests
                 }
             ]);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(50, token);
 
         Assert.True(success);
 
         analysisRepo.Verify(x => x.CompleteAsync(50, token, It.Is<IReadOnlyList<AnalysisResult>>(r => r.Count == 1), It.IsAny<CancellationToken>()), Times.Once);
-        sourceService.Verify(x => x.CleanupAsync(50, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(50, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -167,19 +169,19 @@ public sealed class AnalysisServiceQueueTests
         analysisRepo.Setup(x => x.GetByIdAsync(51, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
         analysisRepo.Setup(x => x.FailAsync(51, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 51, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 51, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\TempRepo");
 
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Roslyn crash"));
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(51, token);
 
         Assert.False(success);
         analysisRepo.Verify(x => x.FailAsync(51, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
-        sourceService.Verify(x => x.CleanupAsync(51, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(51, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -215,15 +217,15 @@ public sealed class AnalysisServiceQueueTests
         analysisRepo.Setup(x => x.CompleteAsync(52, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 52, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 52, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\TempRepo");
-        sourceService.Setup(x => x.CleanupAsync(52, It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.CleanupAsync(52, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new IOException("Directory locked by another process"));
 
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(52, token);
 
@@ -256,7 +258,7 @@ public sealed class AnalysisServiceQueueTests
         credentialService.Setup(x => x.GetUserTokenAsync(1, It.IsAny<CancellationToken>()))
             .ReturnsAsync("ghp_test_token");
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         // Симулируем отмену HTTP-запроса сразу после сохранения задачи
         using var httpRequestCts = new CancellationTokenSource();
@@ -272,7 +274,7 @@ public sealed class AnalysisServiceQueueTests
         analysisRepo.Setup(x => x.GetByIdAsync(77, It.IsAny<CancellationToken>())).ReturnsAsync(enqueuedAnalysis);
         analysisRepo.Setup(x => x.CompleteAsync(77, executionToken, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 77, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 77, executionToken, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
 
@@ -341,11 +343,11 @@ public sealed class AnalysisServiceQueueTests
                 .ReturnsAsync([]);
 
             string? requestedRepoUrl = null;
-            sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 1, "ghp_test_token", It.IsAny<CancellationToken>()))
-                .Callback<string, string, int, string, CancellationToken>((url, _, _, _, _) => requestedRepoUrl = url)
+            sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 1, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
+                .Callback<string, string, int, Guid, string, IAnalysisLeaseGuard, CancellationToken>((url, _, _, _, _, _, _) => requestedRepoUrl = url)
                 .ReturnsAsync("C:\\TempExtracted");
 
-            var service = new AnalysisService(analysisRepo, commitRepo, sourceService.Object, [analyzer.Object], credentialService.Object);
+            var service = new AnalysisService(analysisRepo, commitRepo, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
             var success = await service.ExecuteAnalysisAsync(1, token);
 
@@ -392,8 +394,8 @@ public sealed class AnalysisServiceQueueTests
 
         using var shutdownCts = new CancellationTokenSource();
 
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 88, "ghp_test_token", It.IsAny<CancellationToken>()))
-            .Returns<string, string, int, string, CancellationToken>(async (_, _, _, _, ct) =>
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 88, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
+            .Returns<string, string, int, Guid, string, IAnalysisLeaseGuard, CancellationToken>(async (_, _, _, _, _, _, ct) =>
             {
                 shutdownCts.Cancel(); // Имитируем остановку приложения во время скачивания
                 ct.ThrowIfCancellationRequested();
@@ -401,7 +403,7 @@ public sealed class AnalysisServiceQueueTests
                 return "C:\\Temp";
             });
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             service.ExecuteAnalysisAsync(88, token, shutdownCts.Token));
@@ -410,7 +412,7 @@ public sealed class AnalysisServiceQueueTests
         analysisRepo.Verify(x => x.FailAsync(88, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
 
         // Гарантируем, что временные файлы всё равно очищены
-        sourceService.Verify(x => x.CleanupAsync(88, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(88, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -480,14 +482,14 @@ public sealed class AnalysisServiceQueueTests
         commitRepo.Setup(x => x.GetByIdAsync(999, It.IsAny<CancellationToken>())).ReturnsAsync((Commit?)null);
         analysisRepo.Setup(x => x.FailAsync(91, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>());
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(91, token);
 
         Assert.False(success);
         analysisRepo.Verify(x => x.FailAsync(91, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
-        sourceService.Verify(x => x.CleanupAsync(91, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(91, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -517,14 +519,14 @@ public sealed class AnalysisServiceQueueTests
         commitRepo.Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(new Commit { Id = 1, CommitHash = "hash92", Project = null! });
         analysisRepo.Setup(x => x.FailAsync(92, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>());
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(92, token);
 
         Assert.False(success);
         analysisRepo.Verify(x => x.FailAsync(92, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
-        sourceService.Verify(x => x.CleanupAsync(92, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(92, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -549,14 +551,14 @@ public sealed class AnalysisServiceQueueTests
         commitRepo.Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>())).ThrowsAsync(new InvalidOperationException("DB unavailable"));
         analysisRepo.Setup(x => x.FailAsync(93, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>());
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(93, token);
 
         Assert.False(success);
         analysisRepo.Verify(x => x.FailAsync(93, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
-        sourceService.Verify(x => x.CleanupAsync(93, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(93, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -591,7 +593,7 @@ public sealed class AnalysisServiceQueueTests
         analysisRepo.Setup(x => x.RenewLeaseAsync(94, token, It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 94, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 94, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
 
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
@@ -604,7 +606,7 @@ public sealed class AnalysisServiceQueueTests
                 return [];
             });
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         // Передаем короткую длительность аренды (60ms), чтобы цикл продления сработал через 20ms
         var success = await service.ExecuteAnalysisAsync(94, token, default, TimeSpan.FromMilliseconds(60));
@@ -613,7 +615,7 @@ public sealed class AnalysisServiceQueueTests
         // Не изменяем задачу чужого воркера
         analysisRepo.Verify(x => x.FailAsync(94, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
         // Не удаляем временные файлы, так как ими может пользоваться новый воркер
-        sourceService.Verify(x => x.CleanupAsync(94, It.IsAny<CancellationToken>()), Times.Never);
+        sourceService.Verify(x => x.CleanupAsync(94, It.IsAny<Guid>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -648,18 +650,18 @@ public sealed class AnalysisServiceQueueTests
         analysisRepo.Setup(x => x.CompleteAsync(95, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 95, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 95, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(95, token);
 
         Assert.False(success);
         // Не удаляем временные файлы, так как ими уже владеет другой воркер
-        sourceService.Verify(x => x.CleanupAsync(95, It.IsAny<CancellationToken>()), Times.Never);
+        sourceService.Verify(x => x.CleanupAsync(95, It.IsAny<Guid>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         analysisRepo.Verify(x => x.FailAsync(95, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -691,7 +693,7 @@ public sealed class AnalysisServiceQueueTests
             .ReturnsAsync("ghp_test_token");
 
         analysisRepo.Setup(x => x.GetByIdAsync(96, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 96, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 96, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Analysis error"));
@@ -700,13 +702,13 @@ public sealed class AnalysisServiceQueueTests
         analysisRepo.Setup(x => x.FailAsync(96, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(96, token);
 
         Assert.False(success);
         // Не удаляем временные файлы, так как ими уже владеет другой воркер
-        sourceService.Verify(x => x.CleanupAsync(96, It.IsAny<CancellationToken>()), Times.Never);
+        sourceService.Verify(x => x.CleanupAsync(96, It.IsAny<Guid>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -737,7 +739,7 @@ public sealed class AnalysisServiceQueueTests
             .ReturnsAsync("ghp_test_token");
 
         analysisRepo.Setup(x => x.GetByIdAsync(97, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 97, "ghp_test_token", It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 97, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Fatal analysis error"));
@@ -746,16 +748,16 @@ public sealed class AnalysisServiceQueueTests
             .ReturnsAsync(true);
 
         // Исключение при очистке
-        sourceService.Setup(x => x.CleanupAsync(97, It.IsAny<CancellationToken>()))
+        sourceService.Setup(x => x.CleanupAsync(97, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new IOException("Access denied during cleanup"));
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(97, token);
 
         Assert.False(success);
         analysisRepo.Verify(x => x.FailAsync(97, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
-        sourceService.Verify(x => x.CleanupAsync(97, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(97, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -793,14 +795,16 @@ public sealed class AnalysisServiceQueueTests
             "https://github.com/org/repo-stage85",
             "hash-stage85",
             301,
+            token,
             "ghp_owner_secret_pat_stage85",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\TempStage85");
 
         analyzer.Setup(x => x.Type).Returns(AnalyzerType.CSharp);
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(301, token);
 
@@ -809,9 +813,11 @@ public sealed class AnalysisServiceQueueTests
             "https://github.com/org/repo-stage85",
             "hash-stage85",
             301,
+            token,
             "ghp_owner_secret_pat_stage85",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        sourceService.Verify(x => x.CleanupAsync(301, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(301, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -854,14 +860,16 @@ public sealed class AnalysisServiceQueueTests
             "https://github.com/owner/project",
             "hash-admin-test",
             302,
+            token,
             "ghp_owner_pat_42",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\TempOwner");
 
         analyzer.Setup(x => x.Type).Returns(AnalyzerType.CSharp);
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(302, token);
 
@@ -877,8 +885,11 @@ public sealed class AnalysisServiceQueueTests
             "https://github.com/owner/project",
             "hash-admin-test",
             302,
+            token,
             "ghp_owner_pat_42",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(302, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -913,7 +924,7 @@ public sealed class AnalysisServiceQueueTests
         credentialService.Setup(x => x.GetUserTokenAsync(77, It.IsAny<CancellationToken>()))
             .ReturnsAsync((string?)null);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(303, token);
 
@@ -935,7 +946,7 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<CancellationToken>()), Times.Never);
 
         // Временные файлы очищаются
-        sourceService.Verify(x => x.CleanupAsync(303, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(303, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Theory]
@@ -972,7 +983,7 @@ public sealed class AnalysisServiceQueueTests
         credentialService.Setup(x => x.GetUserTokenAsync(88, It.IsAny<CancellationToken>()))
             .ReturnsAsync(whitespaceToken);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(304, token);
 
@@ -991,7 +1002,7 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<string>(),
             It.IsAny<CancellationToken>()), Times.Never);
 
-        sourceService.Verify(x => x.CleanupAsync(304, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(304, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -1029,11 +1040,13 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             305,
+            token,
             "ghp_expired_token",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.TokenExpired, "Персональный токен GitHub недействителен или отозван."));
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(305, token);
 
@@ -1045,7 +1058,7 @@ public sealed class AnalysisServiceQueueTests
             It.Is<string>(msg => msg.Contains("недействителен или отозван", StringComparison.OrdinalIgnoreCase)),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        sourceService.Verify(x => x.CleanupAsync(305, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(305, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -1083,11 +1096,13 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             306,
+            token,
             "ghp_rate_limited",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.RateLimited, "Превышен лимит запросов к GitHub API (Rate Limit)."));
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(306, token);
 
@@ -1099,7 +1114,7 @@ public sealed class AnalysisServiceQueueTests
             It.Is<string>(msg => msg.Contains("лимит запросов", StringComparison.OrdinalIgnoreCase)),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        sourceService.Verify(x => x.CleanupAsync(306, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(306, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -1137,11 +1152,13 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             307,
+            token,
             "ghp_access_denied",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.AccessDenied, "Доступ к репозиторию GitHub запрещен (недостаточно прав или ограничения организации)."));
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(307, token);
 
@@ -1153,7 +1170,7 @@ public sealed class AnalysisServiceQueueTests
             It.Is<string>(msg => msg.Contains("запрещен", StringComparison.OrdinalIgnoreCase)),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        sourceService.Verify(x => x.CleanupAsync(307, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(307, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -1191,11 +1208,13 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             308,
+            token,
             "ghp_repo_not_found",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.RepoNotFound, "Репозиторий GitHub не найден или токен не имеет к нему доступа."));
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(308, token);
 
@@ -1207,7 +1226,7 @@ public sealed class AnalysisServiceQueueTests
             It.Is<string>(msg => msg.Contains("не найден", StringComparison.OrdinalIgnoreCase)),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        sourceService.Verify(x => x.CleanupAsync(308, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(308, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -1245,11 +1264,13 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             309,
+            token,
             "ghp_service_unavailable",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.ServiceUnavailable, "Сервис GitHub временно недоступен."));
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(309, token);
 
@@ -1261,7 +1282,7 @@ public sealed class AnalysisServiceQueueTests
             It.Is<string>(msg => msg.Contains("временно недоступен", StringComparison.OrdinalIgnoreCase)),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        sourceService.Verify(x => x.CleanupAsync(309, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(309, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -1301,14 +1322,16 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             310,
+            token,
             secretPat,
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\TempSecret");
 
         analyzer.Setup(x => x.Type).Returns(AnalyzerType.CSharp);
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         await service.ExecuteAnalysisAsync(310, token);
 
@@ -1366,11 +1389,13 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             311,
+            token,
             rawPat,
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException($"Download failed with token {rawPat}"));
 
-        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object);
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(311, token);
 
@@ -1390,6 +1415,16 @@ public sealed class AnalysisServiceQueueTests
                 Mock.Of<ICommitRepository>(),
                 Mock.Of<IRepositorySourceService>(),
                 [],
+                null!,
+                new InMemoryAnalysisLeaseGuardProvider()));
+
+        Assert.Throws<ArgumentNullException>(() =>
+            new AnalysisService(
+                Mock.Of<IAnalysisRepository>(),
+                Mock.Of<ICommitRepository>(),
+                Mock.Of<IRepositorySourceService>(),
+                [],
+                Mock.Of<IGitHubCredentialService>(),
                 null!));
     }
 

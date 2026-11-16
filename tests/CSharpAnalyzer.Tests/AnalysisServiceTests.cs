@@ -44,7 +44,9 @@ public class AnalysisServiceTests
             "https://github.com/test/repository",
             "abc123",
             It.IsAny<int>(),
+            It.IsAny<Guid>(),
             "ghp_test_token",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Repository");
 
@@ -69,7 +71,8 @@ public class AnalysisServiceTests
             commitRepository.Object,
             repositorySourceService.Object,
             [analyzer.Object],
-            credentialService.Object);
+            credentialService.Object,
+            CreateMockGuardProvider());
 
         var result = await service.AnalyzeAsync(1);
 
@@ -99,12 +102,16 @@ public class AnalysisServiceTests
             "https://github.com/test/repository",
             "abc123",
             It.IsAny<int>(),
+            It.IsAny<Guid>(),
             "ghp_test_token",
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()),
             Times.Once);
 
         repositorySourceService.Verify(x => x.CleanupAsync(
             It.IsAny<int>(),
+            It.IsAny<Guid>(),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()),
             Times.Once);
 
@@ -131,7 +138,8 @@ public class AnalysisServiceTests
             commitRepository.Object,
             repositorySourceService.Object,
             [analyzer.Object],
-            Mock.Of<IGitHubCredentialService>());
+            Mock.Of<IGitHubCredentialService>(),
+            CreateMockGuardProvider());
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
             () => service.AnalyzeAsync(1));
@@ -147,7 +155,9 @@ public class AnalysisServiceTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             It.IsAny<int>(),
+            It.IsAny<Guid>(),
             It.IsAny<string>(),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()),
             Times.Never);
 
@@ -188,7 +198,8 @@ public class AnalysisServiceTests
             commitRepository.Object,
             repositorySourceService.Object,
             [analyzer.Object],
-            credentialService.Object);
+            credentialService.Object,
+            CreateMockGuardProvider());
 
         var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.AnalyzeAsync(1));
 
@@ -200,7 +211,9 @@ public class AnalysisServiceTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             It.IsAny<int>(),
+            It.IsAny<Guid>(),
             It.IsAny<string>(),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()),
             Times.Never);
 
@@ -211,6 +224,24 @@ public class AnalysisServiceTests
             Times.Once);
 
         // Cleanup должен быть вызван в finally блоке
-        repositorySourceService.Verify(x => x.CleanupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
+        repositorySourceService.Verify(x => x.CleanupAsync(
+            It.IsAny<int>(),
+            It.IsAny<Guid>(),
+            It.IsAny<IAnalysisLeaseGuard>(),
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    private static IAnalysisLeaseGuardProvider CreateMockGuardProvider()
+    {
+        var guard = new Mock<IAnalysisLeaseGuard>();
+        guard.Setup(g => g.IsAcquired).Returns(true);
+        guard.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        guard.Setup(g => g.ValidateOwnershipAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+
+        var provider = new Mock<IAnalysisLeaseGuardProvider>();
+        provider.Setup(p => p.AcquireGuardAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guard.Object);
+        return provider.Object;
     }
 }

@@ -172,7 +172,7 @@ public class ApiWebApplicationFactory : WebApplicationFactory<Program>, IAsyncLi
             services.AddDbContext<AppDbContext>(options =>
                 options.UseNpgsql(_fixture.ConnectionString));
 
-            // Изолируем фоновый воркер, если не запрошено его явное включение
+            // Изолируем фоновые воркеры, если не запрошено их явное включение
             if (!EnableAnalysisBackgroundService)
             {
                 var backgroundWorkerDescriptor = services.FirstOrDefault(d =>
@@ -182,6 +182,15 @@ public class ApiWebApplicationFactory : WebApplicationFactory<Program>, IAsyncLi
                 if (backgroundWorkerDescriptor != null)
                 {
                     services.Remove(backgroundWorkerDescriptor);
+                }
+
+                var cleanupWorkerDescriptor = services.FirstOrDefault(d =>
+                    d.ServiceType == typeof(IHostedService) &&
+                    d.ImplementationType == typeof(AnalysisCleanupBackgroundService));
+
+                if (cleanupWorkerDescriptor != null)
+                {
+                    services.Remove(cleanupWorkerDescriptor);
                 }
             }
 

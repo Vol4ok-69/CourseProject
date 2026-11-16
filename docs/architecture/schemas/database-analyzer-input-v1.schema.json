@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://netscope.local/schemas/database-analyzer-input-v1.json",
+  "title": "DatabaseAnalyzerInputV1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "analysisId",
+    "executionToken",
+    "createdAtUtc",
+    "metadataCapabilities",
+    "configuration",
+    "metadata"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$"
+    },
+    "analysisId": {
+      "type": "integer"
+    },
+    "executionToken": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "createdAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "metadataCapabilities": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "configuration": {
+      "type": "object",
+      "required": ["enabledRules", "maxFindings"],
+      "properties": {
+        "enabledRules": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "maxFindings": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["dbContexts"],
+      "properties": {
+        "dbContexts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/DbContext" }
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "SourceLocation": {
+      "type": "object",
+      "required": ["filePath", "startLine", "startColumn", "endLine", "endColumn"],
+      "properties": {
+        "filePath": { "type": "string" },
+        "startLine": { "type": "integer" },
+        "startColumn": { "type": "integer" },
+        "endLine": { "type": "integer" },
+        "endColumn": { "type": "integer" }
+      }
+    },
+    "DbContext": {
+      "type": "object",
+      "required": ["name", "entities"],
+      "properties": {
+        "name": { "type": "string" },
+        "contextId": { "type": ["string", "null"] },
+        "primaryLocation": {
+          "oneOf": [
+            { "$ref": "#/$defs/SourceLocation" },
+            { "type": "null" }
+          ]
+        },
+        "unsupportedFeatures": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "entities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Entity" }
+        }
+      }
+    },
+    "Entity": {
+      "type": "object",
+      "required": [
+        "name",
+        "mappingType",
+        "keyType",
+        "isSharedType",
+        "isDerivedEntity",
+        "hasIncompleteMetadata",
+        "properties",
+        "keys",
+        "foreignKeys",
+        "indexes",
+        "skipNavigations"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "entityId": { "type": ["string", "null"] },
+        "clrTypeName": { "type": ["string", "null"] },
+        "tableName": { "type": ["string", "null"] },
+        "schemaName": { "type": ["string", "null"] },
+        "mappingType": {
+          "type": "string",
+          "enum": ["Table", "View", "SqlQuery", "Function", "Unmapped", "Unknown"]
+        },
+        "keyType": {
+          "type": "string",
+          "enum": ["PrimaryKey", "Keyless", "ImplicitKey", "Unknown"]
+        },
+        "viewName": { "type": ["string", "null"] },
+        "sqlQuery": { "type": ["string", "null"] },
+        "functionName": { "type": ["string", "null"] },
+        "isSharedType": { "type": "boolean" },
+        "isDerivedEntity": { "type": "boolean" },
+        "baseEntityName": { "type": ["string", "null"] },
+        "hasIncompleteMetadata": { "type": "boolean" },
+        "hasIncompleteKeys": { "type": "boolean" },
+        "hasIncompleteForeignKeys": { "type": "boolean" },
+        "hasIncompleteIndexes": { "type": "boolean" },
+        "hasIncompleteNavigations": { "type": "boolean" },
+        "hasIncompleteSkipNavigations": { "type": "boolean" },
+        "primaryLocation": {
+          "oneOf": [
+            { "$ref": "#/$defs/SourceLocation" },
+            { "type": "null" }
+          ]
+        },
+        "unsupportedFeatures": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "properties": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Property" }
+        },
+        "keys": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Key" }
+        },
+        "foreignKeys": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ForeignKey" }
+        },
+        "indexes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Index" }
+        },
+        "skipNavigations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SkipNavigation" }
+        }
+      }
+    },
+    "Property": {
+      "type": "object",
+      "required": [
+        "name",
+        "columnName",
+        "isPrimaryKey",
+        "isForeignKey",
+        "isShadowProperty",
+        "isConcurrencyToken",
+        "isRequired"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "columnName": { "type": "string" },
+        "clrTypeName": { "type": ["string", "null"] },
+        "isPrimaryKey": { "type": "boolean" },
+        "isForeignKey": { "type": "boolean" },
+        "isShadowProperty": { "type": "boolean" },
+        "isConcurrencyToken": { "type": "boolean" },
+        "isRequired": { "type": "boolean" },
+        "location": {
+          "oneOf": [
+            { "$ref": "#/$defs/SourceLocation" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "Key": {
+      "type": "object",
+      "required": ["properties", "isPrimaryKey", "isExplicitName"],
+      "properties": {
+        "properties": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "isPrimaryKey": { "type": "boolean" },
+        "isExplicitName": { "type": "boolean" },
+        "location": {
+          "oneOf": [
+            { "$ref": "#/$defs/SourceLocation" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "ForeignKey": {
+      "type": "object",
+      "required": [
+        "principalEntityName",
+        "properties",
+        "principalProperties",
+        "isExplicitName",
+        "isNavigationResolved"
+      ],
+      "properties": {
+        "principalEntityName": { "type": "string" },
+        "properties": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "principalProperties": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "navigationPropertyName": { "type": ["string", "null"] },
+        "navigationToPrincipal": { "type": ["string", "null"] },
+        "navigationToDependent": { "type": ["string", "null"] },
+        "deleteBehavior": { "type": ["string", "null"] },
+        "isExplicitName": { "type": "boolean" },
+        "isNavigationResolved": { "type": "boolean" },
+        "location": {
+          "oneOf": [
+            { "$ref": "#/$defs/SourceLocation" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "Index": {
+      "type": "object",
+      "required": ["name", "properties", "isUnique", "isExplicitName"],
+      "properties": {
+        "name": { "type": "string" },
+        "properties": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "isUnique": { "type": "boolean" },
+        "filter": { "type": ["string", "null"] },
+        "isExplicitName": { "type": "boolean" },
+        "location": {
+          "oneOf": [
+            { "$ref": "#/$defs/SourceLocation" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "SkipNavigation": {
+      "type": "object",
+      "required": ["navigationPropertyName", "targetEntityName"],
+      "properties": {
+        "navigationPropertyName": { "type": "string" },
+        "targetEntityName": { "type": "string" },
+        "targetEntityId": { "type": ["string", "null"] },
+        "joinEntityName": { "type": ["string", "null"] },
+        "joinEntityId": { "type": ["string", "null"] },
+        "inverseNavigationPropertyName": { "type": ["string", "null"] },
+        "location": {
+          "oneOf": [
+            { "$ref": "#/$defs/SourceLocation" },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  }
+}

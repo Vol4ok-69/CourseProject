@@ -9,4 +9,8 @@ public sealed class DatabaseIndexMetadata
     public bool IsUnique { get; init; }
 
     public string? Filter { get; init; }
+
+    public bool IsExplicitName { get; init; }
+
+    public SourceLocation? Location { get; init; }
 }

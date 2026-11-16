@@ -1,3 +1,4 @@
+using DatabaseAnalyzer.Runner;
 using Api.Common;
 using Api.Controllers;
 using Application.Analyzers;
@@ -83,7 +84,7 @@ public sealed class AnalysisDeduplicationTests
         var projectRepo = new ProjectRepository(context);
         var sourceService = Mock.Of<IRepositorySourceService>();
 
-        var analysisService = new AnalysisService(analysisRepo, commitRepo, sourceService, [], Mock.Of<IGitHubCredentialService>());
+        var analysisService = new AnalysisService(analysisRepo, commitRepo, sourceService, [], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
         var commitService = new CommitService(commitRepo, projectRepo);
         var projectService = new ProjectService(projectRepo);
 

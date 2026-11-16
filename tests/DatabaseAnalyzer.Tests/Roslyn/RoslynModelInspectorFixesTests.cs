@@ -3,6 +3,7 @@ using DatabaseAnalyzer;
 using DatabaseAnalyzer.Metadata;
 using DatabaseAnalyzer.Providers;
 using DatabaseAnalyzer.Roslyn;
+using DatabaseAnalyzer.Rules;
 using Moq;
 
 namespace DatabaseAnalyzer.Tests.Roslyn;
@@ -972,26 +973,23 @@ public sealed class RoslynModelInspectorFixesTests
         Assert.Equal(["CustomerId"], index.PropertyNames);
         Assert.Equal("IX_Order_CustomerId", index.Name);
 
-        // Проверяем совместимость с правилом DB04 через DatabaseAnalyzer
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider.Setup(p => p.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
-            {
-                Entities =
-                [
-                    new DatabaseEntityMetadata
-                    {
-                        EntityName = order.EntityName,
-                        TableName = order.TableName ?? order.EntityName,
-                        Keys = order.Keys,
-                        ForeignKeys = order.ForeignKeys,
-                        Indexes = order.Indexes
-                    }
-                ]
-            });
+        // Проверяем совместимость с правилом DB04 через DatabaseRuleEvaluator
+        var metadata = new DatabaseMetadata
+        {
+            Entities =
+            [
+                new DatabaseEntityMetadata
+                {
+                    EntityName = order.EntityName,
+                    TableName = order.TableName ?? order.EntityName,
+                    Keys = order.Keys,
+                    ForeignKeys = order.ForeignKeys,
+                    Indexes = order.Indexes
+                }
+            ]
+        };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var findings = await analyzer.AnalyzeAsync(new AnalyzerContext { RepositoryPath = "test" });
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         // DB04 не должно выдать предупреждение, так как индекс соглашения присутствует
         Assert.DoesNotContain(findings, f => f.Rule == "DB04");
@@ -1140,32 +1138,29 @@ public sealed class RoslynModelInspectorFixesTests
         Assert.True(tagSkipNav.IsImplicitJoinEntity);
         Assert.Equal("Post", tagSkipNav.TargetEntityName);
 
-        // Проверяем совместимость с правилом DB03
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider.Setup(p => p.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
-            {
-                Entities =
-                [
-                    new DatabaseEntityMetadata
-                    {
-                        EntityName = post.EntityName,
-                        TableName = "Posts",
-                        Keys = post.Keys,
-                        SkipNavigations = post.SkipNavigations
-                    },
-                    new DatabaseEntityMetadata
-                    {
-                        EntityName = tag.EntityName,
-                        TableName = "Tags",
-                        Keys = tag.Keys,
-                        SkipNavigations = tag.SkipNavigations
-                    }
-                ]
-            });
+        // Проверяем совместимость с правилом DB03 через DatabaseRuleEvaluator
+        var metadata = new DatabaseMetadata
+        {
+            Entities =
+            [
+                new DatabaseEntityMetadata
+                {
+                    EntityName = post.EntityName,
+                    TableName = "Posts",
+                    Keys = post.Keys,
+                    SkipNavigations = post.SkipNavigations
+                },
+                new DatabaseEntityMetadata
+                {
+                    EntityName = tag.EntityName,
+                    TableName = "Tags",
+                    Keys = tag.Keys,
+                    SkipNavigations = tag.SkipNavigations
+                }
+            ]
+        };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var findings = await analyzer.AnalyzeAsync(new AnalyzerContext { RepositoryPath = "test" });
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         // DB03 должно сработать ровно один раз для связи (дедупликация)
         var db03Findings = findings.Where(f => f.Rule == "DB03").ToList();
@@ -1222,24 +1217,21 @@ public sealed class RoslynModelInspectorFixesTests
         Assert.False(postSkipNav.IsImplicitJoinEntity);
 
         // Проверяем, что DB03 не срабатывает для явной join entity
-        var metadataProvider = new Mock<IDatabaseMetadataProvider>();
-        metadataProvider.Setup(p => p.GetMetadataAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new DatabaseMetadata
-            {
-                Entities =
-                [
-                    new DatabaseEntityMetadata
-                    {
-                        EntityName = post.EntityName,
-                        TableName = "Posts",
-                        Keys = post.Keys,
-                        SkipNavigations = post.SkipNavigations
-                    }
-                ]
-            });
+        var metadata = new DatabaseMetadata
+        {
+            Entities =
+            [
+                new DatabaseEntityMetadata
+                {
+                    EntityName = post.EntityName,
+                    TableName = "Posts",
+                    Keys = post.Keys,
+                    SkipNavigations = post.SkipNavigations
+                }
+            ]
+        };
 
-        var analyzer = new DatabaseAnalyzer(metadataProvider.Object);
-        var findings = await analyzer.AnalyzeAsync(new AnalyzerContext { RepositoryPath = "test" });
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
 
         Assert.DoesNotContain(findings, f => f.Rule == "DB03");
     }

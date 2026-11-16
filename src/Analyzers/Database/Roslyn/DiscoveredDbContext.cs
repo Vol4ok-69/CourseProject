@@ -10,7 +10,13 @@ public sealed class DiscoveredDbContext
 
     public string? FilePath { get; init; }
 
+    public string? ProjectId { get; init; }
+
+    public SourceLocation? Location { get; init; }
+
     public IReadOnlyList<DiscoveredEntity> Entities { get; init; } = [];
+
+    public IReadOnlyList<string> UnsupportedFeatures { get; init; } = [];
 
     public DatabaseMetadata ToDatabaseMetadata()
     {
