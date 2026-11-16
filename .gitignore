@@ -49,6 +49,7 @@ source*.md
 *source.md
 review*.md
 *review.md
+dumps/
 
 swagger.json
 *test*.ps1
