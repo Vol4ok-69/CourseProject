@@ -1,4 +1,4 @@
-using Infrastructure.Storage;
+﻿using Infrastructure.Storage;
 using System.Data;
 using DatabaseAnalyzer.Runner;
 using Domain.Entities;
@@ -8,6 +8,8 @@ using Infrastructure.Repository;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Xunit;
+using Application.Interfaces;
+using Moq;
 
 namespace Backend.Tests.Integration;
 
@@ -111,6 +113,52 @@ public sealed class PostgreSqlAdvisoryLockIntegrationTests : IClassFixture<Postg
         Assert.True(guard.IsAcquired, "First worker must successfully acquire advisory lock!");
         Assert.True(await guard.ValidateOwnershipAsync(), "Ownership validation must succeed!");
     }
+
+	[Fact]
+	public async Task AdvisoryLock_FileLockProviderThrows_PostgreSqlLockIsReleased()
+	{
+		var token = Guid.NewGuid();
+		var analysis = await CreateTestAnalysisAsync(
+			AnalysisStatus.Running,
+			token,
+			DateTime.UtcNow.AddMinutes(5));
+
+		var fileLockProviderMock = new Mock<IWorkspaceFileLockProvider>();
+
+		fileLockProviderMock
+			.Setup(provider => provider.TryAcquireShared(analysis.Id))
+			.Throws(new IOException("Simulated file lock acquisition failure."));
+
+		var provider = new PostgreSqlAnalysisLeaseGuardProvider(
+			fixture.ConnectionString,
+			fileLockProviderMock.Object);
+
+		await Assert.ThrowsAsync<IOException>(
+			() => provider.AcquireGuardAsync(analysis.Id, token));
+
+		// Проверяем, что PostgreSQL не оставил session-level advisory lock.
+		await using var checkConnection = new NpgsqlConnection(fixture.ConnectionString);
+		await checkConnection.OpenAsync();
+
+		await using var command = checkConnection.CreateCommand();
+		command.CommandText = """
+			SELECT count(*)
+			FROM pg_locks
+			WHERE locktype = 'advisory'
+			  AND classid = hashtext('netscope_analysis_workspace')
+			  AND objid = @analysisId
+			  AND objsubid = 2
+			  AND granted = true;
+			""";
+
+		command.Parameters.AddWithValue("analysisId", analysis.Id);
+
+		var lockCount = (long)(await command.ExecuteScalarAsync())!;
+
+		Assert.Equal(
+			0L,
+			lockCount);
+	}
 
     [Fact]
     public async Task AdvisoryLock_TwoWorkers_CanAcquireSharedLockForSameAnalysisId()

@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using Application.Interfaces;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -72,289 +72,414 @@ public sealed class AnalysisCleanupService : IAnalysisCleanupService
     {
     }
 
+    private sealed class WorkspaceLockLostException : Exception
+    {
+        public WorkspaceLockLostException(int analysisId)
+            : base($"Потеряна PostgreSQL-блокировка workspace для анализа {analysisId}.")
+        {
+        }
+    }
+
+    private static async Task EnsurePostgreSqlLockAsync(
+        NpgsqlConnection connection,
+        int analysisId,
+        CancellationToken cancellationToken)
+    {
+        if (connection.State != ConnectionState.Open ||
+            !await IsLockHeldByCurrentSessionAsync(
+                connection,
+                analysisId,
+                cancellationToken))
+        {
+            throw new WorkspaceLockLostException(analysisId);
+        }
+    }
+
     /// <inheritdoc />
-    public async Task<int> CleanupStaleDirectoriesAsync(CancellationToken cancellationToken = default)
+    public async Task<int> CleanupStaleDirectoriesAsync(
+        CancellationToken cancellationToken = default)
     {
         var deletedCount = 0;
+        var analysisIds = new List<int>();
 
-        if (!Directory.Exists(_baseStoragePath))
+        // Получаем кандидатов из БД. До получения блокировок
+        // файловая система workspace не затрагивается.
+        await using (var connection = new NpgsqlConnection(_connectionString))
         {
-            return 0;
+            await connection.OpenAsync(cancellationToken);
+
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT "Id"
+                FROM "Analyses"
+                ORDER BY "Id";
+                """;
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            while (await reader.ReadAsync(cancellationToken))
+                analysisIds.Add(reader.GetInt32(0));
         }
 
-        var fullBasePath = Path.GetFullPath(_baseStoragePath);
-
-        // 1. Получить перечень AnalysisId, для которых существуют рабочие каталоги.
-        string[] analysisDirectories;
-        try
-        {
-            analysisDirectories = Directory.GetDirectories(fullBasePath);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "Ошибка при перечислении каталогов анализов в {BasePath}", fullBasePath);
-            return 0;
-        }
-
-        foreach (var dir in analysisDirectories)
+        foreach (var analysisId in analysisIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var dirName = Path.GetFileName(dir);
-            if (!int.TryParse(dirName, out var analysisId) || analysisId <= 0)
-            {
-                continue;
-            }
-
-            var fullAnalysisDir = Path.GetFullPath(dir);
-            if (!fullAnalysisDir.StartsWith(fullBasePath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            // Пропускаем символические ссылки на уровне корневого каталога анализа
-            var analysisDirInfo = new DirectoryInfo(fullAnalysisDir);
-            if (analysisDirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
-            {
-                continue;
-            }
-
-            // 2. Для каждого анализа запросить эксклюзивную PostgreSQL session-level advisory lock
-            // в отдельном выделенном физическом соединении.
             NpgsqlConnection? connection = null;
             FileStream? workspaceFileLock = null;
+
             try
             {
                 connection = new NpgsqlConnection(_connectionString);
                 await connection.OpenAsync(cancellationToken);
 
-                await using var lockCmd = connection.CreateCommand();
-                lockCmd.CommandText = "SELECT pg_try_advisory_lock(hashtext('netscope_analysis_workspace'), @analysisId);";
-                lockCmd.Parameters.AddWithValue("analysisId", analysisId);
-
-                var lockResult = await lockCmd.ExecuteScalarAsync(cancellationToken);
-                var isLocked = lockResult is bool b && b;
-
-                // 3. Если блокировка не получена, пропустить анализ и перейти к следующему.
-                if (!isLocked)
+                // Сначала PostgreSQL exclusive advisory lock.
+                await using (var lockCommand = connection.CreateCommand())
                 {
-                    _logger?.LogDebug("Анализ {AnalysisId} заблокирован активным исполнителем. Пропуск очистки.", analysisId);
+                    lockCommand.CommandText = """
+                        SELECT pg_try_advisory_lock(
+                            hashtext('netscope_analysis_workspace'),
+                            @analysisId);
+                        """;
+
+                    lockCommand.Parameters.AddWithValue("analysisId", analysisId);
+
+                    var result = await lockCommand.ExecuteScalarAsync(cancellationToken);
+
+                    if (result is not true)
+                        continue;
+                }
+
+                // Только после PostgreSQL lock запрашиваем файловую блокировку.
+                workspaceFileLock =
+                    _workspaceFileLockProvider.TryAcquireExclusive(analysisId);
+
+                if (workspaceFileLock is null)
                     continue;
+
+                await EnsurePostgreSqlLockAsync(
+                    connection, analysisId, cancellationToken);
+
+                int status;
+                Guid? activeExecutionToken;
+
+                await using (var stateCommand = connection.CreateCommand())
+                {
+                    stateCommand.CommandText = """
+                        SELECT "Status", "ExecutionToken"
+                        FROM "Analyses"
+                        WHERE "Id" = @analysisId;
+                        """;
+
+                    stateCommand.Parameters.AddWithValue("analysisId", analysisId);
+
+                    await using var reader =
+                        await stateCommand.ExecuteReaderAsync(cancellationToken);
+
+                    if (!await reader.ReadAsync(cancellationToken))
+                        continue;
+
+                    status = reader.GetInt32(0);
+                    activeExecutionToken = reader.IsDBNull(1)
+                        ? null
+                        : reader.GetGuid(1);
                 }
 
-                // 4. После получения PostgreSQL ExclusiveLock получить файловую ExclusiveLock
-                workspaceFileLock = _workspaceFileLockProvider.TryAcquireExclusive(analysisId);
-                if (workspaceFileLock == null)
-                {
-                    _logger?.LogDebug("Файловая блокировка анализа {AnalysisId} занята. Пропуск очистки.", analysisId);
-                    continue;
-                }
-
-                // 5. Только после получения обеих блокировок разрешено читать актуальные данные анализа
-                if (connection.State != ConnectionState.Open || !await IsLockHeldByCurrentSessionAsync(connection, analysisId, cancellationToken))
-                {
-                    continue;
-                }
-
-                await using var queryCmd = connection.CreateCommand();
-                queryCmd.CommandText = """
-                    SELECT "Status", "ExecutionToken", "LeaseExpiration"
-                    FROM "Analyses"
-                    WHERE "Id" = @analysisId;
-                    """;
-                queryCmd.Parameters.AddWithValue("analysisId", analysisId);
-
-                int? status = null;
-                Guid? activeExecutionToken = null;
-                var recordFound = false;
-
-                await using (var reader = await queryCmd.ExecuteReaderAsync(cancellationToken))
-                {
-                    if (await reader.ReadAsync(cancellationToken))
-                    {
-                        recordFound = true;
-                        status = reader.GetInt32(0);
-                        activeExecutionToken = reader.IsDBNull(1) ? null : reader.GetGuid(1);
-                    }
-                }
-
-                // Нельзя удалять каталог, если состояние анализа не удалось прочитать или оно неопределённо.
-                if (!recordFound || status == null)
-                {
-                    _logger?.LogWarning("Не удалось прочитать состояние анализа {AnalysisId} из PostgreSQL. Очистка отменена.", analysisId);
-                    continue;
-                }
-
-                // Вызов тестовой точки синхронизации (если задана) после подтверждения владения и чтения состояния
-                if (SyncPointBeforeDeleteAsync != null)
-                {
+                if (SyncPointBeforeDeleteAsync is not null)
                     await SyncPointBeforeDeleteAsync(analysisId);
-                }
 
-                // Повторно проверяем владение PostgreSQL lock до любых файловых операций
-                if (connection.State != ConnectionState.Open || !await IsLockHeldByCurrentSessionAsync(connection, analysisId, cancellationToken))
-                {
-                    _logger?.LogWarning("Потеряна блокировка PostgreSQL для анализа {AnalysisId} после SyncPoint.", analysisId);
-                    continue;
-                }
+                await EnsurePostgreSqlLockAsync(
+                    connection, analysisId, cancellationToken);
 
-                // 6. Перечислить каталоги исполнений данного AnalysisId.
-                string[] executionDirs;
-                try
-                {
-                    executionDirs = Directory.GetDirectories(fullAnalysisDir);
-                }
-                catch
+                var fullBasePath = Path.GetFullPath(_baseStoragePath);
+                var fullAnalysisDir = Path.GetFullPath(
+                    Path.Combine(fullBasePath, analysisId.ToString()));
+
+                if (!fullAnalysisDir.StartsWith(
+                        fullBasePath + Path.DirectorySeparatorChar,
+                        OperatingSystem.IsWindows()
+                            ? StringComparison.OrdinalIgnoreCase
+                            : StringComparison.Ordinal))
                 {
                     continue;
                 }
 
-                var lockLost = false;
-                foreach (var execDir in executionDirs)
+                // Проверка существования каталога выполняется только под обеими блокировками.
+                await EnsurePostgreSqlLockAsync(
+                    connection, analysisId, cancellationToken);
+
+                if (!Directory.Exists(fullAnalysisDir))
+                    continue;
+
+                await EnsurePostgreSqlLockAsync(
+                    connection, analysisId, cancellationToken);
+
+                var analysisDirectoryInfo = new DirectoryInfo(fullAnalysisDir);
+
+                if (analysisDirectoryInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    continue;
+
+                await EnsurePostgreSqlLockAsync(
+                    connection, analysisId, cancellationToken);
+
+                var executionDirs = Directory.GetDirectories(fullAnalysisDir);
+
+                foreach (var executionDir in executionDirs)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    var fullExecDir = Path.GetFullPath(execDir);
-                    if (!fullExecDir.StartsWith(fullAnalysisDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    await EnsurePostgreSqlLockAsync(
+                        connection, analysisId, cancellationToken);
+
+                    var fullExecutionDir = Path.GetFullPath(executionDir);
+
+                    if (!fullExecutionDir.StartsWith(
+                            fullAnalysisDir + Path.DirectorySeparatorChar,
+                            OperatingSystem.IsWindows()
+                                ? StringComparison.OrdinalIgnoreCase
+                                : StringComparison.Ordinal))
                     {
                         continue;
                     }
 
-                    var execDirInfo = new DirectoryInfo(fullExecDir);
-                    if (execDirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    await EnsurePostgreSqlLockAsync(
+                        connection, analysisId, cancellationToken);
+
+                    var executionDirectoryInfo = new DirectoryInfo(fullExecutionDir);
+
+                    if (executionDirectoryInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                        continue;
+
+                    if (!Guid.TryParse(
+                            Path.GetFileName(fullExecutionDir),
+                            out var folderToken))
                     {
                         continue;
                     }
 
-                    var execTokenName = Path.GetFileName(fullExecDir);
-                    if (!Guid.TryParse(execTokenName, out var folderToken))
+                    // Никогда не удаляем каталог текущего исполнения.
+                    if (activeExecutionToken.HasValue &&
+                        folderToken == activeExecutionToken.Value)
                     {
                         continue;
                     }
 
-                    // 7. Правила удаления:
-                    // Никогда не удалять каталог текущего исполнения!
-                    if (activeExecutionToken.HasValue && folderToken == activeExecutionToken.Value)
-                    {
-                        _logger?.LogDebug("Каталог {FolderToken} анализа {AnalysisId} принадлежит активному токену. Сохранение.", folderToken, analysisId);
+                    // Running без ExecutionToken трактуется консервативно:
+                    // каталоги такого анализа не удаляем.
+                    if (status == 1 && !activeExecutionToken.HasValue)
                         continue;
-                    }
 
-                    // Если активного токена нет, а статус Running — неопределённое состояние, не удаляем.
-                    if (!activeExecutionToken.HasValue && status == 1)
-                    {
-                        continue;
-                    }
-
-                    // Перед удалением каждого каталога повторно проверить,
-                    // что соединение активно и блокировка всё ещё принадлежит текущей сессии!
-                    if (connection.State != ConnectionState.Open || !await IsLockHeldByCurrentSessionAsync(connection, analysisId, cancellationToken))
-                    {
-                        _logger?.LogWarning("Потеряна блокировка или разорвано соединение для анализа {AnalysisId}. Прекращение удаления.", analysisId);
-                        lockLost = true;
-                        break;
-                    }
+                    await EnsurePostgreSqlLockAsync(
+                        connection, analysisId, cancellationToken);
 
                     try
                     {
-                        Directory.Delete(fullExecDir, recursive: true);
+                        Directory.Delete(fullExecutionDir, recursive: true);
                         deletedCount++;
-                        _logger?.LogInformation("Удалён устаревший рабочий каталог {FullExecDir} для анализа {AnalysisId}.", fullExecDir, analysisId);
+
+                        _logger?.LogInformation(
+                            "Удалён устаревший рабочий каталог {ExecutionDirectory} для анализа {AnalysisId}.",
+                            fullExecutionDir,
+                            analysisId);
                     }
-                    catch (Exception deleteEx)
+                    catch (Exception ex)
                     {
-                        _logger?.LogWarning(deleteEx, "Не удалось удалить рабочий каталог {FullExecDir}.", fullExecDir);
+                        _logger?.LogWarning(
+                            ex,
+                            "Не удалось удалить рабочий каталог {ExecutionDirectory}.",
+                            fullExecutionDir);
                     }
 
-                    // Также удаляем устаревший каталог обмена контейнера для данного токена
-                    var containerExecDir = Path.Combine(
+                    // Каталог обмена контейнера для того же токена.
+                    var containerExecutionDir = Path.Combine(
                         Path.GetTempPath(),
                         "netscope-database-analyzer",
                         $"{analysisId}_{folderToken:N}");
-                    if (Directory.Exists(containerExecDir))
-                    {
-                        if (connection.State != ConnectionState.Open || !await IsLockHeldByCurrentSessionAsync(connection, analysisId, cancellationToken))
-                        {
-                            lockLost = true;
-                            break;
-                        }
 
-                        try
-                        {
-                            var cDirInfo = new DirectoryInfo(containerExecDir);
-                            if (!cDirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                            {
-                                Directory.Delete(containerExecDir, recursive: true);
-                                _logger?.LogInformation("Удалён устаревший каталог обмена контейнера {ContainerExecDir} для анализа {AnalysisId}.", containerExecDir, analysisId);
-                            }
-                        }
-                        catch (Exception cEx)
-                        {
-                            _logger?.LogWarning(cEx, "Не удалось удалить каталог обмена контейнера {ContainerExecDir}.", containerExecDir);
-                        }
-                    }
-                }
+                    await EnsurePostgreSqlLockAsync(
+                        connection, analysisId, cancellationToken);
 
-                if (lockLost)
-                {
-                    continue;
-                }
-
-                // Очистка оставшихся каталогов обмена контейнера для завершённого/сбойного анализа
-                var containerBaseDir = Path.Combine(Path.GetTempPath(), "netscope-database-analyzer");
-                if (Directory.Exists(containerBaseDir) && (status == 2 || status == 3))
-                {
-                    if (connection.State != ConnectionState.Open || !await IsLockHeldByCurrentSessionAsync(connection, analysisId, cancellationToken))
-                    {
+                    if (!Directory.Exists(containerExecutionDir))
                         continue;
-                    }
+
+                    await EnsurePostgreSqlLockAsync(
+                        connection, analysisId, cancellationToken);
+
+                    var containerDirectoryInfo =
+                        new DirectoryInfo(containerExecutionDir);
+
+                    if (containerDirectoryInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                        continue;
+
+                    await EnsurePostgreSqlLockAsync(
+                        connection, analysisId, cancellationToken);
 
                     try
                     {
-                        var matchingDirs = Directory.GetDirectories(containerBaseDir, $"{analysisId}_*");
-                        foreach (var mDir in matchingDirs)
-                        {
-                            var containerDirName = Path.GetFileName(mDir);
-                            var underscoreIdx = containerDirName.IndexOf('_');
-                            if (underscoreIdx > 0 && Guid.TryParse(containerDirName.AsSpan(underscoreIdx + 1), out var dirToken))
-                            {
-                                if (activeExecutionToken.HasValue && dirToken == activeExecutionToken.Value)
-                                {
-                                    continue;
-                                }
-                            }
-
-                            if (connection.State != ConnectionState.Open || !await IsLockHeldByCurrentSessionAsync(connection, analysisId, cancellationToken))
-                            {
-                                break;
-                            }
-
-                            var dirInfo = new DirectoryInfo(mDir);
-                            if (!dirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                            {
-                                Directory.Delete(mDir, recursive: true);
-                            }
-                        }
+                        Directory.Delete(containerExecutionDir, recursive: true);
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        _logger?.LogWarning(
+                            ex,
+                            "Не удалось удалить каталог обмена контейнера {ContainerDirectory}.",
+                            containerExecutionDir);
                     }
                 }
 
-                // Удаляем пустой родительский каталог анализа ТОЛЬКО если блокировка всё ещё удерживается текущей сессией
-                if (connection.State == ConnectionState.Open && await IsLockHeldByCurrentSessionAsync(connection, analysisId, cancellationToken))
+                // Для завершённых и аварийно завершённых анализов дополнительно
+                // очищаем orphan-каталоги обмена контейнера, даже если соответствующего
+                // workspace-каталога уже нет.
+                if (status is 2 or 3)
                 {
-                    try
+                    var containerBaseDir = Path.Combine(
+                        Path.GetTempPath(),
+                        "netscope-database-analyzer");
+
+                    await EnsurePostgreSqlLockAsync(
+                        connection,
+                        analysisId,
+                        cancellationToken);
+
+                    if (Directory.Exists(containerBaseDir))
                     {
-                        if (Directory.Exists(fullAnalysisDir) && !Directory.EnumerateFileSystemEntries(fullAnalysisDir).Any())
+                        await EnsurePostgreSqlLockAsync(
+                            connection,
+                            analysisId,
+                            cancellationToken);
+
+                        var containerBaseDirectoryInfo = new DirectoryInfo(
+                            Path.GetFullPath(containerBaseDir));
+
+                        // Не перечисляем и не удаляем содержимое через символическую ссылку
+                        // или другой reparse point в качестве родительского каталога.
+                        if (!containerBaseDirectoryInfo.Attributes.HasFlag(
+                                FileAttributes.ReparsePoint))
                         {
-                            Directory.Delete(fullAnalysisDir, recursive: false);
+                            await EnsurePostgreSqlLockAsync(
+                                connection,
+                                analysisId,
+                                cancellationToken);
+
+                            var matchingDirectories = Directory.GetDirectories(
+                                containerBaseDir,
+                                $"{analysisId}_*");
+
+                            foreach (var matchingDirectory in matchingDirectories)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+
+                            await EnsurePostgreSqlLockAsync(
+                                connection,
+                                analysisId,
+                                cancellationToken);
+
+                            var directoryName = Path.GetFileName(matchingDirectory);
+                            var separatorIndex = directoryName.IndexOf('_');
+
+                            if (separatorIndex <= 0 ||
+                                !int.TryParse(
+                                    directoryName.AsSpan(0, separatorIndex),
+                                    out var directoryAnalysisId) ||
+                                directoryAnalysisId != analysisId ||
+                                !Guid.TryParse(
+                                    directoryName.AsSpan(separatorIndex + 1),
+                                    out var directoryToken))
+                            {
+                                continue;
+                            }
+
+                            if (activeExecutionToken.HasValue &&
+                                directoryToken == activeExecutionToken.Value)
+                            {
+                                continue;
+                            }
+
+                            var fullContainerDirectory = Path.GetFullPath(
+                                matchingDirectory);
+
+                            var fullContainerBaseDirectory = Path.GetFullPath(
+                                containerBaseDir);
+
+                            var containerPrefix = fullContainerBaseDirectory.TrimEnd(
+                                Path.DirectorySeparatorChar,
+                                Path.AltDirectorySeparatorChar)
+                                + Path.DirectorySeparatorChar;
+
+                            if (!fullContainerDirectory.StartsWith(
+                                    containerPrefix,
+                                    OperatingSystem.IsWindows()
+                                        ? StringComparison.OrdinalIgnoreCase
+                                        : StringComparison.Ordinal))
+                            {
+                                continue;
+                            }
+
+                            await EnsurePostgreSqlLockAsync(
+                                connection,
+                                analysisId,
+                                cancellationToken);
+
+                            var directoryInfo = new DirectoryInfo(
+                                fullContainerDirectory);
+
+                            if (directoryInfo.Attributes.HasFlag(
+                                    FileAttributes.ReparsePoint))
+                            {
+                                continue;
+                            }
+
+                            await EnsurePostgreSqlLockAsync(
+                                connection,
+                                analysisId,
+                                cancellationToken);
+
+                            try
+                            {
+                                Directory.Delete(
+                                    fullContainerDirectory,
+                                    recursive: true);
+
+                                _logger?.LogInformation(
+                                    "Удалён orphan-каталог обмена контейнера {ContainerDirectory} для анализа {AnalysisId}.",
+                                    fullContainerDirectory,
+                                    analysisId);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger?.LogWarning(
+                                    ex,
+                                    "Не удалось удалить orphan-каталог обмена контейнера {ContainerDirectory}.",
+                                    fullContainerDirectory);
+                            }
                         }
                     }
-                    catch
+                }
+                }
+
+                // Удаляем пустой родительский каталог анализа.
+                await EnsurePostgreSqlLockAsync(
+                    connection, analysisId, cancellationToken);
+
+                if (Directory.Exists(fullAnalysisDir))
+                {
+                    await EnsurePostgreSqlLockAsync(
+                        connection, analysisId, cancellationToken);
+
+                    if (!Directory.EnumerateFileSystemEntries(fullAnalysisDir).Any())
                     {
+                        await EnsurePostgreSqlLockAsync(
+                            connection, analysisId, cancellationToken);
+
+                        Directory.Delete(fullAnalysisDir, recursive: false);
                     }
                 }
+            }
+            catch (WorkspaceLockLostException ex)
+            {
+                // После потери соединения или блокировки никаких новых
+                // файловых операций для этого анализа не выполняем.
+                _logger?.LogWarning(ex, "Очистка анализа {AnalysisId} остановлена.", analysisId);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -362,32 +487,39 @@ public sealed class AnalysisCleanupService : IAnalysisCleanupService
             }
             catch (Exception ex)
             {
-                _logger?.LogError(ex, "Ошибка при обработке очистки для анализа {AnalysisId}.", analysisId);
+                _logger?.LogError(
+                    ex,
+                    "Ошибка при обработке очистки для анализа {AnalysisId}.",
+                    analysisId);
             }
             finally
             {
-                // Порядок освобождения ресурсов:
-                // 1. workspaceFileLock.Dispose();
-                // 2. PostgreSQL pg_advisory_unlock;
-                // 3. connection.DisposeAsync().
                 try
                 {
                     workspaceFileLock?.Dispose();
                 }
                 catch
                 {
+                    // Освобождение файловой блокировки не должно скрывать исходную ошибку.
                 }
 
-                if (connection != null)
+                if (connection is not null)
                 {
                     try
                     {
                         if (connection.State == ConnectionState.Open)
                         {
-                            await using var unlockCmd = connection.CreateCommand();
-                            unlockCmd.CommandText = "SELECT pg_advisory_unlock(hashtext('netscope_analysis_workspace'), @analysisId);";
-                            unlockCmd.Parameters.AddWithValue("analysisId", analysisId);
-                            await unlockCmd.ExecuteScalarAsync(CancellationToken.None);
+                            await using var unlockCommand = connection.CreateCommand();
+
+                            unlockCommand.CommandText = """
+                                SELECT pg_advisory_unlock(
+                                    hashtext('netscope_analysis_workspace'),
+                                    @analysisId);
+                                """;
+
+                            unlockCommand.Parameters.AddWithValue("analysisId", analysisId);
+
+                            await unlockCommand.ExecuteScalarAsync(CancellationToken.None);
                         }
                     }
                     catch
@@ -398,6 +530,7 @@ public sealed class AnalysisCleanupService : IAnalysisCleanupService
                         }
                         catch
                         {
+                            // Соединение будет освобождено ниже.
                         }
                     }
                     finally
@@ -406,8 +539,12 @@ public sealed class AnalysisCleanupService : IAnalysisCleanupService
                         {
                             await connection.DisposeAsync();
                         }
-                        catch
+                        catch (Exception disposeException)
                         {
+                            _logger?.LogWarning(
+                                disposeException,
+                                "Не удалось корректно освободить PostgreSQL-соединение очистителя для анализа {AnalysisId}.",
+                                analysisId);
                         }
                     }
                 }

@@ -524,6 +524,293 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         Assert.True(File.Exists(fileB));
     }
 
+    private sealed class DelegateHttpMessageHandler(
+        Func<HttpRequestMessage, Task<HttpResponseMessage>> handler)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            return handler(request);
+        }
+    }
+
+    private sealed class LeaseLossStream(
+        byte[][] chunks,
+        Func<Task> beforeSecondChunkAsync) : Stream
+    {
+        private int _chunkIndex;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+
+        public override long Length => chunks.Sum(chunk => chunk.Length);
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            return ReadChunkAsync(buffer, cancellationToken);
+        }
+
+        private async ValueTask<int> ReadChunkAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_chunkIndex >= chunks.Length)
+                return 0;
+
+            if (_chunkIndex == 1)
+                await beforeSecondChunkAsync();
+
+            var chunk = chunks[_chunkIndex++];
+            chunk.AsMemory().CopyTo(buffer);
+
+            return chunk.Length;
+        }
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+        {
+            return ReadAsync(
+                buffer.AsMemory(offset, count),
+                cancellationToken).AsTask();
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    [Fact]
+    public async Task ScenarioH_WorkerLosesDatabaseConnection_FileLockProtectsWorkspaceUntilGuardDisposal()
+    {
+        var activeToken = Guid.NewGuid();
+        var staleToken = Guid.NewGuid();
+
+        var analysis = await CreateTestAnalysisAsync(
+            AnalysisStatus.Running,
+            activeToken);
+
+        var activeDirectory = CreateExecutionDirectory(
+            analysis.Id,
+            activeToken);
+
+        var staleDirectory = CreateExecutionDirectory(
+            analysis.Id,
+            staleToken);
+
+        var firstChunk = Enumerable.Repeat((byte)0x11, 128).ToArray();
+        var secondChunk = Enumerable.Repeat((byte)0x22, 256).ToArray();
+
+        var connectionTerminated = false;
+        var workerBackendPid = 0;
+
+        var stream = new LeaseLossStream(
+            [firstChunk, secondChunk],
+            async () =>
+            {
+                await using var adminConnection =
+                    new NpgsqlConnection(fixture.ConnectionString);
+
+                await adminConnection.OpenAsync();
+
+                await using var command = adminConnection.CreateCommand();
+
+                command.CommandText = """
+                    SELECT pg_terminate_backend(@pid);
+                    """;
+
+                command.Parameters.AddWithValue(
+                    "pid",
+                    workerBackendPid);
+
+                var result = await command.ExecuteScalarAsync();
+
+                connectionTerminated = result is true;
+
+                if (!connectionTerminated)
+                {
+                    throw new InvalidOperationException(
+                        "Не удалось завершить PostgreSQL-сессию Worker.");
+                }
+            });
+
+        var httpClient = new HttpClient(
+            new DelegateHttpMessageHandler(_ =>
+                Task.FromResult(
+                    new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new StreamContent(stream)
+                    })))
+        {
+            BaseAddress = new Uri("https://api.github.com/")
+        };
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["Storage:AnalysisPath"] = _testStorageRoot
+                })
+            .Build();
+
+        var repositorySourceService = new RepositorySourceService(
+            httpClient,
+            configuration);
+
+        var guardProvider = new PostgreSqlAnalysisLeaseGuardProvider(
+            fixture.ConnectionString,
+            _fileLockProvider);
+
+        var cleanupService = new AnalysisCleanupService(
+            fixture.ConnectionString,
+            _fileLockProvider,
+            _testStorageRoot);
+
+        IAnalysisLeaseGuard? guard = null;
+
+        try
+        {
+            // 1. Worker получает настоящие PostgreSQL и файловую блокировки.
+            guard = await guardProvider.AcquireGuardAsync(
+                analysis.Id,
+                activeToken);
+
+            Assert.True(guard.IsAcquired);
+
+            Assert.IsType<PostgreSqlAnalysisLeaseGuard>(guard);
+
+            var postgresGuard = (PostgreSqlAnalysisLeaseGuard)guard;
+
+            Assert.NotNull(postgresGuard.ConnectionProcessId);
+
+            workerBackendPid = postgresGuard.ConnectionProcessId!.Value;
+
+            // 2. Worker начинает скачивание.
+            // Первый блок записывается, перед вторым завершается PostgreSQL-сессия.
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => repositorySourceService.DownloadAndExtractAsync(
+                    "https://github.com/test/repo",
+                    "test-commit",
+                    analysis.Id,
+                    activeToken,
+                    "test-pat",
+                    guard));
+
+            Assert.True(
+                exception.Message.Contains("отклонено", StringComparison.OrdinalIgnoreCase) ||
+                exception.Message.Contains("Workspace ownership", StringComparison.OrdinalIgnoreCase),
+                $"Неожиданное сообщение об ошибке: {exception.Message}");
+
+            Assert.True(
+                connectionTerminated,
+                "PostgreSQL-сессия Worker должна быть завершена.");
+
+            var archivePath = Path.Combine(
+                activeDirectory,
+                "archive.zip");
+
+            // 3. Частично записанный архив сохранён.
+            Assert.True(File.Exists(archivePath));
+
+            var archiveBytes = await File.ReadAllBytesAsync(archivePath);
+
+            Assert.Equal(firstChunk.Length, archiveBytes.Length);
+            Assert.Equal(firstChunk, archiveBytes);
+
+            // 4. PostgreSQL-сессия уже потеряна, но файловая блокировка
+            // всё ещё удерживается объектом guard.
+            var exclusiveProbe = _fileLockProvider.TryAcquireExclusive(
+                analysis.Id);
+
+            Assert.Null(
+                exclusiveProbe);
+
+            exclusiveProbe?.Dispose();
+
+            // 5. Cleaner может получить PostgreSQL exclusive advisory lock,
+            // но не может получить exclusive file lock.
+            var deletedBeforeGuardDisposal =
+                await cleanupService.CleanupStaleDirectoriesAsync();
+
+            Assert.Equal(0, deletedBeforeGuardDisposal);
+
+            Assert.True(
+                Directory.Exists(activeDirectory),
+                "Активный workspace не должен быть удалён.");
+
+            Assert.True(
+                Directory.Exists(staleDirectory),
+                "Устаревший workspace не должен быть удалён, пока Worker удерживает file lock.");
+
+            Assert.True(File.Exists(archivePath));
+
+            // 6. Только после Dispose guard файловая блокировка освобождается.
+            await guard.DisposeAsync();
+            guard = null;
+
+            // 7. Cleaner теперь получает обе блокировки.
+            var deletedAfterGuardDisposal =
+                await cleanupService.CleanupStaleDirectoriesAsync();
+
+            Assert.Equal(1, deletedAfterGuardDisposal);
+
+            Assert.False(
+                Directory.Exists(staleDirectory),
+                "Каталог старого исполнения должен быть удалён.");
+
+            Assert.True(
+                Directory.Exists(activeDirectory),
+                "Каталог активного исполнения должен сохраниться.");
+
+            Assert.True(
+                File.Exists(archivePath),
+                "Файлы активного исполнения не должны удаляться.");
+        }
+        finally
+        {
+            if (guard is not null)
+                await guard.DisposeAsync();
+
+            httpClient.Dispose();
+        }
+    }
+
+
     [Fact]
     public async Task DownloadAndExtractAsync_WhenExecutionTokenEmpty_ThrowsArgumentExceptionBeforeCreatingDirectory()
     {
@@ -1920,4 +2207,54 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         Assert.True(Directory.Exists(activeDir), "Каталог активного исполнения должен быть сохранен!");
     }
 
+
+    [Theory]
+    [InlineData(AnalysisStatus.Completed)]
+    [InlineData(AnalysisStatus.Failed)]
+    public async Task CleanupAsync_RemovesOwnWorkspace_WhenAnalysisIsTerminal(
+        AnalysisStatus terminalStatus)
+    {
+        var executionToken = Guid.NewGuid();
+
+        var analysis = await CreateTestAnalysisAsync(
+            terminalStatus,
+            executionToken);
+
+        var executionDirectory = CreateExecutionDirectory(
+            analysis.Id,
+            executionToken);
+
+        Assert.True(Directory.Exists(executionDirectory));
+
+        var guardProvider = new PostgreSqlAnalysisLeaseGuardProvider(
+            fixture.ConnectionString,
+            _fileLockProvider);
+
+        await using var guard = await guardProvider.AcquireGuardAsync(
+            analysis.Id,
+            executionToken);
+
+        Assert.True(guard.IsAcquired);
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Storage:AnalysisPath"] = _testStorageRoot
+            })
+            .Build();
+
+        var service = new RepositorySourceService(
+            new HttpClient(),
+            configuration,
+            guardProvider);
+
+        await service.CleanupAsync(
+            analysis.Id,
+            executionToken,
+            guard);
+
+        Assert.False(
+            Directory.Exists(executionDirectory),
+            $"Собственный workspace должен удаляться при статусе {terminalStatus}.");
+    }
 }

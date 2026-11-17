@@ -60,6 +60,60 @@ public class RepositorySourceService : IRepositorySourceService
         return Path.Combine(_baseStoragePath, analysisId.ToString(), executionToken.ToString("D"));
     }
 
+    private static async Task EnsureWorkspaceOwnershipAsync(
+        IAnalysisLeaseGuard guard,
+        int analysisId,
+        Guid executionToken,
+        CancellationToken cancellationToken)
+    {
+        if (!guard.IsAcquired ||
+            guard.AnalysisId != analysisId ||
+            guard.ExecutionToken != executionToken)
+        {
+            throw new InvalidOperationException(
+                "Выполнение операции отклонено: владение рабочим пространством не подтверждено.");
+        }
+
+        var isOwner = await guard.ValidateOwnershipAsync(
+            [(int)Domain.Enums.AnalysisStatus.Running],
+            cancellationToken);
+
+        if (!isOwner)
+        {
+            throw new InvalidOperationException(
+                "Выполнение операции отклонено: владение рабочим пространством не подтверждено.");
+        }
+    }
+
+    private static async Task EnsureWorkspaceCleanupOwnershipAsync(
+        IAnalysisLeaseGuard guard,
+        int analysisId,
+        Guid executionToken,
+        CancellationToken cancellationToken)
+    {
+        if (!guard.IsAcquired ||
+            guard.AnalysisId != analysisId ||
+            guard.ExecutionToken != executionToken)
+        {
+            throw new InvalidOperationException(
+                "Удаление рабочего пространства отклонено: владение не подтверждено.");
+        }
+
+        var isOwner = await guard.ValidateOwnershipAsync(
+            [
+                (int)Domain.Enums.AnalysisStatus.Running,
+                (int)Domain.Enums.AnalysisStatus.Completed,
+                (int)Domain.Enums.AnalysisStatus.Failed
+            ],
+            cancellationToken);
+
+        if (!isOwner)
+        {
+            throw new InvalidOperationException(
+                "Удаление рабочего пространства отклонено: владение не подтверждено.");
+        }
+    }
+
     public Task<string> DownloadAndExtractAsync(
         string repositoryUrl,
         string commitHash,
@@ -101,27 +155,31 @@ public class RepositorySourceService : IRepositorySourceService
         if (executionToken == Guid.Empty)
             throw new ArgumentException("Не указан токен выполнения анализа.", nameof(executionToken));
 
-        if (guard == null || !guard.IsAcquired || guard.AnalysisId != analysisId || guard.ExecutionToken != executionToken)
+        if (guard is null)
         {
-            throw new InvalidOperationException("Workspace ownership could not be verified.");
+            throw new InvalidOperationException(
+                "Файловая операция рабочего пространства отклонена: отсутствует действующий IAnalysisLeaseGuard.");
         }
 
-        var isOwner = await guard.ValidateOwnershipAsync(
-            [(int)Domain.Enums.AnalysisStatus.Running],
+        await EnsureWorkspaceOwnershipAsync(
+            guard,
+            analysisId,
+            executionToken,
             cancellationToken);
-
-        if (!isOwner)
-        {
-            throw new InvalidOperationException("Workspace ownership could not be verified.");
-        }
 
         var repository = GitHubRepositoryReference.Parse(repositoryUrl);
 
         var executionDirectory = GetExecutionDirectory(analysisId, executionToken);
         var repositoryPath = Path.Combine(executionDirectory, "repository");
-        Directory.CreateDirectory(repositoryPath);
-
         var tempZipPath = Path.Combine(executionDirectory, "archive.zip");
+
+        // Проверяем владение непосредственно перед первым обращением к workspace.
+        await EnsureWorkspaceOwnershipAsync(
+            guard,
+            analysisId,
+            executionToken,
+            cancellationToken);
+        Directory.CreateDirectory(repositoryPath);
 
         try
         {
@@ -160,34 +218,49 @@ public class RepositorySourceService : IRepositorySourceService
                     throw new ArchiveLimitExceededException("Размер архива превышает допустимый лимит 50 МиБ.");
                 }
 
-                // Потоковое скачивание с ограничением размера входного архива
+                // Потоковое скачивание с ограничением размера входного архива.
                 await using (var networkStream = await response.Content.ReadAsStreamAsync(cancellationToken))
-                await using (var tempFileStream = new FileStream(
-                    tempZipPath,
-                    FileMode.Create,
-                    FileAccess.ReadWrite,
-                    FileShare.None,
-                    81920,
-                    useAsync: true))
                 {
+                    await EnsureWorkspaceOwnershipAsync(
+                        guard, analysisId, executionToken, cancellationToken);
+
+                    await using var tempFileStream = new FileStream(
+                        tempZipPath,
+                        FileMode.Create,
+                        FileAccess.ReadWrite,
+                        FileShare.None,
+                        81920,
+                        useAsync: true);
+
                     var downloadBuffer = new byte[81920];
                     long totalDownloaded = 0;
                     int read;
 
-                    while ((read = await networkStream.ReadAsync(downloadBuffer.AsMemory(0, downloadBuffer.Length), cancellationToken)) > 0)
+                    while ((read = await networkStream.ReadAsync(
+                        downloadBuffer.AsMemory(0, downloadBuffer.Length),
+                        cancellationToken)) > 0)
                     {
                         totalDownloaded += read;
                         if (totalDownloaded > MaxArchiveSizeBytes)
                         {
-                            throw new ArchiveLimitExceededException("Размер архива превышает допустимый лимит 50 МиБ.");
+                            throw new ArchiveLimitExceededException(
+                                "Размер архива превышает допустимый лимит 50 МиБ.");
                         }
 
-                        await tempFileStream.WriteAsync(downloadBuffer.AsMemory(0, read), cancellationToken);
+                        await EnsureWorkspaceOwnershipAsync(
+                            guard, analysisId, executionToken, cancellationToken);
+
+                        await tempFileStream.WriteAsync(
+                            downloadBuffer.AsMemory(0, read),
+                            cancellationToken);
                     }
                 }
             }
 
-            // Потоковая контролируемая распаковка архива с проверкой квот
+            // Открываем архив и распаковываем его только пока guard подтверждает владение.
+            await EnsureWorkspaceOwnershipAsync(
+                guard, analysisId, executionToken, cancellationToken);
+
             await using (var zipFileStream = new FileStream(
                 tempZipPath,
                 FileMode.Open,
@@ -196,7 +269,12 @@ public class RepositorySourceService : IRepositorySourceService
                 81920,
                 useAsync: true))
             {
-                await ExtractArchiveInternalAsync(zipFileStream, repositoryPath, cancellationToken);
+                await ExtractArchiveInternalCoreAsync(
+                    zipFileStream,
+                    repositoryPath,
+                    cancellationToken,
+                    () => EnsureWorkspaceOwnershipAsync(
+                        guard, analysisId, executionToken, cancellationToken));
             }
 
             return repositoryPath;
@@ -228,15 +306,33 @@ public class RepositorySourceService : IRepositorySourceService
         }
         finally
         {
-            if (File.Exists(tempZipPath))
+            try
             {
-                try
+                // При потере владения ZIP оставляем cleaner'у. Даже File.Exists
+                // не вызывается до подтверждения владения.
+                await EnsureWorkspaceOwnershipAsync(
+                    guard,
+                    analysisId,
+                    executionToken,
+                    CancellationToken.None);
+
+                if (File.Exists(tempZipPath))
                 {
+                    await EnsureWorkspaceOwnershipAsync(
+                        guard,
+                        analysisId,
+                        executionToken,
+                        CancellationToken.None);
+
                     File.Delete(tempZipPath);
                 }
-                catch
-                {
-                }
+            }
+            catch (Exception cleanupEx)
+            {
+                _logger?.LogDebug(
+                    cleanupEx,
+                    "Временный архив {TempZipPath} оставлен для последующей очистки: владение workspace не подтверждено.",
+                    tempZipPath);
             }
         }
     }
@@ -282,10 +378,23 @@ public class RepositorySourceService : IRepositorySourceService
         throw new InvalidOperationException("Файловая операция рабочего пространства запрещена без действующего IAnalysisLeaseGuard.");
     }
 
-    internal static async Task ExtractArchiveInternalAsync(
+    internal static Task ExtractArchiveInternalAsync(
         Stream archiveStream,
         string repositoryPath,
         CancellationToken cancellationToken)
+    {
+        return ExtractArchiveInternalCoreAsync(
+            archiveStream,
+            repositoryPath,
+            cancellationToken,
+            ensureOwnership: null);
+    }
+
+    private static async Task ExtractArchiveInternalCoreAsync(
+        Stream archiveStream,
+        string repositoryPath,
+        CancellationToken cancellationToken,
+        Func<Task>? ensureOwnership)
     {
         using var archive = new ZipArchive(archiveStream, ZipArchiveMode.Read, leaveOpen: true);
 
@@ -297,42 +406,49 @@ public class RepositorySourceService : IRepositorySourceService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var relativePath = GetRelativePath(entry.FullName);
+            if (ensureOwnership is not null)
+                await ensureOwnership();
 
+            var relativePath = GetRelativePath(entry.FullName);
             if (string.IsNullOrEmpty(relativePath) || ShouldExclude(relativePath))
-            {
                 continue;
-            }
 
             var destinationPath = GetSafeDestinationPath(repositoryPath, relativePath);
 
-            // Обработка директории
             if (entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\'))
             {
+                if (ensureOwnership is not null)
+                    await ensureOwnership();
+
                 Directory.CreateDirectory(destinationPath);
                 continue;
             }
 
-            // Запрет символических ссылок (Unix permissions S_IFLNK = 0xA000 в старших 16 битах)
+            // Unix S_IFLNK = 0xA000. Символические ссылки не извлекаются.
             if ((entry.ExternalAttributes >> 16 & 0xF000) == 0xA000)
-            {
                 continue;
-            }
 
-            // Контроль количества файлов
             fileCount++;
             if (fileCount > MaxFileCount)
             {
-                throw new ArchiveLimitExceededException("Количество файлов в архиве превышает лимит 10 000.");
+                throw new ArchiveLimitExceededException(
+                    "Количество файлов в архиве превышает лимит 10 000.");
             }
 
             var destinationDirectory = Path.GetDirectoryName(destinationPath);
             if (destinationDirectory is not null)
             {
+                if (ensureOwnership is not null)
+                    await ensureOwnership();
+
                 Directory.CreateDirectory(destinationDirectory);
             }
 
             await using var entryStream = entry.Open();
+
+            if (ensureOwnership is not null)
+                await ensureOwnership();
+
             await using var destinationStream = new FileStream(
                 destinationPath,
                 FileMode.Create,
@@ -344,23 +460,31 @@ public class RepositorySourceService : IRepositorySourceService
             long entryBytes = 0;
             int read;
 
-            // Поточный контроль размера отдельного файла и суммарного объема
-            while ((read = await entryStream.ReadAsync(copyBuffer.AsMemory(0, copyBuffer.Length), cancellationToken)) > 0)
+            while ((read = await entryStream.ReadAsync(
+                copyBuffer.AsMemory(0, copyBuffer.Length),
+                cancellationToken)) > 0)
             {
                 entryBytes += read;
                 totalExtractedBytes += read;
 
                 if (entryBytes > MaxSingleFileSizeBytes)
                 {
-                    throw new ArchiveLimitExceededException("Размер одного извлечённого файла превышает лимит 50 МиБ.");
+                    throw new ArchiveLimitExceededException(
+                        "Размер одного извлечённого файла превышает лимит 50 МиБ.");
                 }
 
                 if (totalExtractedBytes > MaxTotalExtractedSizeBytes)
                 {
-                    throw new ArchiveLimitExceededException("Суммарный объём извлечённых файлов превышает лимит 250 МиБ.");
+                    throw new ArchiveLimitExceededException(
+                        "Суммарный объём извлечённых файлов превышает лимит 250 МиБ.");
                 }
 
-                await destinationStream.WriteAsync(copyBuffer.AsMemory(0, read), cancellationToken);
+                if (ensureOwnership is not null)
+                    await ensureOwnership();
+
+                await destinationStream.WriteAsync(
+                    copyBuffer.AsMemory(0, read),
+                    cancellationToken);
             }
         }
     }
@@ -375,9 +499,7 @@ public class RepositorySourceService : IRepositorySourceService
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(analysisId);
 
         if (executionToken == Guid.Empty)
-        {
             throw new ArgumentException("Не указан токен выполнения анализа.", nameof(executionToken));
-        }
 
         ArgumentNullException.ThrowIfNull(activeGuard);
 
@@ -388,82 +510,83 @@ public class RepositorySourceService : IRepositorySourceService
                 nameof(activeGuard));
         }
 
-        if (!activeGuard.IsAcquired)
+        var fullBaseDir = Path.GetFullPath(_baseStoragePath);
+        var fullTargetDir = Path.GetFullPath(GetExecutionDirectory(analysisId, executionToken));
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var basePrefix = fullBaseDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+
+        if (!fullTargetDir.StartsWith(basePrefix, comparison))
         {
             throw new InvalidOperationException(
-                $"Удаление рабочего каталога анализа {analysisId} (токен {executionToken}) отклонено: activeGuard не находится в состоянии IsAcquired.");
+                $"Целевой каталог {fullTargetDir} выходит за границы разрешённого хранилища {fullBaseDir}.");
         }
 
-        var executionDirectory = GetExecutionDirectory(analysisId, executionToken);
-        var fullTargetDir = Path.GetFullPath(executionDirectory);
-        var fullBaseDir = Path.GetFullPath(_baseStoragePath);
-
-        // Защита от path traversal: проверяем, что целевой каталог находится внутри базового хранилища
-        if (!fullTargetDir.StartsWith(fullBaseDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        var fullAnalysisParent = Path.GetFullPath(Path.Combine(fullBaseDir, analysisId.ToString()));
+        if (fullTargetDir.Equals(fullBaseDir, comparison) ||
+            fullTargetDir.Equals(fullAnalysisParent, comparison))
         {
-            throw new InvalidOperationException($"Целевой каталог {fullTargetDir} выходит за границы разрешённого хранилища {fullBaseDir}.");
+            throw new InvalidOperationException(
+                $"Целевой каталог {fullTargetDir} не является изолированным каталогом конкретного исполнения.");
         }
 
-        // Защита от удаления базового или родительского каталога
-        if (fullTargetDir.Equals(fullBaseDir, StringComparison.OrdinalIgnoreCase) ||
-            fullTargetDir.Equals(Path.GetFullPath(Path.Combine(_baseStoragePath, analysisId.ToString())), StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException($"Целевой каталог {fullTargetDir} не является изолированным каталогом конкретного исполнения.");
-        }
+        await EnsureWorkspaceCleanupOwnershipAsync(
+            activeGuard, analysisId, executionToken, cancellationToken);
 
         if (!Directory.Exists(fullTargetDir))
-        {
-            // Повторная очистка уже удалённого каталога безопасна
             return;
-        }
 
-        // Защита символических ссылок и reparse points
-        var dirInfo = new DirectoryInfo(fullTargetDir);
-        if (dirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
-        {
+        await EnsureWorkspaceCleanupOwnershipAsync(
+            activeGuard, analysisId, executionToken, cancellationToken);
+
+        var targetDirectoryInfo = new DirectoryInfo(fullTargetDir);
+        if (targetDirectoryInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
             return;
-        }
 
-        var isOwner = await activeGuard.ValidateOwnershipAsync(cancellationToken);
-        if (!isOwner)
-        {
-            throw new InvalidOperationException(
-                $"Удаление рабочего каталога анализа {analysisId} (токен {executionToken}) отклонено: исполнитель больше не владеет задачей в PostgreSQL.");
-        }
-
-        // Удаление строго под защитой блокировки
+        await EnsureWorkspaceCleanupOwnershipAsync(
+            activeGuard, analysisId, executionToken, cancellationToken);
         Directory.Delete(fullTargetDir, recursive: true);
 
-        // Очищаем пустой родительский каталог анализа при отсутствии других исполнений под защитой блокировки
-        var analysisParentDir = Path.Combine(_baseStoragePath, analysisId.ToString());
-        try
+        // Пустой каталог анализа удаляется только после отдельных проверок перед
+        // Exists, перечислением и Delete. Потеря guard не поглощается.
+        await EnsureWorkspaceCleanupOwnershipAsync(
+            activeGuard, analysisId, executionToken, CancellationToken.None);
+
+        if (Directory.Exists(fullAnalysisParent))
         {
-            if (Directory.Exists(analysisParentDir) && !Directory.EnumerateFileSystemEntries(analysisParentDir).Any())
+            await EnsureWorkspaceCleanupOwnershipAsync(
+                activeGuard, analysisId, executionToken, CancellationToken.None);
+
+            var hasEntries = Directory.EnumerateFileSystemEntries(fullAnalysisParent).Any();
+            if (!hasEntries)
             {
-                Directory.Delete(analysisParentDir, recursive: false);
+                await EnsureWorkspaceCleanupOwnershipAsync(
+                    activeGuard, analysisId, executionToken, CancellationToken.None);
+                Directory.Delete(fullAnalysisParent, recursive: false);
             }
         }
-        catch
-        {
-        }
 
-        // Также удаляем временный каталог обмена контейнера строго под защитой блокировки
         var containerExchangeDir = Path.Combine(
             Path.GetTempPath(),
             "netscope-database-analyzer",
             $"{analysisId}_{executionToken:N}");
+
+        await EnsureWorkspaceCleanupOwnershipAsync(
+            activeGuard, analysisId, executionToken, CancellationToken.None);
+
         if (Directory.Exists(containerExchangeDir))
         {
-            try
+            await EnsureWorkspaceCleanupOwnershipAsync(
+                activeGuard, analysisId, executionToken, CancellationToken.None);
+
+            var containerDirectoryInfo = new DirectoryInfo(containerExchangeDir);
+            if (!containerDirectoryInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
             {
-                var cDirInfo = new DirectoryInfo(containerExchangeDir);
-                if (!cDirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                {
-                    Directory.Delete(containerExchangeDir, recursive: true);
-                }
-            }
-            catch
-            {
+                await EnsureWorkspaceCleanupOwnershipAsync(
+                    activeGuard, analysisId, executionToken, CancellationToken.None);
+                Directory.Delete(containerExchangeDir, recursive: true);
             }
         }
     }
