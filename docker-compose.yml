@@ -27,7 +27,7 @@ services:
   database-analyzer-build:
     build:
       context: .
-      dockerfile: Dockerfile.database-analyzer
+      dockerfile: infrastructure/docker/Dockerfile.database-analyzer
     image: netscope-database-analyzer:latest
     container_name: courseproject-database-analyzer-build
     pull_policy: build
@@ -39,7 +39,7 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: infrastructure/docker/Dockerfile
     container_name: courseproject-backend
     restart: unless-stopped
 
