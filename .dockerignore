@@ -1,18 +1,72 @@
+# Git и репозиторий
 **/.git
 **/.gitignore
-**/.vs
-**/.idea
-**/.vscode
-**/bin
-**/obj
-**/TestResults
+**/.gitattributes
+
+# Артефакты сборки .NET и компилятора
+**/bin/
+**/obj/
+**/build/
+
+# IDE, редакторы и пользовательские настройки
+**/.vs/
+**/.idea/
+**/.vscode/
 **/*.user
 **/*.suo
 **/*.userosscache
 **/*.sln.docstates
+
+# Тесты, отчёты и результаты покрытия кода
+tests/
+TestResults/
+**/TestResults/
+**/coverage/
+**/*.trx
+**/*.coverage
+**/*.coveragexml
+
+# Клиентские приложения (не используются в Docker-образах)
+clients/
+
+# Документация, дампы, выгрузки и аналитические отчёты
+docs/
+dumps/
+src/Backend/backend_dump.md
+
+# Инфраструктурные и вспомогательные файлы хоста
+CourseProject.slnx
+docker-compose*.yml
+swagger.json
+LICENSE
+
+# Локальные конфигурации, секреты и переменные окружения
 .env
 .env.*
 !.env.example
-docs/
-*.log
-*.tmp
+**/appsettings.Local.json
+**/appsettings.*.Local.json
+**/*.local.json
+
+# Сертификаты, ключи и хранилища секретов
+**/*.pfx
+**/*.p12
+**/*.pem
+**/*.key
+**/*.crt
+**/*.cer
+**/secrets/
+
+# Логи, дампы процессов и временные файлы
+**/*.log
+**/*.tmp
+**/*.dmp
+**/*.dump
+**/*.bak
+**/*.swp
+
+# Файлы операционной системы и резервные копии диаграмм
+**/.DS_Store
+**/Thumbs.db
+**/*.drawio.bkp
+~$*.*
