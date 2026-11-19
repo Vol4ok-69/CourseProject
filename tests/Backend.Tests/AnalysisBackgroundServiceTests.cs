@@ -170,4 +170,18 @@ public sealed class AnalysisBackgroundServiceTests
         analysisRepo.Verify(x => x.FailAsync(201, token1, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
         analysisRepo.Verify(x => x.CompleteAsync(202, token2, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public void RepositorySourceService_DependencyInjection_ResolvesWithoutAmbiguity()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddHttpClient<IRepositorySourceService, Infrastructure.GitHub.RepositorySourceService>();
+
+        using var provider = services.BuildServiceProvider();
+        var service = provider.GetService<IRepositorySourceService>();
+
+        Assert.NotNull(service);
+        Assert.IsType<Infrastructure.GitHub.RepositorySourceService>(service);
+    }
 }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace DatabaseAnalyzer.Process;
@@ -6,6 +7,12 @@ namespace DatabaseAnalyzer.Process;
 public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
 {
     private const int MaxLogChars = 64 * 1024; // 64 KB max stdout/stderr
+    private readonly string _dockerCommand;
+
+    public DockerCliProcessAdapter(string dockerCommand = "docker")
+    {
+        _dockerCommand = string.IsNullOrWhiteSpace(dockerCommand) ? "docker" : dockerCommand;
+    }
 
     public async Task<ProcessExecutionResult> RunAsync(
         ContainerRunOptions options,
@@ -16,7 +23,6 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
         // Валидация входных параметров для предотвращения инъекции аргументов
         ValidateOptions(options);
 
-        var inputFullPath = Path.GetFullPath(options.InputFilePath);
         var outputFullPath = Path.GetFullPath(options.OutputFilePath);
         var outputDir = Path.GetDirectoryName(outputFullPath) ?? Path.GetTempPath();
 
@@ -25,17 +31,10 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
             Directory.CreateDirectory(outputDir);
         }
 
-        var delayArg = options.TestDelayMs > 0 ? $" --test-delay-ms {options.TestDelayMs}" : string.Empty;
+        // 1. docker create с жесткими ограничениями безопасности и изоляции через ArgumentList
+        var createArgs = BuildCreateArgumentList(options);
 
-        // 1. docker create с жесткими ограничениями безопасности и изоляции
-        var createArgs = $"create --network none --read-only --user 10001:10001 " +
-                         $"--security-opt no-new-privileges --cap-drop ALL " +
-                         $"--cpus {options.CpuLimit} --memory {options.MemoryLimit} --pids-limit {options.PidsLimit} " +
-                         $"-v \"{inputFullPath}:/exchange/in/input.json:ro\" " +
-                         $"-v \"{outputDir}:/exchange/out:rw\" " +
-                         $"{options.Image} --input /exchange/in/input.json --output /exchange/out/{Path.GetFileName(outputFullPath)}{delayArg}";
-
-        var createResult = await RunCommandAsync("docker", createArgs, TimeSpan.FromSeconds(30), cancellationToken);
+        var createResult = await RunCommandAsync(_dockerCommand, createArgs, TimeSpan.FromSeconds(30), cancellationToken);
         if (createResult.ExitCode != 0)
         {
             return new ProcessExecutionResult
@@ -57,7 +56,7 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
         try
         {
             // 2. docker start
-            var startResult = await RunCommandAsync("docker", $"start {containerId}", TimeSpan.FromSeconds(30), cancellationToken);
+            var startResult = await RunCommandAsync(_dockerCommand, ["start", containerId], TimeSpan.FromSeconds(30), cancellationToken);
             if (startResult.ExitCode != 0)
             {
                 return new ProcessExecutionResult
@@ -74,7 +73,7 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
 
             try
             {
-                var waitResult = await RunCommandAsync("docker", $"wait {containerId}", options.Timeout, linkedCts.Token);
+                var waitResult = await RunCommandAsync(_dockerCommand, ["wait", containerId], options.Timeout, linkedCts.Token);
                 if (int.TryParse(waitResult.StandardOutput.Trim(), out var parsedCode))
                 {
                     exitCode = parsedCode;
@@ -99,7 +98,7 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
             // 4. Проверка статуса OOM через docker inspect
             try
             {
-                var inspectResult = await RunCommandAsync("docker", $"inspect --format \"{{{{.State.OOMKilled}}}}\" {containerId}", TimeSpan.FromSeconds(10), CancellationToken.None);
+                var inspectResult = await RunCommandAsync(_dockerCommand, ["inspect", "--format", "{{.State.OOMKilled}}", containerId], TimeSpan.FromSeconds(10), CancellationToken.None);
                 if (bool.TryParse(inspectResult.StandardOutput.Trim(), out var oom))
                 {
                     isOomKilled = oom;
@@ -113,7 +112,7 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
             // 5. Чтение логов (stdout/stderr) с ограничением размера
             try
             {
-                var logsResult = await RunCommandAsync("docker", $"logs --tail 200 {containerId}", TimeSpan.FromSeconds(10), CancellationToken.None);
+                var logsResult = await RunCommandAsync(_dockerCommand, ["logs", "--tail", "200", containerId], TimeSpan.FromSeconds(10), CancellationToken.None);
                 stdout = TruncateLog(logsResult.StandardOutput);
                 stderr = TruncateLog(logsResult.StandardError);
             }
@@ -129,9 +128,9 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
             {
                 if (isTimedOut || isCancelled)
                 {
-                    await RunCommandAsync("docker", $"kill {containerId}", TimeSpan.FromSeconds(10), CancellationToken.None);
+                    await RunCommandAsync(_dockerCommand, ["kill", containerId], TimeSpan.FromSeconds(10), CancellationToken.None);
                 }
-                await RunCommandAsync("docker", $"rm -f {containerId}", TimeSpan.FromSeconds(15), CancellationToken.None);
+                await RunCommandAsync(_dockerCommand, ["rm", "-f", containerId], TimeSpan.FromSeconds(15), CancellationToken.None);
             }
             catch
             {
@@ -150,22 +149,183 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
         };
     }
 
+    /// <summary>
+    /// Формирует структурированный список аргументов docker create с флагами строгой изоляции (ADR-001)
+    /// и целевого механизма файлового обмена (хостовые bind mounts или Docker Named Volume с volume-subpath).
+    /// </summary>
+    public static IReadOnlyList<string> BuildCreateArgumentList(ContainerRunOptions options)
+    {
+        ValidateOptions(options);
+
+        var args = new List<string>
+        {
+            "create",
+            "--network", "none",
+            "--read-only",
+            "--user", "10001:10001",
+            "--security-opt", "no-new-privileges",
+            "--cap-drop", "ALL",
+            "--cpus", options.CpuLimit,
+            "--memory", options.MemoryLimit,
+            "--pids-limit", options.PidsLimit.ToString(CultureInfo.InvariantCulture),
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m"
+        };
+
+        var outputFileName = Path.GetFileName(options.OutputFilePath);
+        if (string.IsNullOrWhiteSpace(outputFileName))
+        {
+            outputFileName = "output.json";
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ExchangeVolume))
+        {
+            var (inputSubpath, outputSubpath) = ResolveVolumeSubpaths(options);
+
+            args.Add("--mount");
+            args.Add($"type=volume,source={options.ExchangeVolume},target=/exchange/in,volume-subpath={inputSubpath},readonly");
+
+            args.Add("--mount");
+            args.Add($"type=volume,source={options.ExchangeVolume},target=/exchange/out,volume-subpath={outputSubpath}");
+
+            args.Add(options.Image);
+            args.Add("--input");
+            args.Add("/exchange/in/input.json");
+            args.Add("--output");
+            args.Add($"/exchange/out/{outputFileName}");
+        }
+        else
+        {
+            var inputFullPath = Path.GetFullPath(options.InputFilePath);
+            var outputFullPath = Path.GetFullPath(options.OutputFilePath);
+            var outputDir = Path.GetDirectoryName(outputFullPath) ?? Path.GetTempPath();
+
+            args.Add("-v");
+            args.Add($"{inputFullPath}:/exchange/in/input.json:ro");
+
+            args.Add("-v");
+            args.Add($"{outputDir}:/exchange/out:rw");
+
+            args.Add(options.Image);
+            args.Add("--input");
+            args.Add("/exchange/in/input.json");
+            args.Add("--output");
+            args.Add($"/exchange/out/{outputFileName}");
+        }
+
+        if (options.TestDelayMs > 0)
+        {
+            args.Add("--test-delay-ms");
+            args.Add(options.TestDelayMs.ToString(CultureInfo.InvariantCulture));
+        }
+
+        return args;
+    }
+
+    /// <summary>
+    /// Формирует строку аргументов docker create (для обратной совместимости и строкового вывода).
+    /// </summary>
+    public static string BuildCreateArguments(ContainerRunOptions options)
+    {
+        var argList = BuildCreateArgumentList(options);
+        return string.Join(" ", argList.Select(QuoteIfNeeded));
+    }
+
+    private static string QuoteIfNeeded(string arg)
+    {
+        if (string.IsNullOrEmpty(arg)) return "\"\"";
+        if (arg.Contains(' ') || arg.Contains('\t') || arg.Contains('"'))
+        {
+            return $"\"{arg.Replace("\"", "\\\"")}\"";
+        }
+        return arg;
+    }
+
+    /// <summary>
+    /// Вычисляет и валидирует изолированные относительные пути внутри Docker-тома обмена данными.
+    /// Защищает от path traversal, directory escape и доступа к чужим каталогам анализов.
+    /// </summary>
+    public static (string inputSubpath, string outputSubpath) ResolveVolumeSubpaths(ContainerRunOptions options)
+    {
+        string runId;
+
+        if (!string.IsNullOrWhiteSpace(options.ExchangeDirectory))
+        {
+            var normalizedExchangeDir = options.ExchangeDirectory.Replace('\\', '/').TrimEnd('/');
+            const string marker = "netscope-database-analyzer/";
+            var markerIdx = normalizedExchangeDir.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+
+            if (markerIdx >= 0)
+            {
+                runId = normalizedExchangeDir[(markerIdx + marker.Length)..].Trim('/');
+            }
+            else
+            {
+                runId = Path.GetFileName(normalizedExchangeDir);
+            }
+        }
+        else
+        {
+            var normalizedInput = options.InputFilePath.Replace('\\', '/').TrimEnd('/');
+            var inDir = Path.GetDirectoryName(normalizedInput)?.Replace('\\', '/') ?? string.Empty;
+            var parentDir = Path.GetDirectoryName(inDir)?.Replace('\\', '/') ?? string.Empty;
+            runId = Path.GetFileName(parentDir);
+
+            if (string.IsNullOrWhiteSpace(runId))
+            {
+                runId = Path.GetFileName(inDir);
+            }
+        }
+
+        ValidateSubpathSegment(runId, "сессии анализа");
+
+        var inputSubpath = $"{runId}/in";
+        var outputSubpath = $"{runId}/out";
+
+        ValidateSubpath(inputSubpath);
+        ValidateSubpath(outputSubpath);
+
+        return (inputSubpath, outputSubpath);
+    }
+
+    private static void ValidateSubpathSegment(string segment, string contextName)
+    {
+        if (string.IsNullOrWhiteSpace(segment) ||
+            segment == "." ||
+            segment == ".." ||
+            segment.Contains("..", StringComparison.Ordinal) ||
+            segment.StartsWith('/') ||
+            segment.Contains('\\') ||
+            !ValidSegmentRegex().IsMatch(segment))
+        {
+            throw new ArgumentException($"Недопустимый идентификатор {contextName} для тома обмена: '{segment}'.", nameof(segment));
+        }
+    }
+
+    private static void ValidateSubpath(string subpath)
+    {
+        var segments = subpath.Split('/');
+        foreach (var segment in segments)
+        {
+            ValidateSubpathSegment(segment, "пути");
+        }
+    }
+
     private static void ValidateOptions(ContainerRunOptions options)
     {
         if (string.IsNullOrWhiteSpace(options.Image) ||
-            !Regex.IsMatch(options.Image, @"^[a-zA-Z0-9_.\-:/@]+$"))
+            !ValidImageRegex().IsMatch(options.Image))
         {
             throw new ArgumentException("Недопустимое имя или digest Docker-образа.", nameof(options));
         }
 
         if (string.IsNullOrWhiteSpace(options.CpuLimit) ||
-            !Regex.IsMatch(options.CpuLimit, @"^[0-9]+(\.[0-9]+)?$"))
+            !ValidCpuRegex().IsMatch(options.CpuLimit))
         {
             throw new ArgumentException("Недопустимый формат ограничения CPU.", nameof(options));
         }
 
         if (string.IsNullOrWhiteSpace(options.MemoryLimit) ||
-            !Regex.IsMatch(options.MemoryLimit, @"^[0-9]+[kmgKMG]?$"))
+            !ValidMemoryRegex().IsMatch(options.MemoryLimit))
         {
             throw new ArgumentException("Недопустимый формат ограничения памяти.", nameof(options));
         }
@@ -173,6 +333,12 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
         if (options.PidsLimit <= 0 || options.PidsLimit > 4096)
         {
             throw new ArgumentException("Недопустимое ограничение PID.", nameof(options));
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ExchangeVolume) &&
+            !ValidVolumeRegex().IsMatch(options.ExchangeVolume))
+        {
+            throw new ArgumentException("Недопустимое имя Docker-тома обмена данными.", nameof(options));
         }
     }
 
@@ -184,50 +350,80 @@ public sealed partial class DockerCliProcessAdapter : IContainerProcessAdapter
         return log[..MaxLogChars] + "\n...[TRUNCATED]";
     }
 
-    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunCommandAsync(
+    public static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunCommandAsync(
         string fileName,
-        string arguments,
+        IReadOnlyList<string> arguments,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
         var psi = new ProcessStartInfo
         {
             FileName = fileName,
-            Arguments = arguments,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
 
-        using var process = new System.Diagnostics.Process { StartInfo = psi };
-        process.Start();
+        foreach (var arg in arguments)
+        {
+            psi.ArgumentList.Add(arg);
+        }
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
-        using var timeoutCts = new CancellationTokenSource(timeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
+        System.Diagnostics.Process process;
         try
         {
-            await process.WaitForExitAsync(linkedCts.Token);
-            var stdout = await stdoutTask;
-            var stderr = await stderrTask;
-            return (process.ExitCode, stdout, stderr);
+            process = new System.Diagnostics.Process { StartInfo = psi };
+            process.Start();
         }
-        catch (OperationCanceledException)
+        catch (Exception ex)
         {
+            return (127, string.Empty, $"Failed to start process '{fileName}': {ex.Message}");
+        }
+
+        using (process)
+        {
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+
+            using var timeoutCts = new CancellationTokenSource(timeout);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
             try
             {
-                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(linkedCts.Token);
+                var stdout = await stdoutTask;
+                var stderr = await stderrTask;
+                return (process.ExitCode, stdout, stderr);
             }
-            catch
+            catch (OperationCanceledException)
             {
-                // Ignore kill errors
-            }
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Ignore kill errors
+                }
 
-            throw;
+                throw;
+            }
         }
     }
+
+    [GeneratedRegex(@"^[a-zA-Z0-9_.\-:/@]+$")]
+    private static partial Regex ValidImageRegex();
+
+    [GeneratedRegex(@"^[0-9]+(\.[0-9]+)?$")]
+    private static partial Regex ValidCpuRegex();
+
+    [GeneratedRegex(@"^[0-9]+[kmgKMG]?$")]
+    private static partial Regex ValidMemoryRegex();
+
+    [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")]
+    private static partial Regex ValidVolumeRegex();
+
+    [GeneratedRegex(@"^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$")]
+    private static partial Regex ValidSegmentRegex();
 }

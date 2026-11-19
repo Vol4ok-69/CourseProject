@@ -32,15 +32,9 @@ public sealed class DockerContainerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     public async Task DockerContainer_ExecutesSafely_WithIsolationFlags()
     {
-        if (!IsDockerAvailable())
-        {
-            // Skip test if docker is not running in current environment
-            return;
-        }
-
         var adapter = new DockerCliProcessAdapter();
         var validator = new TestLeaseValidator(true);
         var runner = new DatabaseContainerRunner(adapter, "netscope-database-analyzer:latest", validator);
@@ -82,14 +76,9 @@ public sealed class DockerContainerIntegrationTests
         Assert.Equal("DB01", result.Findings[0].Rule);
     }
 
-    [Fact]
+    [DockerFact]
     public async Task DockerContainer_RunsWithPinnedDigest_Successfully()
     {
-        if (!IsDockerAvailable())
-        {
-            return;
-        }
-
         // Получаем pinned sha256 id собранного образа
         var psi = new ProcessStartInfo
         {
@@ -146,6 +135,61 @@ public sealed class DockerContainerIntegrationTests
         Assert.Equal("Success", result.Status);
         Assert.Single(result.Findings);
         Assert.Equal("DB01", result.Findings[0].Rule);
+    }
+
+    [DockerFact]
+    public async Task DockerContainer_FullRoslynExtractionAndDatabaseAnalysis_SucceedsWithDB01Finding()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "netscope_test_repo_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var sourceCode = """
+                using Microsoft.EntityFrameworkCore;
+
+                namespace TestApp;
+
+                public class SampleDbContext : DbContext
+                {
+                    public DbSet<TestEntity> TestEntities => Set<TestEntity>();
+                }
+
+                public class TestEntity
+                {
+                    public string Name { get; set; } = string.Empty;
+                }
+                """;
+
+            await File.WriteAllTextAsync(Path.Combine(tempDir, "SampleDbContext.cs"), sourceCode);
+
+            var extractor = new RoslynMetadataExtractor();
+            var extraction = await extractor.ExtractAsync(tempDir);
+
+            Assert.Single(extraction.Contexts);
+            Assert.Equal("SampleDbContext", extraction.Contexts[0].Name);
+
+            var adapter = new DockerCliProcessAdapter();
+            var validator = new TestLeaseValidator(true);
+            var runner = new DatabaseContainerRunner(adapter, "netscope-database-analyzer:latest", validator);
+
+            var analysisId = 125;
+            var token = Guid.NewGuid();
+
+            var result = await runner.RunAnalysisAsync(extraction, analysisId, token);
+
+            Assert.NotNull(result);
+            Assert.Equal("Success", result.Status);
+            Assert.Single(result.Findings);
+            Assert.Equal("DB01", result.Findings[0].Rule);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
     }
 
     private sealed class TestLeaseValidator(bool isValid) : ILeaseOwnershipValidator

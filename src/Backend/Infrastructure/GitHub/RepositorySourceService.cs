@@ -2,6 +2,7 @@ using Application.Exceptions;
 using Application.Interfaces;
 using Infrastructure.GitHub.Models;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.IO.Compression;
 using System.Net;
@@ -21,6 +22,7 @@ public class RepositorySourceService : IRepositorySourceService
     private readonly IAnalysisLeaseGuardProvider? _leaseGuardProvider;
     private readonly ILogger<RepositorySourceService>? _logger;
 
+    [ActivatorUtilitiesConstructor]
     public RepositorySourceService(
         HttpClient httpClient,
         IConfiguration? configuration = null,

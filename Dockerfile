@@ -1,3 +1,6 @@
+# Stage 0: Docker CLI (зафиксированная точная версия 28.5.2, полностью совместимая с Docker Engine 28.x)
+FROM docker:28.5.2-cli AS docker-cli
+
 # Stage 1: Build & Publish
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
@@ -30,7 +33,14 @@ WORKDIR /app
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && (getent group docker || groupadd -g 999 docker) \
+    && usermod -aG docker app \
+    && mkdir -p /tmp/netscope-database-analyzer \
+    && chmod 1777 /tmp/netscope-database-analyzer
+
+# Копирование легковесного статического бинарника Docker CLI (без docker daemon и containerd)
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 # Запуск от непривилегированного пользователя app
 USER app

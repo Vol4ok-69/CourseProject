@@ -95,6 +95,7 @@ public sealed class DatabaseContainerRunner : IDatabaseContainerRunner
             };
         }
 
+        var setupDiagnostics = new List<string>();
         var preserveExchangeDirectory = false;
         var exchangeDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -109,12 +110,66 @@ public sealed class DatabaseContainerRunner : IDatabaseContainerRunner
             Directory.CreateDirectory(inputDirectory);
             Directory.CreateDirectory(outputDirectory);
 
+            if (!OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    // Входной каталог: владелец app (1654) имеет rwx, группа и остальные (включая appuser 10001) - r-x (0755).
+                    // Права на запись для Other исключены; контейнер монтирует этот каталог в режиме readonly.
+                    File.SetUnixFileMode(
+                        inputDirectory,
+                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                        UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                        UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+
+                    // Выходной каталог: владелец app (1654) имеет rwx. Непривилегированный контейнер анализатора
+                    // выполняется с UID 10001 (appuser) и должен иметь возможность создать output.json.
+                    // В рамках стандартной модели Linux DAC межпользовательская запись без эскалации root
+                    // требует прав rwx для Other (0777). Изоляция от других задач анализа обеспечивается
+                    // тем, что Docker монтирует в конкретный контейнер только его собственный volume-subpath.
+                    File.SetUnixFileMode(
+                        outputDirectory,
+                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                        UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                        UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+                }
+                catch (PlatformNotSupportedException)
+                {
+                    // Файловая система или платформа не поддерживает POSIX-права
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    setupDiagnostics.Add($"Предупреждение: не удалось настроить права каталогов обмена: {ex.Message}");
+                }
+            }
+
             var inputFilePath = Path.Combine(inputDirectory, "input.json");
             var outputFilePath = Path.Combine(outputDirectory, "output.json");
 
             var inputDoc = BuildInputDocument(extraction, analysisId, executionToken);
             var inputJson = JsonSerializer.Serialize(inputDoc, DatabaseAnalyzerJsonContext.Default.DatabaseAnalyzerInputDocument);
             await File.WriteAllTextAsync(inputFilePath, inputJson, cancellationToken);
+
+            if (!OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    // Входной файл: rw-r--r-- (0644), только чтение для пользователя контейнера
+                    File.SetUnixFileMode(
+                        inputFilePath,
+                        UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                        UnixFileMode.GroupRead |
+                        UnixFileMode.OtherRead);
+                }
+                catch (PlatformNotSupportedException)
+                {
+                    // Игнорируем на неподдерживающих платформах
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    setupDiagnostics.Add($"Предупреждение: не удалось настроить права входного файла: {ex.Message}");
+                }
+            }
 
             var runOptions = new ContainerRunOptions
             {
@@ -228,6 +283,7 @@ public sealed class DatabaseContainerRunner : IDatabaseContainerRunner
             }
 
             var diagnostics = outputDoc.Diagnostics.Select(d => $"[{d.Code}] {d.Message}").ToList();
+            diagnostics.AddRange(setupDiagnostics);
 
             return new ContainerAnalysisResult
             {
