@@ -732,6 +732,80 @@ public sealed class ApiPipelineIntegrationTests(ApiWebApplicationFactory factory
     }
 
     [Fact]
+    public async Task CreateCommit_WithSha256Hash_SucceedsAndPersistsInDatabase()
+    {
+        // Arrange: проект и 64-символьный хэш Git SHA-256 (TD-008)
+        var user = await CreateTestUserAsync("sha256_commit_user", "User");
+        var project = await CreateTestProjectAsync("sha256_project", user.Id);
+        using var client = _factory.CreateAuthenticatedClient(_factory.GenerateValidToken(user));
+
+        var sha256Hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        var createDto = new CreateCommitDto
+        {
+            CommitHash = sha256Hash,
+            CommitDate = DateTime.UtcNow
+        };
+
+        // Act: отправка запроса на создание коммита с SHA-256 хэшем
+        var response = await client.PostAsJsonAsync($"/api/projects/{project.Id}/commits", createDto);
+
+        // Assert: статус 201 Created и корректное сохранение в PostgreSQL
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var createdDto = await response.Content.ReadFromJsonAsync<CommitDto>();
+        Assert.NotNull(createdDto);
+        Assert.Equal(sha256Hash, createdDto.CommitHash);
+        Assert.Equal(project.Id, createdDto.ProjectId);
+
+        var dbCommit = await _factory.ExecuteDbContextAsync(async db =>
+            await db.Commits.AsNoTracking().FirstOrDefaultAsync(c => c.Id == createdDto.Id));
+        Assert.NotNull(dbCommit);
+        Assert.Equal(sha256Hash, dbCommit.CommitHash);
+    }
+
+    [Theory]
+    [InlineData("123456")] // Длина 6 (меньше минимальных 7)
+    [InlineData("12345678901234567890123456789012345678901234567890123456789012345")] // Длина 65 (больше максимальных 64)
+    [InlineData("not_a_valid_hex_commit_hash")] // Не-hex символы
+    [InlineData("e9ef5e43-b99da445-bb548b049d52e0e7cbf2a5")] // Спецсимволы (дефис)
+    [InlineData("e9ef5e43b99da445bb548b049d52e0e7cbf2a5ec ")] // Пробел
+    [InlineData("e9ef5e43b99da445bb548b049d52e0e7cbf2a5ec\n")] // Завершающий перевод строки \n
+    [InlineData("e9ef5e43b99da445bb548b049d52e0e7cbf2a5ec\r\n")] // Завершающий перевод строки \r\n
+    public async Task CreateCommit_WithInvalidHash_Returns400BadRequest_WithValidationProblemDetails(string invalidHash)
+    {
+        // Arrange
+        var user = await CreateTestUserAsync("invalid_hash_user_" + Guid.NewGuid().ToString("N")[..6], "User");
+        var project = await CreateTestProjectAsync("invalid_hash_proj_" + Guid.NewGuid().ToString("N")[..6], user.Id);
+        using var client = _factory.CreateAuthenticatedClient(_factory.GenerateValidToken(user));
+
+        var createDto = new CreateCommitDto
+        {
+            CommitHash = invalidHash,
+            CommitDate = DateTime.UtcNow
+        };
+
+        // Act: отправка невалидного DTO через сквозной API-конвейер
+        var response = await client.PostAsJsonAsync($"/api/projects/{project.Id}/commits", createDto);
+
+        // Assert: проверка формата RFC 9457 ValidationProblemDetails
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.True(response.Content.Headers.ContentType?.MediaType is "application/problem+json" or "application/json");
+
+        var body = await response.Content.ReadAsStringAsync();
+        using var jsonDoc = JsonDocument.Parse(body);
+        var root = jsonDoc.RootElement;
+
+        Assert.Equal(400, root.GetProperty("status").GetInt32());
+        Assert.Equal("Ошибка валидации входных данных", root.GetProperty("title").GetString());
+        Assert.Equal(ApiErrorCodes.ValidationFailed, root.GetProperty("code").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("traceId").GetString()));
+
+        // Проверка наличия ошибки по полю CommitHash
+        Assert.True(root.TryGetProperty("errors", out var errorsElement));
+        Assert.True(errorsElement.TryGetProperty("CommitHash", out var commitHashErrors));
+        Assert.True(commitHashErrors.GetArrayLength() > 0);
+    }
+
+    [Fact]
     public async Task CommitLifecycle_GetByProjectId_ReturnsPagedResult_AndValidatesPagination()
     {
         // Arrange: проект с 3 коммитами

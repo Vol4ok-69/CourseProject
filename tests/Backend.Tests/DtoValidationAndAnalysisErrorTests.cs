@@ -122,12 +122,17 @@ public sealed class DtoValidationAndAnalysisErrorTests
         Assert.Contains(results, r => r.ErrorMessage == expectedMessage);
     }
 
-    [Fact]
-    public void CreateCommitDto_ValidModel_PassesValidation()
+    [Theory]
+    [InlineData("e9ef5e43b99da445bb548b049d52e0e7cbf2a5ec")] // SHA-1 (40 hex)
+    [InlineData("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")] // SHA-256 (64 hex)
+    [InlineData("e9ef5e4")] // Минимальная длина (7 hex)
+    [InlineData("ABCDEF0123456789abcdef0123456789ABCDEF01")] // Смешанный регистр hex (40 hex)
+    [InlineData("0123456789abcdefABCDEF0123456789abcdefABCDEF0123456789abcdefABCD")] // Смешанный регистр hex (64 hex)
+    public void CreateCommitDto_ValidHashes_PassValidation(string hash)
     {
         var dto = new CreateCommitDto
         {
-            CommitHash = "e9ef5e43b99da445bb548b049d52e0e7cbf2a5ec",
+            CommitHash = hash,
             CommitDate = DateTime.UtcNow
         };
 
@@ -139,8 +144,18 @@ public sealed class DtoValidationAndAnalysisErrorTests
     [Theory]
     [InlineData(null, "Хэш коммита обязателен для заполнения.")]
     [InlineData("", "Хэш коммита обязателен для заполнения.")]
-    [InlineData("123456", "Хэш коммита должен содержать от 7 до 40 символов.")]
-    [InlineData("12345678901234567890123456789012345678901", "Хэш коммита должен содержать от 7 до 40 символов.")]
+    [InlineData("123456", "Хэш коммита должен содержать от 7 до 64 символов.")]
+    [InlineData("12345678901234567890123456789012345678901234567890123456789012345", "Хэш коммита должен содержать от 7 до 64 символов.")]
+    [InlineData("e9ef5e43b99da445bb548b049d52e0e7cbf2a5ec ", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
+    [InlineData(" e9ef5e43b99da445bb548b049d52e0e7cbf2a5ec", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
+    [InlineData("e9ef5e43b99da445bb548b049d52e0e7cbf2a5ec\n", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
+    [InlineData("e9ef5e43b99da445bb548b049d52e0e7cbf2a5ec\r\n", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
+    [InlineData("\ne9ef5e43b99da445bb548b049d52e0e7cbf2a5ec", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
+    [InlineData("e9ef5e4 45bb5", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
+    [InlineData("e9ef5e43-b99da445-bb548b049d52e0e7cbf2a5", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
+    [InlineData("e9ef5e4#commit", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
+    [InlineData("not_a_valid_hex_hash_value", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
+    [InlineData("e9ef5e43g99da445zb548b049d52e0e7cbf2a5ec", "Хэш коммита должен содержать только шестнадцатеричные символы.")]
     public void CreateCommitDto_InvalidHash_FailsValidation(string? hash, string expectedMessage)
     {
         var dto = new CreateCommitDto
