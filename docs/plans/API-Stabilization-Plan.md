@@ -1,10 +1,10 @@
 # Единый план технической стабилизации REST API проекта CourseProject
 
 **Документ:** План технической стабилизации и подготовки серверного API перед началом разработки клиентских приложений<br/>
-**Версия документа:** 1.5.0 (Актуализировано по результатам аудита от 06.11.2026)<br/>
-**Дата актуализации:** 06 ноября 2026 г.<br/>
+**Версия документа:** 1.6.0 (Актуализировано по результатам аудита от 20.11.2026)<br/>
+**Дата актуализации:** 20 ноября 2026 г.<br/>
 **Базовый коммит реализации:** `2068c51` (*feat(github): enforce owner-scoped PATs for sync and analysis*)<br/>
-**Статус выполнения:** Основные этапы 1–6 успешно реализованы в коде и закрыты. Замечание API-024 закрыто верификацией актуальности документации (TD-014). Открытые замечания (API-020, API-022) перенесены в общий [План устранения технического долга](Technical-Debt-Plan.md). Отложенные задачи (API-012, API-023) сохранены в Этапе 7.
+**Статус выполнения:** Основные этапы 1–6 успешно реализованы в коде и закрыты. Замечание API-024 закрыто верификацией актуальности документации (TD-014). Замечание API-022 закрыто верификацией этапа 6 инфраструктурного плана (TD-013). Открытое замечание API-020 перенесено в общий [План устранения технического долга](Technical-Debt-Plan.md) (TD-003). Отложенные задачи (API-012, API-023) сохранены в Этапе 7. Добавлен раздел 12 с планом дальнейшей стабилизации API (TD-008, завершение TD-015).
 
 ---
 
@@ -41,15 +41,15 @@
    - Модули статического анализатора выделены в отдельные библиотеки: `CSharpAnalyzer` (Roslyn), `DatabaseAnalyzer` (EF Core metadata), `SqlAnalyzer` (Roslyn EF Core SQL) и `SecurityAnalyzer`.
    - Компонент `SqlAnalyzer` полностью реализован в коде (`src/Analyzers/Sql/`) и протестирован (44 unit-теста в `tests/SqlAnalyzer.Tests/`), вопреки устаревшим формулировкам в некоторых документах каталога `docs/`.
 2. **Базовая безопасность и авторизация (IDOR) защищены:**
-   - Пароли хэшируются с солью стойким алгоритмом BCrypt ([PasswordHasher.cs](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/Security/PasswordHasher.cs#L7-L15)).
-   - Проверки владения ресурсами (`project.OwnerId != userId && !isAdmin`) внедрены на всех уровнях контроллеров ([ProjectsController.cs#L48](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/ProjectsController.cs#L48), [CommitsController.cs#L49](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/CommitsController.cs#L49), [AnalysesController.cs#L54](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/AnalysesController.cs#L54)). Несанкционированный доступ строго пресекается статусом `403 Forbidden`.
-   - Защита от выхода за пределы каталога (Zip Slip) при распаковке архивов реализована через каноническую нормализацию и проверку замыкающего слэша каталога ([RepositorySourceService.cs#L143-L155](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L143-L155)).
+   - Пароли хэшируются с солью стойким алгоритмом BCrypt ([PasswordHasher.cs](../../src/Backend/Infrastructure/Security/PasswordHasher.cs#L7-L15)).
+   - Проверки владения ресурсами (`project.OwnerId != userId && !isAdmin`) внедрены на всех уровнях контроллеров ([ProjectsController.cs#L48](../../src/Backend/Api/Controllers/ProjectsController.cs#L48), [CommitsController.cs#L49](../../src/Backend/Api/Controllers/CommitsController.cs#L49), [AnalysesController.cs#L54](../../src/Backend/Api/Controllers/AnalysesController.cs#L54)). Несанкционированный доступ строго пресекается статусом `403 Forbidden`.
+   - Защита от выхода за пределы каталога (Zip Slip) при распаковке архивов реализована через каноническую нормализацию и проверку замыкающего слэша каталога ([RepositorySourceService.cs#L143-L155](../../src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L143-L155)).
 3. **Долговечная очередь задач в PostgreSQL функционирует:**
    - Создание анализа через `POST /api/projects/{pId}/commits/{cId}/analyses` возвращает статус `202 Accepted` со ссылкой на ресурс задачи.
-   - Механизм распределенной аренды (`LeaseExpiration`, `ExecutionToken`, `FOR UPDATE SKIP LOCKED`) в [AnalysisRepository.cs#L58-L97](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/Repository/AnalysisRepository.cs#L58-L97) и фоновый сервис [AnalysisBackgroundService.cs](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs) обеспечивают надежную асинхронную обработку без внешних брокеров (RabbitMQ/Kafka).
+   - Механизм распределенной аренды (`LeaseExpiration`, `ExecutionToken`, `FOR UPDATE SKIP LOCKED`) в [AnalysisRepository.cs#L58-L97](../../src/Backend/Infrastructure/Repository/AnalysisRepository.cs#L58-L97) и фоновый сервис [AnalysisBackgroundService.cs](../../src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs) обеспечивают надежную асинхронную обработку без внешних брокеров (RabbitMQ/Kafka).
    - Таблица `"Analyses"` уже содержала поля `"CreatedAt"`, `"StartedAt"`, `"LeaseExpiration"`, `"ExecutionToken"`. *(Историческая фиксация: на момент аудита от 30.10.2026 поле `"ErrorMessage"` в базе данных и сущности отсутствовало; позднее в рамках реализации Этапа 3 была создана и применена миграция `20261031081432_AddAnalysisErrorMessage`, а поле успешно интегрировано в сущность `Analysis` и DTO `AnalysisDto`)*.
 4. **Тестовая база работоспособна:**
-   - На момент аудита от 30.10.2026 успешно проходили 214 модульных тестов xUnit (`Backend.Tests` — 38, `CSharpAnalyzer.Tests` — 12, `DatabaseAnalyzer.Tests` — 64, `SecurityAnalyzer.Tests` — 56, `SqlAnalyzer.Tests` — 44). В актуальной ревизии `2068c51` количество тестов расширено до 709.
+   - На момент аудита от 30.10.2026 успешно проходили 214 модульных тестов xUnit (`Backend.Tests` — 38, `CSharpAnalyzer.Tests` — 12, `DatabaseAnalyzer.Tests` — 64, `SecurityAnalyzer.Tests` — 56, `SqlAnalyzer.Tests` — 44). В ревизии `2068c51` количество тестов было расширено до 709, а по результатам реализации Этапа 6 и развития тестового конвейера достигло 1103 тестов (1095 успешно, 8 известных сбоев TD-003; `Backend.Tests` — 710 тестов). *Последняя известная статистика тестового набора, полученная в предыдущем подтверждённом цикле тестирования (16.11.2026). Не является результатом нового запуска на дату актуализации документа.*
    - 69 сквозных проверок в скрипте `tests/test_all.ps1` выполняются успешно.
    - Локальная ошибка с кодом 1 при первом запуске `dotnet test CourseProject.slnx` была вызвана блокировкой скомпилированных библиотек запущенным локальным процессом `Api.exe` (конфликт Windows MSB3027 / MSB3021), а не ошибками в тестовом коде.
 5. **Подтвержденные дефекты кодовой базы:**
@@ -65,40 +65,40 @@
 
 ## 3. Сводный реестр технических проблем и статус их реализации
 
-По результатам выполнения этапов плана стабилизации и аудита от 06.11.2026 (коммит `2068c51`) из 25 исходных замечаний:
-- **Закрыто (реализовано и проверено тестами / документацией):** **21 замечание** (API-001–API-011, API-013–API-019, API-021, API-024, API-025);
-- **Открыто (перенесено в [Technical-Debt-Plan.md](Technical-Debt-Plan.md)):** **2 замечания** (API-020 → `TD-003`, API-022 → `TD-013`);
+По результатам выполнения этапов плана стабилизации, инфраструктурного этапа 6 и аудита от 20.11.2026 из 25 исходных замечаний:
+- **Закрыто (реализовано и проверено тестами / документацией):** **22 замечания** (API-001–API-011, API-013–API-019, API-021, API-022, API-024, API-025);
+- **Открыто (перенесено в [Technical-Debt-Plan.md](Technical-Debt-Plan.md)):** **1 замечание** (API-020 → `TD-003`);
 - **Отложено (Этап 7 / после завершения MVP):** **2 замечания** (API-012 — Refresh Token, API-023 — оптимизация префиксных индексов).
 
-### Актуальная таблица состояния замечаний (на 06.11.2026, коммит 2068c51):
+### Актуальная таблица состояния замечаний (на 20.11.2026):
 
 | ID | Название замечания | Исходная категория | Целевой этап | Статус реализации на 06.11.2026 | Доказательства в коде / Ссылка на техдолг |
 |---|---|---|---|---|---|
-| **API-001** | Отсутствие `GET /api/projects` и профиля `GET /api/auth/me` | Контракт / Навигация | Этап 1 | **Закрыто** (`VERIFIED`) | [ProjectsController.cs#L27-L57](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/ProjectsController.cs#L27-L57), [AuthController.cs#L108-L138](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/AuthController.cs#L108-L138) |
-| **API-002** | Отсутствие квот на распаковку архивов (Zip-бомба / DoS) | Безопасность / DoS | Этап 5 | **Закрыто** (`VERIFIED`) | Лимиты 50 МиБ/250 МиБ/10k файлов: [RepositorySourceService.cs#L12-L15](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L12-L15) |
-| **API-003** | Необработанные ошибки вызовов GitHub API (HTTP 500 в SyncGitHub) | Стабильность / Интеграция | Этап 5 | **Закрыто** (`VERIFIED`) | Типизация `GitHubErrorKind`: [ProjectsController.cs#L366-L419](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/ProjectsController.cs#L366-L419), [GitHubService.cs#L179-L259](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/GitHub/GitHubService.cs#L179-L259) |
-| **API-004** | Необработанные сбои `DbUpdateException` (23505) при регистрации | Конкурентность / БД | Этап 5 | **Закрыто** (`VERIFIED`) | Перехват `SqlState == 23505`: [AuthController.cs#L63-L71](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/AuthController.cs#L63-L71), [CommitsController.cs#L228-L236](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/CommitsController.cs#L228-L236) |
-| **API-005** | Разнородный и непредсказуемый формат ошибок API | Контракт / Ошибки | Этап 2 | **Закрыто** (`VERIFIED`) | Стандарт RFC 9457 `ProblemDetails`: [ApiProblemDetails.cs](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Common/ApiProblemDetails.cs), [Program.cs#L190-L193](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Program.cs#L190-L193) |
-| **API-006** | Отсутствие поля `ErrorMessage` при сбое анализа | Модель / UX | Этап 3 | **Закрыто** (`VERIFIED`) | Миграция `AddAnalysisErrorMessage`, поле в [Analysis.cs#L21](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Domain/Entities/Analysis.cs#L21) и `AnalysisDto` |
-| **API-007** | Отсутствие конфигурации CORS для локальной веб-разработки | Сеть / Web-клиенты | Этап 6 | **Закрыто** (`VERIFIED`) | Политика `AllowFrontendDev`: [ApiCorsPolicies.cs#L11-L42](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Common/ApiCorsPolicies.cs#L11-L42), [Program.cs#L100-L108](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Program.cs#L100-L108) |
-| **API-008** | Отсутствие валидации во входных DTO (7 классов) | Валидация данных | Этап 3 | **Закрыто** (`VERIFIED`) | DataAnnotations во всех DTO, [ApiProblemDetails.cs#L79-L103](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Common/ApiProblemDetails.cs#L79-L103) |
-| **API-009** | Сериализация перечислений (Enums) числами вместо строк | Сериализация JSON | Этап 2 | **Закрыто** (`VERIFIED`) | `JsonStringEnumConverter` подключен в [Program.cs#L194-L198](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Program.cs#L194-L198) |
+| **API-001** | Отсутствие `GET /api/projects` и профиля `GET /api/auth/me` | Контракт / Навигация | Этап 1 | **Закрыто** (`VERIFIED`) | [ProjectsController.cs#L27-L57](../../src/Backend/Api/Controllers/ProjectsController.cs#L27-L57), [AuthController.cs#L108-L138](../../src/Backend/Api/Controllers/AuthController.cs#L108-L138) |
+| **API-002** | Отсутствие квот на распаковку архивов (Zip-бомба / DoS) | Безопасность / DoS | Этап 5 | **Закрыто** (`VERIFIED`) | Лимиты 50 МиБ/250 МиБ/10k файлов: [RepositorySourceService.cs#L12-L15](../../src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L12-L15) |
+| **API-003** | Необработанные ошибки вызовов GitHub API (HTTP 500 в SyncGitHub) | Стабильность / Интеграция | Этап 5 | **Закрыто** (`VERIFIED`) | Типизация `GitHubErrorKind`: [ProjectsController.cs#L366-L419](../../src/Backend/Api/Controllers/ProjectsController.cs#L366-L419), [GitHubService.cs#L179-L259](../../src/Backend/Infrastructure/GitHub/GitHubService.cs#L179-L259) |
+| **API-004** | Необработанные сбои `DbUpdateException` (23505) при регистрации | Конкурентность / БД | Этап 5 | **Закрыто** (`VERIFIED`) | Перехват `SqlState == 23505`: [AuthController.cs#L63-L71](../../src/Backend/Api/Controllers/AuthController.cs#L63-L71), [CommitsController.cs#L228-L236](../../src/Backend/Api/Controllers/CommitsController.cs#L228-L236) |
+| **API-005** | Разнородный и непредсказуемый формат ошибок API | Контракт / Ошибки | Этап 2 | **Закрыто** (`VERIFIED`) | Стандарт RFC 9457 `ProblemDetails`: [ApiProblemDetails.cs](../../src/Backend/Api/Common/ApiProblemDetails.cs), [Program.cs#L190-L193](../../src/Backend/Api/Program.cs#L190-L193) |
+| **API-006** | Отсутствие поля `ErrorMessage` при сбое анализа | Модель / UX | Этап 3 | **Закрыто** (`VERIFIED`) | Миграция `AddAnalysisErrorMessage`, поле в [Analysis.cs#L21](../../src/Backend/Domain/Entities/Analysis.cs#L21) и `AnalysisDto` |
+| **API-007** | Отсутствие конфигурации CORS для локальной веб-разработки | Сеть / Web-клиенты | Этап 6 | **Закрыто** (`VERIFIED`) | Политика `AllowFrontendDev`: [ApiCorsPolicies.cs](../../src/Backend/Api/Common/ApiCorsPolicies.cs), чтение из `Cors:AllowedOrigins` с валидацией портов и нормализацией RFC 6454 на этапе 6 инфраструктурного плана |
+| **API-008** | Отсутствие валидации во входных DTO (7 классов) | Валидация данных | Этап 3 | **Закрыто** (`VERIFIED`) | DataAnnotations во всех DTO, [ApiProblemDetails.cs#L79-L103](../../src/Backend/Api/Common/ApiProblemDetails.cs#L79-L103) |
+| **API-009** | Сериализация перечислений (Enums) числами вместо строк | Сериализация JSON | Этап 2 | **Закрыто** (`VERIFIED`) | `JsonStringEnumConverter` подключен в [Program.cs#L194-L198](../../src/Backend/Api/Program.cs#L194-L198) |
 | **API-010** | Неполное документирование ответов и схем в Swagger/OpenAPI | Документация | Этап 6 | **Закрыто** (`VERIFIED`) | Атрибуты `[ProducesResponseType]` на всех контроллерах, XML-документация подключена |
-| **API-011** | Отсутствие ограничения частоты запросов (Rate Limiting) | Безопасность / DoS | Этап 7 | **Закрыто** (`VERIFIED`) | Token Bucket Rate Limiting (10 токенов, 1/сек, 429 Retry-After): [Program.cs#L110-L161](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Program.cs#L110-L161) |
+| **API-011** | Отсутствие ограничения частоты запросов (Rate Limiting) | Безопасность / DoS | Этап 7 | **Закрыто** (`VERIFIED`) | Token Bucket Rate Limiting (10 токенов, 1/сек, 429 Retry-After): [Program.cs#L110-L161](../../src/Backend/Api/Program.cs#L110-L161) |
 | **API-012** | Отсутствие Refresh Token и фиксированный срок JWT (1 час) | Безопасность / Сессии | Этап 7 | **Отложено** (`DEFERRED`) | Планируется к реализации после стабилизации MVP |
 | **API-013** | Отсутствие пагинации для коммитов, анализов и пользователей | Производительность | Этап 7 | **Закрыто** (`VERIFIED`) | `PagedResultDto<T>`, валидация `page`/`pageSize` (макс 100), детерминированная сортировка в БД |
-| **API-014** | N+1 запросов при синхронизации коммитов в `GitHubSyncService` | Производительность | Этап 7 | **Закрыто** (`VERIFIED`) | `GetExistingHashesAsync` и пакетная вставка: [GitHubSyncService.cs#L78-L109](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Application/Services/GitHubSyncService.cs#L78-L109) |
-| **API-015** | Отсутствие дедупликации активных задач анализа на один коммит | Архитектура очереди | Этап 5 | **Закрыто** (`VERIFIED`) | `HasActiveAnalysisAsync` и advisory-блокировка `analysis_enqueue_{commitId}`: [AnalysisService.cs#L28-L35](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Application/Services/AnalysisService.cs#L28-L35) |
-| **API-016** | Несогласованность кодов конфликта уникальности (400 vs 409) | REST-стандарты | Этап 2 | **Закрыто** (`VERIFIED`) | Все конфликты уникальности возвращают строго `409 Conflict`: [AuthController.cs#L58-L70](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/AuthController.cs#L58-L70) |
+| **API-014** | N+1 запросов при синхронизации коммитов в `GitHubSyncService` | Производительность | Этап 7 | **Закрыто** (`VERIFIED`) | `GetExistingHashesAsync` и пакетная вставка: [GitHubSyncService.cs#L78-L109](../../src/Backend/Application/Services/GitHubSyncService.cs#L78-L109) |
+| **API-015** | Отсутствие дедупликации активных задач анализа на один коммит | Архитектура очереди | Этап 5 | **Закрыто** (`VERIFIED`) | `HasActiveAnalysisAsync` и advisory-блокировка `analysis_enqueue_{commitId}`: [AnalysisService.cs#L28-L35](../../src/Backend/Application/Services/AnalysisService.cs#L28-L35) |
+| **API-016** | Несогласованность кодов конфликта уникальности (400 vs 409) | REST-стандарты | Этап 2 | **Закрыто** (`VERIFIED`) | Все конфликты уникальности возвращают строго `409 Conflict`: [AuthController.cs#L58-L70](../../src/Backend/Api/Controllers/AuthController.cs#L58-L70) |
 | **API-017** | Отсутствие unit-тестов контроллеров в `Backend.Tests` | Тестирование | Этап 6 | **Закрыто** (`VERIFIED`) | Создано более 200 unit-тестов контроллеров в `tests/Backend.Tests/` |
 | **API-018** | Англоязычные строки внутренних исключений в сервисах | Русификация | Этап 6 | **Закрыто** (`VERIFIED`) | Строки исключений переведены на русский язык |
-| **API-019** | `Console.WriteLine` в событиях JWT и слабая наблюдаемость | Диагностика | Этап 7 | **Закрыто** (`VERIFIED`) | `ApiJwtEvents` с `ILogger<ApiJwtEvents>`: [ApiJwtEvents.cs#L13-L54](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Common/ApiJwtEvents.cs#L13-L54) |
+| **API-019** | `Console.WriteLine` в событиях JWT и слабая наблюдаемость | Диагностика | Этап 7 | **Закрыто** (`VERIFIED`) | `ApiJwtEvents` с `ILogger<ApiJwtEvents>`: [ApiJwtEvents.cs#L13-L54](../../src/Backend/Api/Common/ApiJwtEvents.cs#L13-L54) |
 | **API-020** | Размещение временных каталогов анализа в `AppContext.BaseDirectory` | Файловая система | Этап 7 | **Открыто** (`OPEN`) | Перенесено в [TD-003](Technical-Debt-Plan.md#td-003-изоляция-рабочих-каталогов-по-токену-и-настраиваемое-хранилище) |
-| **API-021** | Вводящая в заблуждение подсказка "Bearer {token}" в Swagger | Документация | Этап 6 | **Закрыто** (`VERIFIED`) | Схема исправлена на чистый JWT (тип `Http`): [Program.cs#L223-L236](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Program.cs#L223-L236) |
-| **API-022** | Отсутствие шаблонов переменных окружения в `appsettings.json` | Конфигурация | Этап 7 | **Открыто** (`OPEN`) | Перенесено в [TD-013](Technical-Debt-Plan.md#td-013-документированный-шаблон-конфигурации-appsettingsexamplejson) |
+| **API-021** | Вводящая в заблуждение подсказка "Bearer {token}" в Swagger | Документация | Этап 6 | **Закрыто** (`VERIFIED`) | Схема исправлена на чистый JWT (тип `Http`): [Program.cs#L223-L236](../../src/Backend/Api/Program.cs#L223-L236) |
+| **API-022** | Отсутствие шаблонов переменных окружения в `appsettings.json` | Конфигурация | Этап 7 | **Закрыто** (`VERIFIED`) | Закрыто в рамках Этапа 6 инфраструктурного плана через `.env.example`, исключение User Secrets и очистку секретов из `appsettings.json` ([TD-013](Technical-Debt-Plan.md#td-013-документированный-шаблон-конфигурации-appsettingsexamplejson)) |
 | **API-023** | Избыточные префиксные индексы в схеме PostgreSQL | База данных | Этап 7 | **Отложено** (`DEFERRED`) | Индексы сохранены для обратной совместимости схемы |
 | **API-024** | Устаревшие сведения в документах каталога `docs/` | Документация | Этап 7 | **Закрыто** (`VERIFIED`) | Документация полностью синхронизирована по состоянию ревизии `2068c51` ([TD-014](Technical-Debt-Plan.md#td-014-синхронизация-базовой-документации)) |
-| **API-025** | Защита от удаления/понижения роли последнего администратора | Безопасность / RBAC | Этап 4 | **Закрыто** (`VERIFIED`) | Advisory lock `admin_role_protection` и 409 Conflict: [AdminUsersController.cs#L104-L140](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/AdminUsersController.cs#L104-L140) |
+| **API-025** | Защита от удаления/понижения роли последнего администратора | Безопасность / RBAC | Этап 4 | **Закрыто** (`VERIFIED`) | Advisory lock `admin_role_protection` и 409 Conflict: [AdminUsersController.cs#L104-L140](../../src/Backend/Api/Controllers/AdminUsersController.cs#L104-L140) |
 
 ---
 
@@ -396,7 +396,7 @@
    - Дедупликация задач анализа на один коммит выполняется через транзакционный advisory-лок `analysis_enqueue_{commitId}` и метод `HasActiveAnalysisAsync`.
 5. **Сетевой стек и стандарты API (API-005, API-007, API-008, API-009, API-010, API-016, API-021, Закрыто):**
    - Внедрён стандарт RFC 9457 `ProblemDetails` с русскоязычными сообщениями, кодами в `SCREAMING_SNAKE_CASE` и сквозным `traceId`.
-   - Настроена проверяемая политика CORS `AllowFrontendDev` для доверенных локальных веб-клиентов (`http://localhost:5173`, `http://localhost:3000`).
+   - Настроена проверяемая политика CORS `AllowFrontendDev` для доверенных локальных веб-клиентов (`http://localhost:5173`, `http://localhost:3000`), на этапе 6 инфраструктурного плана переведённая на внешнюю конфигурацию `Cors:AllowedOrigins` со строгой валидацией портов и нормализацией RFC 6454.
    - Настроена строковая сериализация перечислений (`JsonStringEnumConverter`).
    - Все входные DTO размечены атрибутами валидации DataAnnotations.
    - Swagger/OpenAPI документирует все схемы и коды ответов с чистым JWT Bearer.
@@ -406,11 +406,13 @@
    - Устранена проблема N+1 при синхронизации коммитов через `GetExistingHashesAsync` и пакетную вставку.
    - Настроено структурированное логирование событий JWT через `ApiJwtEvents` с маскированием токенов.
    - Сообщения исключений русифицированы.
+7. **Единая конфигурация и шаблоны окружения (API-022, Закрыто):**
+   - На этапе 6 инфраструктурного плана конфигурация Backend приведена к единому стандарту ASP.NET Core Environment Variables, создан файл `.env.example`, удалены User Secrets и вычищены секреты из `appsettings.json` (задача `TD-013` закрыта в статусе `VERIFIED`).
 
 ### 7.2. Задачи, перенесённые в План устранения технического долга (Technical-Debt-Plan.md)
 Инфраструктурные замечания, не являющиеся блокерами клиентских контрактов API, перенесены в единый реестр техдолга:
 - **API-020 (Каталог хранилища):** Перенесено в задачу [TD-003](Technical-Debt-Plan.md#td-003-изоляция-рабочих-каталогов-по-токену-и-настраиваемое-хранилище) (вынос хранилища из `AppContext.BaseDirectory` в конфигурируемый путь `Path.GetTempPath()` и изоляция по `ExecutionToken`).
-- **API-022 (Шаблон конфигурации):** Перенесено в задачу [TD-013](Technical-Debt-Plan.md#td-013-документированный-шаблон-конфигурации-appsettingsexamplejson) (создание файла `appsettings.Example.json` с плейсхолдерами переменных окружения).
+- **API-022 (Шаблон конфигурации):** Перенесено в задачу [TD-013](Technical-Debt-Plan.md#td-013-документированный-шаблон-конфигурации-appsettingsexamplejson) — *Закрыто (VERIFIED)*: успешно реализовано на этапе 6 инфраструктурного плана.
 - **API-024 (Синхронизация документации):** Перенесено в задачу [TD-014](Technical-Debt-Plan.md#td-014-синхронизация-базовой-документации) — *Закрыто (VERIFIED)*: документация полностью синхронизирована по состоянию ревизии `2068c51`.
 
 ### 7.3. Действительно отложенные плановые улучшения (После завершения MVP)
@@ -639,7 +641,7 @@ flowchart TD
 3. **Валидация DTO и ErrorMessage (Этап 3):** Все DTO валидируются, колонка `"ErrorMessage"` добавлена в `"Analyses"`.
 4. **Защита учётной записи администратора (Этап 4):** Защита последнего администратора от гонок реализована через advisory lock PostgreSQL (`API-025`, закрыто).
 5. **Внешние интеграции и квоты (Этап 5):** Квоты распаковки архивов внедрены, сбои GitHub API разграничены, дедупликация задач очереди функционирует.
-6. **Сетевой стек и тестирование (Этап 6):** CORS-политика `AllowFrontendDev` настроена, Swagger UI документирован, написано более 200 unit-тестов контроллеров (всего 709 успешных тестов в проекте).
+6. **Сетевой стек и тестирование (Этап 6):** CORS-политика `AllowFrontendDev` настроена и переведена на чтение из конфигурации `Cors:AllowedOrigins` с валидацией портов, Swagger UI документирован, написано 710 тестов в `Backend.Tests` (включая 33 интеграционных теста `ApiPipelineIntegrationTests`), всего в решении 1103 теста (1095 успешных, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests`).
 
 **Вывод:** Серверное API готово к разработке независимых клиентских приложений (CLI, Desktop, Bot). Оставшиеся внутренние архитектурные улучшения и задачи по анализаторам вынесены в [Technical-Debt-Plan.md](Technical-Debt-Plan.md).
 
@@ -655,3 +657,45 @@ flowchart TD
 | **1.3.0** | 30.10.2026 | Ведущий backend-архитектор CourseProject | Полная фиксация стандарта RFC 9457 для `ProblemDetails`, синхронизация сквозной структуры этапов реализации строго в канонических границах Этапов 0–7 во всех разделах документа, закрепление API-025 исключительно в Этапе 4, выравнивание критериев приёмки CORS до единого уровня детализации (preflight, origin, headers, отклонение неразрешенных origin, откладывание Tauri), полная согласованность начальных проектных ограничений на распаковку архивов. |
 | **1.4.0** | 30.10.2026 | Ведущий backend-архитектор CourseProject | Финальное закрепление всех архитектурных и численных параметров плана реализации: окончательная фиксация квот распаковки архивов (50 МиБ архив, 50 МиБ файл, 250 МиБ суммарно, 10 000 файлов) с поточной проверкой и очисткой в `finally`; фиксация 5 обязательных критериев приёмки CORS для доверенных источников (`http://localhost:5173` и `http://localhost:3000`), обязательность явного списка источников при credentials, указание, что CORS не подменяет авторизацию; полная спецификация политики неизменности схемы БД и миграций EF Core (стабилизация API не является рефакторингом БД, запрет косметических миграций); фиксация параметров пагинации списков (по умолчанию `page=1`, `pageSize=20`, максимум 100, детерминированная сортировка на уровне БД); детализация защиты последнего администратора от состояния гонки при конкурентных запросах (Этап 4); обновление диаграммы Mermaid со сквозным отображением всех Этапов 0–7; закрытие всех открытых вопросов и перевод документа в статус окончательного руководства по реализации. |
 | **1.5.0** | 06.11.2026 | Ведущий backend-архитектор CourseProject | Актуализация реестра замечаний по результатам аудита ревизии `2068c51`. Закрытие успешно реализованных задач (API-001–API-011, API-013–API-019, API-021, API-025), перенос открытых инфраструктурных замечаний (API-020, API-022, API-024) в единый [План устранения технического долга](Technical-Debt-Plan.md). Сохранение истории реализации без удаления разделов. |
+| **1.6.0** | 20.11.2026 | Ведущий backend-архитектор CourseProject | Актуализация реестра замечаний по результатам выполнения этапа 6 инфраструктурного плана и сквозного аудита API. Закрытие замечания API-022 (TD-013) в статусе VERIFIED, уточнение статуса CORS (API-007) с внешней конфигурацией, актуализация метрик тестового набора (710 тестов Backend.Tests, 1103 теста в решении, 1095 успешных, 8 известных сбоев TD-003). Добавление раздела 12 с планом дальнейшей стабилизации API (TD-008 и завершение TD-015). |
+
+---
+
+## 12. План дальнейшей стабилизации API
+
+По итогам завершения основных этапов 1–6 плана стабилизации API и инфраструктурного этапа 6 сформулирован приоритетный план задач следующего этапа стабилизации API:
+
+### 12.1. Приоритетные задачи следующего этапа стабилизации API
+
+#### Задача 1 (Приоритет P2): Расширение валидации хэша коммитов под SHA-256 (TD-008)
+- **Статус:** `OPEN`, приоритет: `P2`.
+- **Проблема:** В `src/Backend/Application/DTOs/CreateCommitDto.cs` валидация `CommitHash` ограничена `[StringLength(40, MinimumLength = 7)]`, что не позволяет передавать 64-символьные хэши SHA-256 (стандарт современных репозиториев Git). Также отсутствует проверка hex-формата. При этом база данных (`CommitConfiguration.cs` -> `CommitHash` типа `text` и индекс `IX_Commits_ProjectId_CommitHash`) уже полностью готова к SHA-256.
+- **Целевое решение:**
+  1. Обновить атрибут длины в `CreateCommitDto.cs` до `[StringLength(64, MinimumLength = 7, ErrorMessage = "Длина хэша коммита должна быть от 7 до 64 символов.")]`.
+  2. Добавить валидацию шестнадцатеричного формата через атрибут `[RegularExpression("^[0-9a-fA-F]{7,64}$", ErrorMessage = "Хэш коммита должен содержать только шестнадцатеричные символы.")]`.
+  3. Обновить тестовые проверки в `tests/Backend.Tests/DtoValidationAndAnalysisErrorTests.cs`: скорректировать тесты максимальной длины (40 -> 64 символа, 41-символьные валидны как SHA-256, отсечение на 65 символах) и добавить тесты проверки hex-символов.
+- **Влияние на схему БД:** Отсутствует (миграции не требуются).
+
+#### Задача 2 (Приоритет P2): Завершение сквозного тестирования конвейера API (TD-015)
+- **Статус:** `IN_PROGRESS`, приоритет: `P2`.
+- **Текущее состояние:** 5 из 6 критериев приёмки задачи TD-015 полностью верифицированы в `tests/Backend.Tests/ApiPipelineIntegrationTests.cs` (33 интеграционных теста: Rate Limiting с 429 Retry-After, preflight CORS OPTIONS и отклонение неразрешённых origin, проверка жизненного цикла JWT Bearer, CRUD проектов и постановка в очередь анализа на реальном PostgreSQL).
+- **Оставшийся критерий:** Добавить сквозной интеграционный тест необработанного исключения (HTTP 500) через `HttpClient` с проверкой возврата контракта `ProblemDetails` (RFC 9457), маскирования внутренних стектрейсов и генерации сквозного `traceId`.
+- **Целевое решение:**
+  1. В `ApiWebApplicationFactory.cs` или `ApiPipelineIntegrationTests.cs` сконфигурировать тестовый маршрут или изолированно сымитировать сбой сервиса при HTTP-запросе через `_client`.
+  2. Проверить, что ответ возвращает статус `500 Internal Server Error`, `code: "INTERNAL_SERVER_ERROR"`, безопасное сообщение в `detail` без утечки исключения и параметров окружения, и заполненный `traceId`.
+- **Перевод статуса:** После реализации данного теста задача `TD-015` переходит в статус `VERIFIED` (полностью закрыта).
+
+### 12.2. Задачи, исключённые из ближайшего этапа стабилизации API
+
+1. **API-012 (Refresh Token и ротация сессий):**
+   - *Статус:* `DEFERRED` (Отложено на этап развития сервиса сессий после MVP).
+   - *Обоснование:* Фиксированный 1-часовой срок действия JWT access-токена полностью достаточен для текущего MVP и локальной разработки клиентов. Внедрение refresh-токенов требует отдельного проектирования сущности токенов в PostgreSQL (с привязкой к устройству/клиенту, хэшированием токенов, ротацией, валидацией цепочек повторного использования и отзывом), что не является блокером API.
+2. **TD-003 / API-020 (Изоляция рабочих каталогов анализа по ExecutionToken):**
+   - *Статус:* `OPEN` (Приоритет P1 в реестре технического долга анализаторов).
+   - *Обоснование:* Задача относится к инфраструктуре статических анализаторов и параллельному выполнению задач воркерами, не затрагивая публичные HTTP-контракты API. Будет реализована в рамках отдельного этапа по надежности анализаторов.
+3. **TD-006 (Инкрементальная синхронизация коммитов GitHub):**
+   - *Статус:* `OPEN` (Приоритет P2).
+   - *Обоснование:* Оптимизация пакетной выборки коммитов; текущая реализация `GetExistingHashesAsync` полностью решает проблему N+1 и корректно функционирует.
+4. **TD-007 (Жизненный цикл очереди задач: retry, backoff, poison pill):**
+   - *Статус:* `OPEN` (Приоритет P2).
+   - *Обоснование:* Требует отдельного архитектурного согласования и миграции базы данных (добавление `AttemptCount`, `MaxAttempts`, `NextAttemptAt`).

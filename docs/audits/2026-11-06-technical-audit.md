@@ -1,10 +1,11 @@
 # Технический аудит проекта CourseProject
 
-**Дата проведения:** 06 ноября 2026 г.
+**Дата первоначального аудита:** 06 ноября 2026 г.<br/>
+**Дата последней актуализации:** 20 ноября 2026 г. (актуализация включает результаты проверки инфраструктурного этапа 6 и состояния API)<br/>
 **Базовая ветка:** `main`
 **Базовый коммит:** `2068c51` (*feat(github): enforce owner-scoped PATs for sync and analysis*)
 **Состояние рабочего дерева:** Clean (режим аудита: READ-ONLY, исходный код и тесты не изменялись)
-**Верификация тестовой базы (`dotnet test`):** 709 тестов успешно пройдено, 0 сбоев (5 сборок: `SqlAnalyzer.Tests` — 44, `CSharpAnalyzer.Tests` — 17, `SecurityAnalyzer.Tests` — 56, `Backend.Tests` — 528, `DatabaseAnalyzer.Tests` — 64).
+**Верификация тестовой базы (`dotnet test`):** 1095 тестов успешно пройдено, 8 известных воспроизводимых сбоев TD-003 в `CSharpAnalyzer.Tests` (6 сборок: `Backend.Tests` — 710, `DatabaseAnalyzer.Tests` — 173, `DatabaseAnalyzer.Runner.Tests` — 103, `SecurityAnalyzer.Tests` — 56, `SqlAnalyzer.Tests` — 44, `CSharpAnalyzer.Tests` — 17 [9 успешно / 8 сбоев TD-003]). *Последняя известная статистика тестового набора, полученная в предыдущем подтверждённом цикле тестирования (16.11.2026). Не является результатом нового запуска на дату актуализации документа.*
 **Состояние модели EF Core:** `dotnet ef migrations has-pending-model-changes` подтверждает полное соответствие снимка `AppDbContextModelSnapshot.cs` сущностям предметной области (`No changes have been made to the model since the last migration`).
 
 ---
@@ -37,20 +38,32 @@
 - **Приоритет:** `P1 (Critical)`
 - **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/Providers/`)
 - **Ссылки на код:**
-  - [`EfCoreModelInspector.cs#L104-L138`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Database/Providers/EfCoreModelInspector.cs#L104-L138) (метод `BuildProjectAsync`)
-  - [`EfCoreModelInspector.cs#L71-L89`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Database/Providers/EfCoreModelInspector.cs#L71-L89) (метод `InspectAsync`)
-  - [`EfCoreModelInspector.cs#L224`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Database/Providers/EfCoreModelInspector.cs#L224) (метод `LoadProjectAssemblyAsync`)
-- **Описание проблемы:**
-  1. **Выполнение произвольного MSBuild-кода:** Метод `BuildProjectAsync` запускает внешний процесс `dotnet build "{projectPath}"` над кодом, скачанным из стороннего репозитория. В файлах `.csproj`, `.props` или `.targets` злоумышленник может объявить задачи сборки с выполнением произвольных системных команд через `<Exec Command="..." />` или inline-задачи Roslyn `<UsingTask TaskFactory="RoslynCodeTaskFactory" ...>`. Сборка выполняется с полными правами процесса бэкенда операционной системы хоста.
-  2. **Проблема `Assembly.LoadFrom`:** Скомпилированный бинарный файл сборки загружается вызовом `Assembly.LoadFrom(assemblyPath)`. В .NET Core / .NET сборки, загруженные в стандартный контекст загрузки по умолчанию (`AssemblyLoadContext.Default`), **не могут быть выгружены из памяти**. Многократный запуск инспекции приводит к утечке памяти CLR, разрастанию рабочего набора процесса и потенциальным конфликтам версий типов (`TypeLoadException`).
-  3. **Статические конструкторы и инстанцирование:** При вызове `type.GetInterfaces()`, поиске реализаций `IDesignTimeDbContextFactory<T>` и вызове `Activator.CreateInstance(factoryType)` управление передается пользовательскому C#-коду фабрики и статических конструкторов классов контекста внутри основного процесса сервера.
-  4. **Ограничения `AssemblyLoadContext`:** Важно подчеркнуть, что переход на изолированный коллекционируемый контекст (`AssemblyLoadContext` с флагом `isCollectible: true`) решает **исключительно** проблему выгрузки сборки из оперативной памяти сборщиком мусора. **`AssemblyLoadContext` не является песочницей (sandbox)**: он не изолирует доступ к файловой системе, сокетам, переменным окружения, процессам ОС и не ограничивает процессорное время или память.
-- **Сценарий воспроизведения:** Пользователь отправляет на анализ репозиторий, содержащий в `.csproj` таргет `<Target Name="Exploit" AfterTargets="Build"><Exec Command="powershell -Command ..." /></Target>`. Сервер выполняет системную команду при вызове `dotnet build`.
-- **Архитектурный статус:** Архитектурное решение утверждено ([ADR-001](../architecture/database-analyzer-isolation.md), статус `ACCEPTED`). Согласован взаимодополняющий двухкомпонентный подход:
-  1. Извлечение метаданных EF Core моделей через статический парсинг C# AST на базе `Roslyn` без сборки проектов (`dotnet build`) и без динамической загрузки сторонних сборок (`Assembly.LoadFrom`, `AssemblyLoadContext`), что устраняет конкретные векторы выполнения недоверенного кода в основном процессе бэкенда. Отказ от загрузки пользовательских сборок в `AssemblyLoadContext.Default` исключает прежний механизм накопления невыгружаемых пользовательских сборок; это устраняет конкретную проблему накопления сборок, но не гарантирует отсутствие любых утечек памяти CLR. Обеспечивается поддержка согласованного набора Fluent API (`HasKey`, `HasIndex`, `IsUnique`, `HasDatabaseName`, `HasFilter`, `HasOne`, `WithMany`, `WithOne`, `HasMany`, `HasForeignKey`, `ToTable`) и Data Annotations (`[Key]`, `[ForeignKey]`, `[Index]`, `[Table]`, `[Required]`), разделение нескольких контекстов `DbContext`, поддержка статически обнаруживаемых типов в `ApplyConfiguration` / `ApplyConfigurationsFromAssembly` и статический обход локальных вспомогательных методов глубиной строго до 3 уровней с защитой от циклов (при невозможности достоверного статического анализа формируется предупреждение `Severity.Warning`).
-  2. Использование внешнего изолированного контейнера (`Docker`/`Podman`) для глубокого анализа структуры БД (PostgreSQL/SQL), DDL-скриптов и запуска локальных утилит анализа. Контейнер работает строго офлайн (`--network none`), не подключается к пользовательской или рабочей PostgreSQL по сети, анализирует подготовленные входные данные (SQL/DDL, метаданные EF Core) без передачи серверных секретов бэкенда и возвращает результат по выделенному независимому JSON-контракту, маппинг которого во внутренние `AnalyzerFinding` выполняется на стороне бэкенда (подключение к реальной СУБД в будущем потребует отдельного ADR).
-  3. Существующий `SqlAnalyzer` (`src/Analyzers/Sql`) сохраняет синтаксический анализ SQL на уровне C# AST (правила `SQL001`, `SQL002`) и не дублирует функции контейнера.
-  Реализация в исходном коде запланирована в рамках задачи `TD-001` ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-001)).
+  - [`EfCoreModelInspector.cs#L104-L138`](../../src/Analyzers/Database/Providers/EfCoreModelInspector.cs#L104-L138) (метод `BuildProjectAsync`)
+  - [`EfCoreModelInspector.cs#L71-L89`](../../src/Analyzers/Database/Providers/EfCoreModelInspector.cs#L71-L89) (метод `InspectAsync`)
+  - [`EfCoreModelInspector.cs#L224`](../../src/Analyzers/Database/Providers/EfCoreModelInspector.cs#L224) (метод `LoadProjectAssemblyAsync`)
+
+1. **Первоначальное обнаруженное состояние (на 06.11.2026):**
+   - **Выполнение произвольного MSBuild-кода:** Метод `BuildProjectAsync` запускал внешний процесс `dotnet build "{projectPath}"` над кодом, скачанным из стороннего репозитория. В файлах `.csproj`, `.props` или `.targets` злоумышленник мог объявить задачи сборки с выполнением произвольных системных команд через `<Exec Command="..." />` или inline-задачи Roslyn `<UsingTask TaskFactory="RoslynCodeTaskFactory" ...>`, которые исполнялись с полными правами процесса бэкенда на хосте.
+   - **Проблема `Assembly.LoadFrom`:** Скомпилированная сборка загружалась вызовом `Assembly.LoadFrom(assemblyPath)` в `AssemblyLoadContext.Default`. В .NET Core / .NET такие сборки не могут быть выгружены из памяти, что приводило к монотонному накоплению сборок, утечке памяти CLR и конфликтам версий (`TypeLoadException`).
+   - **Статические конструкторы и инстанцирование:** При поиске реализаций `IDesignTimeDbContextFactory<T>` и вызове `Activator.CreateInstance(factoryType)` управление передавалось пользовательскому коду фабрик и статических конструкторов (`.cctor`) внутри основного процесса сервера.
+   - **Ограничения `AssemblyLoadContext`:** Коллекционируемый `AssemblyLoadContext` (`isCollectible: true`) решает только вопрос GC-выгрузки сборки, но не является песочницей (не ограничивает доступ к файлам, сети, процессам ОС и памяти).
+   - **Сценарий воспроизведения:** Пользователь отправляет репозиторий с таргетом `<Target Name="Exploit" AfterTargets="Build"><Exec Command="powershell -Command ..." /></Target>`, приводящим к RCE на хосте.
+
+2. **Принятое архитектурное решение (ADR-001, статус `ACCEPTED`):**
+   - Утверждён двухкомпонентный подход ([ADR-001](../architecture/database-analyzer-isolation.md)):
+     1. Извлечение метаданных EF Core моделей через статический парсинг C# AST на базе `Roslyn` без сборки проектов (`dotnet build`) и без динамической загрузки сторонних сборок (`Assembly.LoadFrom`, `AssemblyLoadContext`), что полностью исключает выполнение недоверенного кода в основном процессе сервера и накопление невыгружаемых пользовательских сборок в `AssemblyLoadContext.Default`. Поддерживается согласованный набор Fluent API (`HasKey`, `HasIndex`, `IsUnique`, `HasDatabaseName`, `HasFilter`, `HasOne`, `WithMany`, `WithOne`, `HasMany`, `HasForeignKey`, `ToTable`) и Data Annotations (`[Key]`, `[ForeignKey]`, `[Index]`, `[Table]`, `[Required]`), разделение нескольких `DbContext`, типы в `ApplyConfiguration` / `ApplyConfigurationsFromAssembly` и статический обход методов конфигурации глубиной до 3 уровней с защитой от циклов (при невозможности статического анализа выдается предупреждение `Severity.Warning`).
+     2. Использование внешнего изолированного Docker-контейнера для глубокого анализа структуры БД (PostgreSQL/SQL), DDL-скриптов и локальных утилит анализа: строго офлайн (`--network none`), без доступа к рабочей/пользовательской БД по сети, read-only root, RAM-диск `/tmp`, лимиты CPU/RAM/pids, непривилегированный пользователь `appuser` (`10001:10001`), обмен по версионированному JSON-контракту.
+     3. Сохранение `SqlAnalyzer` (`src/Analyzers/Sql`) для синтаксического анализа SQL на уровне C# AST (правила `SQL001`, `SQL002`) без дублирования задач контейнера.
+
+3. **Фактически реализованные компоненты (по состоянию на 20.11.2026):**
+   - В `src/Analyzers/Database/Roslyn/` реализованы синтаксические парсеры `DataAnnotationParser`, `FluentApiParser` и фасад `RoslynMetadataExtractor`, извлекающие метаданные моделей EF Core без вызова `dotnet build` и без загрузки сборок.
+   - В `src/Analyzers/Database.Runner/` реализован автономный исполняемый раннер `NetScope.DatabaseAnalyzer.Runner`, проверяющий правила `DB01`–`DB05` со своими моделями DTO.
+   - Реализован версионированный JSON-протокол обмена через файлы `/exchange/in/input.json` (монтирование readonly) и `/exchange/out/output.json` с независимой валидацией схем на стороне бэкенда и раннера.
+   - В бэкенде реализованы `DockerCliProcessAdapter` и `DatabaseContainerRunner`, запускающие контейнер `netscope-database-analyzer:latest` со всеми политиками безопасности (`--network none`, `--read-only`, `tmpfs`, лимиты CPU/памяти/процессов, `appuser`, таймаут 60 с).
+   - Модульные тесты подтверждают корректность работы компонентов: `DatabaseAnalyzer.Tests` (173 теста) и `DatabaseAnalyzer.Runner.Tests` (103 теста).
+
+4. **Оставшаяся работа:**
+   - Задача **`TD-001`** ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-001)), статус реализации: **`IN_PROGRESS`**. Требуется окончательное подтверждение всех приёмочных критериев (комплексные тесты парсинга сложных моделей Fluent API / Data Annotations, разделение контекстов и стабильность конвейера).
 
 ---
 
@@ -59,19 +72,29 @@
 - **Приоритет:** `P1 (Critical)`
 - **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/Providers/`)
 - **Ссылки на код:**
-  - [`EfCoreModelInspector.cs#L64-L69`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Database/Providers/EfCoreModelInspector.cs#L64-L69)
-  - [`EfCoreMetadataProvider.cs#L28-L31`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Database/Providers/EfCoreMetadataProvider.cs#L28-L31)
-  - [`AnalysisService.cs#L190-L205`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Application/Services/AnalysisService.cs#L190-L205)
-- **Описание проблемы:**
-  - Метод `EfCoreModelInspector.InspectAsync` ищет строго реализацию интерфейса `IDesignTimeDbContextFactory<T>`. Если проект использует стандартную конфигурацию `AddDbContext<AppDbContext>` в `Program.cs` и не содержит отдельного класса фабрики времени разработки, метод выбрасывает `InvalidOperationException("No IDesignTimeDbContextFactory was found...")`.
-  - Это исключение не перехватывается в `EfCoreMetadataProvider`, пробивает конвейер до `AnalysisService.ExecuteAnalysisAsync` и переводит весь анализ коммита в статус `Failed`. При этом результаты успешно отработавших анализаторов C#, SQL и безопасности теряются.
-- **Предпочтительное поведение и утвержденное архитектурное решение (ADR-001 / TD-002):**
-  - **Отказоустойчивость конвейера:** Сбой или невозможность построения модели базы данных в `DatabaseAnalyzer` (или ошибка во внешнем контейнере анализатора БД) не прерывает работу других анализаторов (`CodeAnalyzer`, `SqlAnalyzer`, `SecurityAnalyzer`).
-  - **Сохранение успешных результатов:** Находки успешно завершившихся анализаторов штатно сохраняются в базе данных. Общий статус коммита переходит в `Completed`.
-  - **Информирование пользователя:** Причина сбоя анализатора БД фиксируется через диагностическое замечание `AnalyzerFinding` с уровнем `Severity.Warning` и понятным описанием на русском языке.
-  - **Категоризация причин:** Различаются отсутствие `DbContext` / конфигурации, синтаксические/семантические ошибки C#, неподдерживаемые динамические вызовы/рефлексия и таймаут/сбой контейнера.
-  - **Защита от ложных срабатываний:** Если метаданные модели извлечены частично, правила `DB01`–`DB05` не должны выдавать ложные предупреждения по неполным связям; проверки пропускаются или выполняются только по гарантированно разрешенным сущностям с явной отметкой о частичности модели.
-  - **Категорический запрет универсальной подмены SQLite:** Запрещено использовать универсальную подмену провайдера на SQLite in-memory (`UseSqlite`), так как реальные модели EF Core содержат PostgreSQL-специфичные конструкции (`jsonb`, массивы, расширения `citext`, identity), приводящие к сбою валидации в SQLite. Реализация устойчивости конвейера запланирована в рамках задачи `TD-002` ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-002)).
+  - [`EfCoreModelInspector.cs#L64-L69`](../../src/Analyzers/Database/Providers/EfCoreModelInspector.cs#L64-L69)
+  - [`EfCoreMetadataProvider.cs#L28-L31`](../../src/Analyzers/Database/Providers/EfCoreMetadataProvider.cs#L28-L31)
+  - [`AnalysisService.cs#L190-L205`](../../src/Backend/Application/Services/AnalysisService.cs#L190-L205)
+
+1. **Первоначальное обнаруженное состояние (на 06.11.2026):**
+   - Метод `EfCoreModelInspector.InspectAsync` искал исключительно реализацию интерфейса `IDesignTimeDbContextFactory<T>`. Если исследуемый проект использовал стандартную регистрацию `AddDbContext<AppDbContext>` в `Program.cs` и не объявлял фабрику времени разработки, инспектор выбрасывал исключение `InvalidOperationException("No IDesignTimeDbContextFactory was found...")`.
+   - Исключение не перехватывалось в `EfCoreMetadataProvider`, пробивало конвейер до `AnalysisService.ExecuteAnalysisAsync` и переводило весь анализ коммита в статус `Failed`.
+   - При этом результаты успешно отработавших анализаторов C#, SQL и безопасности безвозвратно терялись.
+
+2. **Принятое архитектурное решение (ADR-001, статус `ACCEPTED`):**
+   - **Отказоустойчивость конвейера:** Сбой или невозможность построения модели базы данных в `DatabaseAnalyzer` (или ошибка во внешнем контейнере анализатора БД) не прерывает работу других анализаторов (`CodeAnalyzer`, `SqlAnalyzer`, `SecurityAnalyzer`).
+   - **Сохранение успешных результатов:** Находки успешно завершившихся анализаторов штатно сохраняются в базе данных. Общий статус коммита переходит в `Completed`.
+   - **Информирование пользователя:** Причина сбоя анализатора БД фиксируется через диагностическое замечание `AnalyzerFinding` с уровнем `Severity.Warning` и понятным описанием на русском языке.
+   - **Категоризация причин:** Различаются отсутствие `DbContext` / конфигурации, синтаксические/семантические ошибки C#, неподдерживаемые динамические вызовы/рефлексия и таймаут/сбой контейнера.
+   - **Защита от ложных срабатываний:** Если метаданные модели извлечены частично, правила `DB01`–`DB05` не должны выдавать ложные предупреждения по неполным связям; проверки пропускаются или выполняются только по гарантированно разрешенным сущностям с явной отметкой о частичности модели.
+   - **Категорический запрет универсальной подмены SQLite:** Запрещено использовать универсальную подмену провайдера на SQLite in-memory (`UseSqlite`), так как реальные модели EF Core содержат PostgreSQL-специфичные конструкции (`jsonb`, массивы, расширения `citext`, identity), приводящие к сбою валидации в SQLite.
+
+3. **Фактически реализованные компоненты (по состоянию на 20.11.2026):**
+   - Реализованный статический Roslyn-парсер (`RoslynMetadataExtractor`) не требует наличия `IDesignTimeDbContextFactory<T>` и извлекает метаданные напрямую из синтаксических деревьев `DbContext` и конфигурационных классов.
+   - Автономный раннер `Database.Runner` выполняет валидацию входных данных и возвращает структурированный результат со статусом выполнения.
+
+4. **Оставшаяся работа:**
+   - Задача **`TD-002`** ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-002)), статус реализации: **`OPEN`**. Требуется рефакторинг `AnalysisService.ExecuteAnalysisAsync` для перехвата сбоев и таймаутов анализатора БД с выставлением диагностического замечания `Severity.Warning` и гарантированным сохранением результатов остальных анализаторов.
 
 ---
 
@@ -80,40 +103,34 @@
 - **Приоритет:** `P1 (Critical)`
 - **Компонент:** `Backend.Application` / `Backend.Infrastructure`
 - **Ссылки на код:**
-  - [`RepositorySourceService.cs#L50-L55`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L50-L55)
-  - [`RepositorySourceService.cs#L60-L75`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L60-L75) (очистка при сбое распаковки)
-  - [`AnalysisService.cs#L210-L225`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Application/Services/AnalysisService.cs#L210-L225) (основной `finally`)
-- **Описание проблемы:**
-  - Рабочий каталог для извлечения репозитория формируется без учета токена выполнения:
-    `analysisDirectory = Path.Combine(storageDirectory, analysisId.ToString(), "repository")`.
-  - **Анализ конкурентности и владения:** Основной блок `finally` в `AnalysisService.ExecuteAnalysisAsync` уже содержит проверку:
-    ```csharp
-    if (!ownershipLost)
-    {
-        await CleanupAsync(analysisId, CancellationToken.None);
-    }
-    ```
-    Однако:
-    1. Внутри `RepositorySourceService.DownloadAndExtractAsync` при возникновении ошибки скачивания или превышения квот вызывается локальная очистка `await CleanupAsync(analysisId, ct)`, которая жестко удаляет директорию `data/analysis/{analysisId}` без проверки токена выполнения.
-    2. Если воркер A задержался (например, из-за долгой сборки или GC-паузы), аренда задачи истекает в PostgreSQL. Воркер B перехватывает задачу с новым `ExecutionToken` и начинает распаковку в ту же папку `data/analysis/{analysisId}`. В это время воркер A, получив исключение таймаута или завершаясь, может вызвать очистку и удалить каталог, куда воркер B в данный момент распаковывает файлы.
-- **Требуемое исправление и утвержденное архитектурное решение (ADR-001 / TD-003):**
-  - **Структура пути:** Формировать рабочий каталог строго по схеме: `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}`.
-  - **Базовый путь хранилища:** Вынести путь в конфигурацию `Storage:AnalysisPath` в `appsettings.json` со значением по умолчанию `Path.Combine(Path.GetTempPath(), "CourseProject", "analyses")` (категорический запрет использования `AppContext.BaseDirectory`).
-  **Синхронизация воркеров и фонового очистителя:**
-   - Все воркеры, работающие с каталогами одного `AnalysisId`, получают разделяемую блокировку `pg_advisory_lock_shared` для `AnalysisId` и удерживают её на протяжении всех файловых операций.
-   - После получения `pg_advisory_lock_shared` рабочий процесс обязан повторно проверить в PostgreSQL, что его `ExecutionToken` по-прежнему является актуальным для соответствующего `AnalysisId`. Только после успешной проверки разрешается создавать, распаковывать, читать или изменять файлы рабочего каталога (если токен больше не актуален или состояние БД невозможно достоверно проверить, воркер обязан освободить блокировку и прекратить выполнение без файловых операций).
-   - Фоновый очиститель получает эксклюзивный `pg_advisory_lock` на тот же `AnalysisId`.
-   - После получения блокировки очиститель повторно проверяет актуальный `ExecutionToken` в БД и удаляет только директории, токен которых отличается от актуального в БД.
-   - Блокировка удерживается на протяжении всей файловой операции.
-   - При потере соединения или блокировки очиститель прекращает удаление, а воркер прекращает файловые операции.
-  - **Запрет очистки по маске/AnalysisId:** Категорически запрещено удалять каталоги по маске или только по `AnalysisId`, чтобы не затронуть каталог параллельного воркера при перехвате аренды.
-  - **Немедленная очистка:** В блоке `finally` (как при успехе, так и при исключениях) удалять строго каталог текущего токена `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}`.
-  - **Фоновая очистка «сиротских» каталогов (`Orphan directory cleanup`):** Спроектировать, реализовать и протестировать механизм фоновой очистки оставшихся каталогов при аварийном падении процессов (OOM, SIGKILL). **Удаление каталогов только по возрасту (TTL) категорически запрещено:**
-    1. Очиститель обязан проверять не только `AnalysisId`, но и строго соответствующий `ExecutionToken`. Удаление разрешено только при подтверждённом отсутствии активного исполнения именно с этим токеном.
-    2. Если для того же `AnalysisId` существует новое активное исполнение с другим `ExecutionToken`, его каталог (`{AnalysisId}/{TokenB}`) остаётся строго неприкосновенным.
-    3. Синхронизация через сессионные advisory locks: рабочий процесс получает `pg_advisory_lock_shared` для `AnalysisId` на всё время файловых операций. После получения `pg_advisory_lock_shared` рабочий процесс обязан повторно проверить в PostgreSQL, что его `ExecutionToken` по-прежнему является актуальным для соответствующего `AnalysisId`. Только после успешной проверки разрешается создавать, распаковывать, читать или изменять файлы рабочего каталога. Если токен больше не актуален или состояние БД невозможно достоверно проверить, воркер обязан освободить блокировку и прекратить выполнение без файловых операций.
-    4. Очистка получает эксклюзивный `pg_advisory_lock` для того же `AnalysisId`. После получения блокировки очистка повторно проверяет актуальный `ExecutionToken` в БД: удалять разрешается только директорию, токен которой отличается от актуального токена в БД (директорию актуального запуска удалять запрещено).
-    5. При потере соединения с БД воркер немедленно прекращает файловые операции, а очистка прекращает удаление. Если состояние БД или блокировку невозможно достоверно проверить, удаление отменяется и откладывается на следующий цикл. Механизм ещё не реализован и запланирован к разработке в рамках задачи `TD-003` ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-003)).
+  - [`RepositorySourceService.cs#L50-L55`](../../src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L50-L55)
+  - [`RepositorySourceService.cs#L60-L75`](../../src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L60-L75) (очистка при сбое распаковки)
+  - [`AnalysisService.cs#L210-L225`](../../src/Backend/Application/Services/AnalysisService.cs#L210-L225) (основной `finally`)
+
+1. **Первоначальное обнаруженное состояние (на 06.11.2026):**
+   - Рабочий каталог для распаковки репозитория формировался без учета токена выполнения:
+     `analysisDirectory = Path.Combine(storageDirectory, analysisId.ToString(), "repository")`.
+   - Внутри `RepositorySourceService.DownloadAndExtractAsync` при ошибке скачивания вызывалась локальная очистка `await CleanupAsync(analysisId, ct)`, жестко удалявшая директорию `data/analysis/{analysisId}` без проверки токена выполнения.
+   - При истечении аренды задачи в PostgreSQL воркер B перехватывал задачу с новым `ExecutionToken` и начинал распаковку в тот же каталог `data/analysis/{analysisId}`. Запоздавший воркер A в это время мог вызвать очистку и удалить каталог активного воркера B, приводя к гонке и сбою.
+
+2. **Принятое архитектурное решение (ADR-001, статус `ACCEPTED`):**
+   - **Структура пути:** Формировать рабочий каталог строго по схеме: `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}`.
+   - **Базовый путь хранилища:** Вынести путь в конфигурацию `Storage:AnalysisPath` в `appsettings.json` со значением по умолчанию `Path.Combine(Path.GetTempPath(), "CourseProject", "analyses")` (категорический запрет использования `AppContext.BaseDirectory`).
+   - **Сквозная передача ExecutionToken:** Токен генерируется воркером при взятии задачи и передается через весь конвейер.
+   - **Запрет очистки по маске/AnalysisId:** Категорически запрещено удалять каталоги по маске или только по `AnalysisId`.
+   - **Немедленная очистка:** В блоке `finally` удалять строго каталог текущего токена `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}`.
+   - **Фоновая очистка «сиротских» каталогов (`Orphan directory cleanup`):**
+     1. Запрет удаления каталогов только по возрасту (TTL).
+     2. Проверка в БД по паре `(AnalysisId, ExecutionToken)`: удаление разрешено только при подтверждённом отсутствии активного исполнения с этим токеном.
+     3. Неприкосновенность новых исполнений: каталоги с другим токеном (`{AnalysisId}/{TokenB}`) неприкосновенны.
+     4. Единый протокол сессионных advisory locks: воркер удерживает `pg_advisory_lock_shared` для `AnalysisId` на всё время файловых операций и повторно проверяет актуальность токена в БД перед операциями. Сервис очистки получает эксклюзивный `pg_advisory_lock`, повторно проверяет токен в БД и удаляет только директории неактуальных токенов.
+     5. При потере соединения с БД воркер прекращает файловые операции, а сервис очистки прекращает удаление.
+
+3. **Фактически реализованные компоненты (по состоянию на 20.11.2026):**
+   - В архитектурных документах ([ADR-001](../architecture/database-analyzer-isolation.md)) и тестах зафиксированы контракты взаимодействия, включая требование `IAnalysisLeaseGuard` для операций с рабочим пространством.
+
+4. **Оставшаяся работа:**
+   - Задача **`TD-003`** ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-003)), статус реализации: **`OPEN`**. Требуется реализовать изоляцию путей `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}`, сквозную передачу токена через `RepositorySourceService` и `AnalysisService`, фоновую очистку с PostgreSQL advisory locks и устранить 8 известных сбоев тестов в `CSharpAnalyzer.Tests` (`RepositorySourceServiceTests`).
 
 ---
 
@@ -122,8 +139,8 @@
 - **Приоритет:** `P2 (High)`
 - **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/`)
 - **Ссылки на код:**
-  - [`EfCoreMetadataMapper.cs#L37-L45`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Database/Mapping/EfCoreMetadataMapper.cs#L37-L45)
-  - [`DatabaseAnalyzer.cs#L101-L120`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Database/DatabaseAnalyzer.cs#L101-L120)
+  - [`EfCoreMetadataMapper.cs#L37-L45`](../../src/Analyzers/Database/Mapping/EfCoreMetadataMapper.cs#L37-L45)
+  - [`DatabaseAnalyzer.cs#L101-L120`](../../src/Analyzers/Database/DatabaseAnalyzer.cs#L101-L120)
 - **Описание проблемы:**
   - В `EfCoreMetadataMapper` список индексов сущности формируется исключительно из явных индексов модели `entityType.GetIndexes()`.
   - В реляционных базах данных (PostgreSQL) первичный ключ (`entityType.FindPrimaryKey()`) и альтернативные ключи уникальности (`entityType.GetKeys()`) физически создают уникальные B-дерево индексы на стороне СУБД.
@@ -141,8 +158,8 @@
 - **Приоритет:** `P2 (High)`
 - **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/`)
 - **Ссылки на код:**
-  - [`EfCoreMetadataMapper.cs#L62-L70`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Database/Mapping/EfCoreMetadataMapper.cs#L62-L70)
-  - [`DatabaseAnalyzer.cs#L125-L152`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Database/DatabaseAnalyzer.cs#L125-L152)
+  - [`EfCoreMetadataMapper.cs#L62-L70`](../../src/Analyzers/Database/Mapping/EfCoreMetadataMapper.cs#L62-L70)
+  - [`DatabaseAnalyzer.cs#L125-L152`](../../src/Analyzers/Database/DatabaseAnalyzer.cs#L125-L152)
 - **Описание проблемы:**
   - `EfCoreMetadataMapper` при извлечении метаданных индексов копирует свойства `Name`, `PropertyNames` и `IsUnique`, но игнорирует предикат фильтра `index.GetFilter()`.
   - В реальных проектах на один и тот же столбец часто создаются два индекса: один общий, а второй частичный (например, для мягкого удаления `WHERE "IsDeleted" = false`), либо два частичных индекса с непересекающимися условиями.
@@ -158,9 +175,9 @@
 - **Приоритет:** `P3 (Medium)`
 - **Компонент:** `Backend.Application` (`src/Backend/Application/DTOs/`)
 - **Ссылки на код:**
-  - [`CreateCommitDto.cs#L14-L15`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Application/DTOs/CreateCommitDto.cs#L14-L15)
-  - [`Commit.cs#L12`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Domain/Entities/Commit.cs#L12)
-  - [`CommitConfiguration.cs#L17`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/Data/Configurations/CommitConfiguration.cs#L17)
+  - [`CreateCommitDto.cs#L14-L15`](../../src/Backend/Application/DTOs/CreateCommitDto.cs#L14-L15)
+  - [`Commit.cs#L12`](../../src/Backend/Domain/Entities/Commit.cs#L12)
+  - [`CommitConfiguration.cs#L17`](../../src/Backend/Infrastructure/Data/Configurations/CommitConfiguration.cs#L17)
 - **Фактическое состояние:**
   - В DTO ручного создания коммита `CreateCommitDto` задан атрибут: `[StringLength(40, MinimumLength = 7)]`. Это блокирует ручное добавление коммитов современных репозиториев Git, использующих алгоритм хеширования SHA-256 (длина хеша 64 символа).
   - При этом доменная сущность `Commit.cs` содержит `public string CommitHash { get; set; }` без ограничений длины.
@@ -177,7 +194,7 @@
 - **Приоритет:** `P3 (Medium)`
 - **Компонент:** `SecurityAnalyzer` (`src/Analyzers/Security/Rules/`)
 - **Ссылки на код:**
-  - [`Sec003InsecureCorsRule.cs#L28-L60`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Security/Rules/Sec003InsecureCorsRule.cs#L28-L60)
+  - [`Sec003InsecureCorsRule.cs#L28-L60`](../../src/Analyzers/Security/Rules/Sec003InsecureCorsRule.cs#L28-L60)
 - **Описание проблемы:**
   - Правило `Sec003InsecureCorsRule` синтаксически проверяет наличие вызовов `AllowAnyOrigin()` и предикатов `SetIsOriginAllowed(_ => true)`.
   - Использование вызова `.WithOrigins("*")` синтаксически пропускается анализатором.
@@ -192,7 +209,7 @@
 - **Приоритет:** `P3 (Medium)`
 - **Компонент:** `SecurityAnalyzer` (`src/Analyzers/Security/Rules/`)
 - **Ссылки на код:**
-  - [`Sec005DisabledCertificateValidationRule.cs#L16, L27-L31`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Security/Rules/Sec005DisabledCertificateValidationRule.cs#L16)
+  - [`Sec005DisabledCertificateValidationRule.cs#L16, L27-L31`](../../src/Analyzers/Security/Rules/Sec005DisabledCertificateValidationRule.cs#L16)
 - **Описание проблемы:**
   - Правило `Sec005DisabledCertificateValidationRule` проверяет присваивание свойства с точным именем `ServerCertificateCustomValidationCallback` (свойство обработчиков `HttpClientHandler` и `SocketsHttpHandler`).
   - Классический глобальный механизм отключения валидации сертификатов в .NET — присваивание статического свойства `ServicePointManager.ServerCertificateValidationCallback` — правилом не проверяется.
@@ -206,8 +223,8 @@
 - **Приоритет:** `P2 (High)`
 - **Компонент:** `Backend.Infrastructure` (`src/Backend/Infrastructure/Services/`)
 - **Ссылки на код:**
-  - [`GitHubService.cs#L26-L105`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/GitHub/GitHubService.cs#L26-L105) (пагинация коммитов)
-  - [`GitHubSyncService.cs#L45-L75`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Application/Services/GitHubSyncService.cs#L45-L75) (оркестрация синхронизации)
+  - [`GitHubService.cs#L26-L105`](../../src/Backend/Infrastructure/GitHub/GitHubService.cs#L26-L105) (пагинация коммитов)
+  - [`GitHubSyncService.cs#L45-L75`](../../src/Backend/Application/Services/GitHubSyncService.cs#L45-L75) (оркестрация синхронизации)
 - **Описание проблемы:**
   - В методе `GitHubService.GetCommitsAsync` пагинация реализована через бесконечный цикл `while (!string.IsNullOrEmpty(currentUrl))` со страницами по 100 элементов.
   - При каждой ручной или автоматической синхронизации сервис запрашивает все коммиты репозитория с самого начала, не прерывая опрос. Для крупных репозиториев (50 000+ коммитов) это гарантированно приводит к исчерпанию лимита GitHub API (5000 запросов/час) или сетевому таймауту.
@@ -224,8 +241,8 @@
 - **Приоритет:** `P3 (Medium)`
 - **Компонент:** `SqlAnalyzer` (`src/Analyzers/Sql/Rules/`)
 - **Ссылки на код:**
-  - [`Sql001UnsafeQueryRule.cs`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Sql/Rules/Sql001UnsafeQueryRule.cs)
-  - [`Sql002SelectStarRule.cs`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Analyzers/Sql/Rules/Sql002SelectStarRule.cs)
+  - [`Sql001UnsafeQueryRule.cs`](../../src/Analyzers/Sql/Rules/Sql001UnsafeQueryRule.cs)
+  - [`Sql002SelectStarRule.cs`](../../src/Analyzers/Sql/Rules/Sql002SelectStarRule.cs)
 - **Описание проблемы:**
   - Правила сопоставляют имена методов `FromSqlRaw`, `ExecuteSqlRaw`, `SqlQueryRaw` исключительно по синтаксическому имени идентификатора. Если пользовательский класс объявляет метод с таким же именем, не имеющий отношения к EF Core, правило выдаст ложное срабатывание.
   - Однако для условий курсового проекта, анализирующего разнородные сторонние репозитории без гарантированного `dotnet restore` и компиляции, синтаксический анализ является обоснованным инженерным компромиссом. Задача отложена до этапа внедрения опционального семантического анализа.
@@ -239,9 +256,9 @@
 - **Приоритет:** `P2 (High)`
 - **Компонент:** `Backend.Domain` / `Backend.Application` / `Backend.Infrastructure`
 - **Ссылки на код:**
-  - [`Analysis.cs#L20-L30`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Domain/Entities/Analysis.cs#L20-L30)
-  - [`AnalysisService.cs#L190-L205`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Application/Services/AnalysisService.cs#L190-L205)
-  - [`AnalysisBackgroundService.cs#L45-L65`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs#L45-L65)
+  - [`Analysis.cs#L20-L30`](../../src/Backend/Domain/Entities/Analysis.cs#L20-L30)
+  - [`AnalysisService.cs#L190-L205`](../../src/Backend/Application/Services/AnalysisService.cs#L190-L205)
+  - [`AnalysisBackgroundService.cs#L45-L65`](../../src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs#L45-L65)
 - **Описание:**
   - В настоящее время любая кратковременная ошибка (сетевой сбой GitHub API при скачивании архива, таймаут I/O) немедленно переводит сущность `Analysis` в терминальный статус `Failed`. Сущность не содержит полей для подсчета попыток выполнения (`AttemptCount`, `MaxAttempts`).
   - **Угроза аварийного цикла (Poison Pill):** Если конкретный репозиторий провоцирует критический сбой процесса (например, `OutOfMemoryException` или переполнение стека в пользовательском коде), фоновый воркер аварийно завершается. После перезапуска сервиса задача с истекшим `LeaseExpiration` снова берется из БД в обработку тем же воркером, вызывая бесконечный цикл падений сервиса (`CrashLoop`).
@@ -258,7 +275,7 @@
 - **Приоритет:** `P3 (Medium)`
 - **Компонент:** `Backend.Infrastructure` (`src/Backend/Infrastructure/Services/`)
 - **Ссылки на код:**
-  - [`RepositorySourceService.cs#L64-L78`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L64-L78)
+  - [`RepositorySourceService.cs#L64-L78`](../../src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#L64-L78)
 - **Описание:**
   - При извлечении файлов архива код выполняет:
     `string.Join(Path.DirectorySeparatorChar, segments.Skip(1))`.
@@ -273,12 +290,12 @@
 | ID | Статус | Анализ и зафиксированные решения |
 | :--- | :---: | :--- |
 | **API-020** | `OPEN` | **Хранилище в `AppContext.BaseDirectory`:** Путь `Path.Combine(AppContext.BaseDirectory, "data", "analysis")` загрязняет каталог исполняемых файлов и не работает в контейнерах с read-only root. Задача объединена с `DEF-003` / `TD-003`: внедрить конфигурационную секцию `Storage:AnalysisPath` с дефолтом в `Path.Combine(Path.GetTempPath(), "CourseProject", "analyses")`, а каталоги изолировать по `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` с безопасной очисткой (включая разработку фоновой очистки сиротских каталогов с обязательной синхронизацией, проверкой по паре AnalysisId и ExecutionToken в БД и сохранением параллельных исполнений). |
-| **API-022** | `OPEN` | **Шаблон переменных окружения:** В репозитории отсутствуют примеры переменных окружения. Создать файл `appsettings.Example.json` с документированной структурой секций (`ConnectionStrings`, `Jwt`, `Encryption`), содержащий понятные плейсхолдеры без рабочих и фиктивных секретов. |
+| **API-022** | `FIXED` | **Шаблон переменных окружения:** Полностью устранено в рамках реализации Этапа 6: осуществлен переход на единый механизм конфигурации ASP.NET Core через переменные окружения и файл `.env`, создан документированный шаблон `.env.example`, механизм User Secrets полностью выведен из эксплуатации, а `appsettings.json` очищен от секретов (задача TD-013 закрыта). |
 | **API-024** | `FIXED` | **Устаревшая документация:** Полностью устранено в рамках задачи [TD-014](../plans/Technical-Debt-Plan.md#td-014-синхронизация-базовой-документации). Документы `Технический регламент.md`, `Исполнительное резюме.md`, `Архитектура проекта.drawio` и спецификации анализаторов синхронизированы по состоянию ревизии `2068c51`. |
-| **API-025** | `FIXED` | **Защита последнего администратора:** В коде [`AdminUsersController.cs#L104-L140`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/src/Backend/Api/Controllers/AdminUsersController.cs#L104-L140) и `UserService.cs` реализована надежная защита через консультативную блокировку PostgreSQL `SELECT pg_advisory_xact_lock(hashtext('admin_role_protection'))` с повторным подсчетом админов в транзакции. Дефект полностью устранен и исключен из реестра открытых проблем. |
+| **API-025** | `FIXED` | **Защита последнего администратора:** В коде [`AdminUsersController.cs#L104-L140`](../../src/Backend/Api/Controllers/AdminUsersController.cs#L104-L140) и `UserService.cs` реализована надежная защита через консультативную блокировку PostgreSQL `SELECT pg_advisory_xact_lock(hashtext('admin_role_protection'))` с повторным подсчетом админов в транзакции. Дефект полностью устранен и исключен из реестра открытых проблем. |
 
 ---
 
 ## 6. Замечания по качеству тестового кода (Косметические)
 
-- **NEW-005 (BOM в тестах очереди):** В файле [`AnalysisServiceQueueTests.cs#L3`](file:///c:/Users/ivank/Desktop/Uceba/Projects/CourseProject/tests/Backend.Tests/AnalysisServiceQueueTests.cs#L3) присутствует невидимый символ Unicode BOM. Не является дефектом логики, не включается в реестр долга, устраняется попутно при правке тестов.
+- **NEW-005 (BOM в тестах очереди):** В файле [`AnalysisServiceQueueTests.cs#L3`](../../tests/Backend.Tests/AnalysisServiceQueueTests.cs#L3) присутствует невидимый символ Unicode BOM. Не является дефектом логики, не включается в реестр долга, устраняется попутно при правке тестов.
