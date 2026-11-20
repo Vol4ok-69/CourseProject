@@ -288,7 +288,18 @@ if (enableSwagger)
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+var httpsPort = builder.Configuration.GetValue<int?>("HttpsRedirection:HttpsPort")
+    ?? builder.Configuration.GetValue<int?>("ASPNETCORE_HTTPS_PORT")
+    ?? builder.Configuration.GetValue<int?>("HTTPS_PORT");
+
+var enableHttpsRedirection = app.Environment.IsDevelopment() ||
+    httpsPort.HasValue ||
+    builder.Configuration.GetValue<bool>("HttpsRedirection:Enabled", false);
+
+if (enableHttpsRedirection)
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseCors(ApiCorsPolicies.FrontendDevPolicy);
 
