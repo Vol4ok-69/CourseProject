@@ -6,8 +6,6 @@ namespace Infrastructure.Data;
 
 public sealed class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext>
 {
-    private const string ApiUserSecretsId = "16bd1f55-a810-4aa6-8403-9728e1cedf82";
-
     public AppDbContext CreateDbContext(string[] args)
     {
         var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
@@ -25,11 +23,6 @@ public sealed class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbConte
                 .AddJsonFile($"appsettings.{environment}.json", optional: true);
         }
 
-        if (string.Equals(environment, "Development", StringComparison.OrdinalIgnoreCase))
-        {
-            builder.AddUserSecrets(ApiUserSecretsId);
-        }
-
         builder.AddEnvironmentVariables();
 
         var configuration = builder.Build();
@@ -42,9 +35,8 @@ public sealed class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbConte
         {
             throw new InvalidOperationException(
                 "Строка подключения 'DefaultConnection' не найдена. " +
-                "Убедитесь, что строка подключения настроена в User Secrets проекта API " +
-                "(dotnet user-secrets set \"ConnectionStrings:DefaultConnection\" \"...\" --project src/Backend/Api/Api.csproj), " +
-                "в appsettings.json или через переменную окружения 'ConnectionStrings__DefaultConnection'.");
+                "Убедитесь, что строка подключения настроена через переменную окружения " +
+                "'ConnectionStrings__DefaultConnection' (или в файле appsettings.json).");
         }
 
         var options = new DbContextOptionsBuilder<AppDbContext>()

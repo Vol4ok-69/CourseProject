@@ -29,15 +29,18 @@ public sealed class CorsPolicyTests
         }
     }
 
-    private static (CorsMiddleware Middleware, ICorsPolicyProvider PolicyProvider, ICorsService CorsService) CreateCorsPipeline()
+    private static (CorsMiddleware Middleware, ICorsPolicyProvider PolicyProvider, ICorsService CorsService) CreateCorsPipeline(string? originsConfig = null)
     {
+        var rawConfig = originsConfig ?? "http://localhost:5173,http://localhost:3000";
+        var origins = ApiCorsPolicies.ParseAndValidateOrigins(rawConfig);
+
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddCors(options =>
         {
             options.AddPolicy(ApiCorsPolicies.FrontendDevPolicy, policy =>
             {
-                policy.WithOrigins(ApiCorsPolicies.AllowedOrigins)
+                policy.WithOrigins(origins)
                       .WithMethods(ApiCorsPolicies.AllowedMethods)
                       .WithHeaders(ApiCorsPolicies.AllowedHeaders);
             });
@@ -167,13 +170,14 @@ public sealed class CorsPolicyTests
     [Fact]
     public async Task Request_WithAuthorizationBearerHeader_PreservesAuthorizationHeader()
     {
+        var origins = ApiCorsPolicies.ParseAndValidateOrigins("http://localhost:5173,http://localhost:3000");
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddCors(options =>
         {
             options.AddPolicy(ApiCorsPolicies.FrontendDevPolicy, policy =>
             {
-                policy.WithOrigins(ApiCorsPolicies.AllowedOrigins)
+                policy.WithOrigins(origins)
                       .WithMethods(ApiCorsPolicies.AllowedMethods)
                       .WithHeaders(ApiCorsPolicies.AllowedHeaders);
             });
@@ -211,13 +215,14 @@ public sealed class CorsPolicyTests
     [Fact]
     public async Task CorsService_DirectPolicyEvaluation_AllowsTrustedOriginsAndRejectsOthers()
     {
+        var origins = ApiCorsPolicies.ParseAndValidateOrigins("http://localhost:5173,http://localhost:3000");
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddCors(options =>
         {
             options.AddPolicy(ApiCorsPolicies.FrontendDevPolicy, policy =>
             {
-                policy.WithOrigins(ApiCorsPolicies.AllowedOrigins)
+                policy.WithOrigins(origins)
                       .WithMethods(ApiCorsPolicies.AllowedMethods)
                       .WithHeaders(ApiCorsPolicies.AllowedHeaders);
             });
@@ -243,4 +248,113 @@ public sealed class CorsPolicyTests
         var untrustedResult = corsService.EvaluatePolicy(untrustedContext, policy);
         Assert.False(untrustedResult.IsOriginAllowed);
     }
+
+    #region Unit-тесты для ParseAndValidateOrigins
+
+    [Theory]
+    [InlineData("http://localhost:5173", "http://localhost:5173")]
+    [InlineData("HTTP://LOCALHOST:5173", "http://localhost:5173")]
+    [InlineData("http://localhost:80", "http://localhost")]
+    [InlineData("https://localhost:443", "https://localhost")]
+    [InlineData("http://localhost:8080", "http://localhost:8080")]
+    [InlineData("http://localhost:5173/", "http://localhost:5173")]
+    [InlineData("http://localhost:1", "http://localhost:1")]
+    [InlineData("http://localhost:65535", "http://localhost:65535")]
+    [InlineData("https://localhost:1", "https://localhost:1")]
+    [InlineData("https://localhost:65535", "https://localhost:65535")]
+    [InlineData("http://[::1]", "http://[::1]")]
+    [InlineData("http://[::1]:5173", "http://[::1]:5173")]
+    [InlineData("http://[::1]:1", "http://[::1]:1")]
+    [InlineData("http://[::1]:65535", "http://[::1]:65535")]
+    [InlineData("http://[0000:0000:0000:0000:0000:0000:0000:0001]:5173", "http://[::1]:5173")]
+    [InlineData("http://[::1]:80", "http://[::1]")]
+    [InlineData("https://[::1]:443", "https://[::1]")]
+    public void ParseAndValidateOrigins_ValidOrigin_NormalizesCorrectly(string input, string expected)
+    {
+        var result = ApiCorsPolicies.ParseAndValidateOrigins(input);
+        var origin = Assert.Single(result);
+        Assert.Equal(expected, origin);
+    }
+
+    [Fact]
+    public void ParseAndValidateOrigins_MultipleOriginsAndDuplicates_DeduplicatesAndPreservesAll()
+    {
+        var config = "http://localhost:5173,HTTP://LOCALHOST:5173/,http://localhost:5173";
+        var result = ApiCorsPolicies.ParseAndValidateOrigins(config);
+        var origin = Assert.Single(result);
+        Assert.Equal("http://localhost:5173", origin);
+
+        var multiConfig = " http://localhost:5173 , https://app.example.com:8443/ ";
+        var multiResult = ApiCorsPolicies.ParseAndValidateOrigins(multiConfig);
+        Assert.Equal(2, multiResult.Length);
+        Assert.Equal("http://localhost:5173", multiResult[0]);
+        Assert.Equal("https://app.example.com:8443", multiResult[1]);
+    }
+
+    [Fact]
+    public void ParseAndValidateOrigins_NullOrWhitespace_ThrowsInvalidOperationException()
+    {
+        Assert.Throws<InvalidOperationException>(() => ApiCorsPolicies.ParseAndValidateOrigins(null));
+        Assert.Throws<InvalidOperationException>(() => ApiCorsPolicies.ParseAndValidateOrigins(""));
+        Assert.Throws<InvalidOperationException>(() => ApiCorsPolicies.ParseAndValidateOrigins("   "));
+    }
+
+    [Theory]
+    [InlineData("http://localhost:5173,,http://localhost:3000")]
+    [InlineData(",")]
+    [InlineData(" , ")]
+    [InlineData("*")]
+    [InlineData("http://*")]
+    [InlineData("http://*.example.com")]
+    [InlineData("http://localhost:*")]
+    [InlineData("http://ex*ample.com")]
+    [InlineData("http://localhost:5173?")]
+    [InlineData("http://localhost:5173#")]
+    [InlineData("http://localhost:5173?param=1")]
+    [InlineData("http://localhost:5173#section")]
+    [InlineData("http://localhost:5173/?")]
+    [InlineData("http://localhost:5173/#")]
+    [InlineData("http://localhost:5173/api")]
+    [InlineData("http://localhost:5173/a/..")]
+    [InlineData("http://localhost:5173/./")]
+    [InlineData("http://localhost:5173/%2e%2e")]
+    [InlineData("http://localhost:5173/%2F")]
+    [InlineData(@"http:\localhost:5173")]
+    [InlineData("http://")]
+    [InlineData("http://:5173")]
+    [InlineData("http:///path")]
+    [InlineData("ftp://localhost:5173")]
+    [InlineData("ws://localhost:5173")]
+    [InlineData("file:///tmp")]
+    [InlineData("http://user:pass@localhost:5173")]
+    [InlineData("http://@localhost:5173")]
+    [InlineData("http://localhost:")]
+    [InlineData("http://localhost:/")]
+    [InlineData("http://localhost:0")]
+    [InlineData("https://localhost:0")]
+    [InlineData("http://localhost:-1")]
+    [InlineData("https://localhost:-1")]
+    [InlineData("http://localhost:abc")]
+    [InlineData("https://localhost:abc")]
+    [InlineData("http://localhost:65536")]
+    [InlineData("https://localhost:65536")]
+    [InlineData("http://localhost:70000")]
+    [InlineData("http://localhost:999999999999")]
+    [InlineData("http://localhost:+80")]
+    [InlineData("http://localhost:080")]
+    [InlineData("http://localhost::80")]
+    [InlineData("http://[::1]:")]
+    [InlineData("http://[::1]:/")]
+    [InlineData("http://[::1]:0")]
+    [InlineData("http://[::1]:-1")]
+    [InlineData("http://[::1]:abc")]
+    [InlineData("http://[::1]:65536")]
+    [InlineData("http://[::1")]
+    [InlineData("http://::1:5173")]
+    public void ParseAndValidateOrigins_InvalidOrigins_ThrowsInvalidOperationException(string invalidOrigin)
+    {
+        Assert.Throws<InvalidOperationException>(() => ApiCorsPolicies.ParseAndValidateOrigins(invalidOrigin));
+    }
+
+    #endregion
 }

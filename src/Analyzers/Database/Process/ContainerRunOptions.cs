@@ -10,7 +10,7 @@ public sealed class ContainerRunOptions
 
     public string ExchangeDirectory { get; init; } = string.Empty;
 
-    public string? ExchangeVolume { get; init; } = Environment.GetEnvironmentVariable("DOCKER_EXCHANGE_VOLUME");
+    public string? ExchangeVolume { get; init; }
 
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(60);
 

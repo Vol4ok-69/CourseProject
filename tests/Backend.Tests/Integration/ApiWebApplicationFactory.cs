@@ -133,6 +133,14 @@ public class ApiWebApplicationFactory : WebApplicationFactory<Program>, IAsyncLi
         RandomNumberGenerator.Fill(aesKey);
         var aesKeyBase64 = Convert.ToBase64String(aesKey);
 
+        builder.UseSetting("ConnectionStrings:DefaultConnection", _fixture.ConnectionString);
+        builder.UseSetting("Security:TokenEncryptionKey", aesKeyBase64);
+        builder.UseSetting("Jwt:Key", TestJwtKey);
+        builder.UseSetting("Jwt:Issuer", TestJwtIssuer);
+        builder.UseSetting("Jwt:Audience", TestJwtAudience);
+        builder.UseSetting("Cors:AllowedOrigins", "http://localhost:5173,http://localhost:3000");
+        builder.UseSetting("Docker:ExchangeVolume", "courseproject-exchange-data");
+
         builder.ConfigureAppConfiguration((_, config) =>
         {
             config.AddInMemoryCollection(new Dictionary<string, string?>
@@ -141,7 +149,9 @@ public class ApiWebApplicationFactory : WebApplicationFactory<Program>, IAsyncLi
                 ["Security:TokenEncryptionKey"] = aesKeyBase64,
                 ["Jwt:Key"] = TestJwtKey,
                 ["Jwt:Issuer"] = TestJwtIssuer,
-                ["Jwt:Audience"] = TestJwtAudience
+                ["Jwt:Audience"] = TestJwtAudience,
+                ["Cors:AllowedOrigins"] = "http://localhost:5173,http://localhost:3000",
+                ["Docker:ExchangeVolume"] = "courseproject-exchange-data"
             });
         });
 

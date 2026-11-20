@@ -56,8 +56,17 @@ builder.Services.AddSingleton<DatabaseAnalyzer.Runner.IAnalysisLeaseGuardProvide
         connectionString,
         sp.GetRequiredService<Application.Interfaces.IWorkspaceFileLockProvider>()));
 builder.Services.AddSingleton<Application.Interfaces.IAnalysisLeaseGuardProvider>(sp => sp.GetRequiredService<DatabaseAnalyzer.Runner.IAnalysisLeaseGuardProvider>());
+var exchangeVolume = builder.Configuration["Docker:ExchangeVolume"];
+if (string.IsNullOrWhiteSpace(exchangeVolume))
+{
+    throw new InvalidOperationException("Имя тома обмена Docker 'Docker:ExchangeVolume' не настроено или пусто.");
+}
+
 builder.Services.AddScoped<IContainerProcessAdapter, DockerCliProcessAdapter>();
-builder.Services.AddScoped<IDatabaseContainerRunner, DatabaseContainerRunner>();
+builder.Services.AddScoped<IDatabaseContainerRunner>(sp => new DatabaseContainerRunner(
+    processAdapter: sp.GetRequiredService<IContainerProcessAdapter>(),
+    leaseGuardProvider: sp.GetService<DatabaseAnalyzer.Runner.IAnalysisLeaseGuardProvider>(),
+    exchangeVolume: exchangeVolume));
 builder.Services.AddScoped<IAnalyzer>(sp => new DatabaseAnalyzer.DatabaseAnalyzer(
     sp.GetRequiredService<IRoslynMetadataExtractor>())
 {
@@ -118,11 +127,14 @@ builder.Services.AddHostedService<AnalysisBackgroundService>();
 builder.Services.AddHostedService<AnalysisCleanupBackgroundService>();
 builder.Services.AddScoped<ApiJwtEvents>();
 
+var allowedOriginsConfig = builder.Configuration["Cors:AllowedOrigins"];
+var corsOrigins = ApiCorsPolicies.ParseAndValidateOrigins(allowedOriginsConfig);
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(ApiCorsPolicies.FrontendDevPolicy, policy =>
     {
-        policy.WithOrigins(ApiCorsPolicies.AllowedOrigins)
+        policy.WithOrigins(corsOrigins)
               .WithMethods(ApiCorsPolicies.AllowedMethods)
               .WithHeaders(ApiCorsPolicies.AllowedHeaders);
     });

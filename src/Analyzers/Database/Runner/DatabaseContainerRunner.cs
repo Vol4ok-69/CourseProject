@@ -18,15 +18,18 @@ public sealed class DatabaseContainerRunner : IDatabaseContainerRunner
     private readonly IContainerProcessAdapter _processAdapter;
     private readonly string _image;
     private readonly IAnalysisLeaseGuardProvider? _leaseGuardProvider;
+    private readonly string? _exchangeVolume;
 
     public DatabaseContainerRunner(
         IContainerProcessAdapter processAdapter,
         string image = "netscope-database-analyzer:latest",
-        IAnalysisLeaseGuardProvider? leaseGuardProvider = null)
+        IAnalysisLeaseGuardProvider? leaseGuardProvider = null,
+        string? exchangeVolume = null)
     {
         _processAdapter = processAdapter ?? throw new ArgumentNullException(nameof(processAdapter));
         _image = image;
         _leaseGuardProvider = leaseGuardProvider;
+        _exchangeVolume = exchangeVolume;
     }
 
     /// <summary>
@@ -37,7 +40,7 @@ public sealed class DatabaseContainerRunner : IDatabaseContainerRunner
         IContainerProcessAdapter processAdapter,
         string image,
         ILeaseOwnershipValidator? ownershipValidator)
-        : this(processAdapter, image, ownershipValidator != null ? new LeaseOwnershipValidatorGuardAdapter(ownershipValidator) : null)
+        : this(processAdapter, image, ownershipValidator != null ? new LeaseOwnershipValidatorGuardAdapter(ownershipValidator) : null, null)
     {
     }
 
@@ -177,6 +180,7 @@ public sealed class DatabaseContainerRunner : IDatabaseContainerRunner
                 InputFilePath = inputFilePath,
                 OutputFilePath = outputFilePath,
                 ExchangeDirectory = exchangeDirectory,
+                ExchangeVolume = _exchangeVolume,
                 Timeout = TimeSpan.FromSeconds(60)
             };
 

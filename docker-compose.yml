@@ -58,7 +58,8 @@ services:
       Jwt__Issuer: ${JWT_ISSUER:-CourseProjectApi}
       Jwt__Audience: ${JWT_AUDIENCE:-CourseProjectClient}
       Swagger__Enabled: ${SWAGGER_ENABLED:-false}
-      DOCKER_EXCHANGE_VOLUME: courseproject-exchange-data
+      Cors__AllowedOrigins: "${CORS_ALLOWED_ORIGINS-http://localhost:5173,http://localhost:3000}"
+      Docker__ExchangeVolume: courseproject-exchange-data
 
     ports:
       - "5000:8080"
