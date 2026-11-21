@@ -322,6 +322,76 @@ public sealed class ApiPipelineIntegrationTests(ApiWebApplicationFactory factory
         Assert.DoesNotContain("PasswordHash", body);
     }
 
+    [Fact]
+    public async Task UnhandledException_InEndpointExecution_Returns500ProblemDetails_WithMaskedDetails_AndTraceId()
+    {
+        // Arrange: подготовка пользователя, принадлежащего ему проекта и аутентифицированного клиента
+        var user = await CreateTestUserAsync("user_unhandled_500", "User");
+        var project = await CreateTestProjectAsync("project_unhandled_500", user.Id);
+        using var client = _factory.CreateAuthenticatedClient(_factory.GenerateValidToken(user));
+
+        // Сохраняем синтетический PAT через /api/auth/me/github для разрешения запуска синхронизации
+        const string syntheticPat = "ghp_syntheticValidPatForCrashTesting500_1234567890";
+        var patResponse = await client.PutAsJsonAsync("/api/auth/me/github", new GitHubTokenRequestDto { Token = syntheticPat });
+        Assert.Equal(HttpStatusCode.OK, patResponse.StatusCode);
+
+        // Уникальный синтетический маркер и внутреннее сообщение об ошибке, которые не должны утечь в HTTP-ответ
+        const string sensitiveFaultPayload = "DATABASE_PASSWORD_SECRET_TOKEN_CRASH_PAYLOAD_99999";
+        const string sensitiveInternalMessage = "Critical storage provider failure at line 42";
+
+        // Настраиваем MockGitHubService.GetCommitsAsync на выброс непредвиденного исключения
+        _factory.MockGitHubService
+            .Setup(g => g.GetCommitsAsync(project.RepoUrl, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException($"{sensitiveInternalMessage}: {sensitiveFaultPayload}"));
+
+        // Act: отправка HTTP-запроса через HttpClient к защищенному маршруту синхронизации
+        var response = await client.PostAsync($"/api/projects/{project.Id}/github/sync", null);
+
+        // Assert: подтверждаем, что настроенный метод GetCommitsAsync действительно был вызван ровно один раз
+        _factory.MockGitHubService.Verify(
+            g => g.GetCommitsAsync(
+                project.RepoUrl,
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // Assert: проверка HTTP-статуса 500 и заголовка Content-Type согласно RFC 9457
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+
+        var body = await response.Content.ReadAsStringAsync();
+        using var jsonDoc = JsonDocument.Parse(body);
+        var root = jsonDoc.RootElement;
+
+        // Assert: проверка обязательных атрибутов ProblemDetails по RFC 9457
+        Assert.Equal(500, root.GetProperty("status").GetInt32());
+        Assert.Equal("Внутренняя ошибка сервера", root.GetProperty("title").GetString());
+        Assert.Equal("Произошла непредвиденная ошибка на стороне сервера.", root.GetProperty("detail").GetString());
+        Assert.Equal("https://httpstatuses.com/500", root.GetProperty("type").GetString());
+        Assert.Equal($"/api/projects/{project.Id}/github/sync", root.GetProperty("instance").GetString());
+        Assert.Equal(ApiErrorCodes.InternalServerError, root.GetProperty("code").GetString());
+
+        var traceId = root.GetProperty("traceId").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(traceId));
+
+        // Assert: проверка структуры JSON на отсутствие технических полей исключения
+        Assert.False(root.TryGetProperty("exception", out _));
+        Assert.False(root.TryGetProperty("stackTrace", out _));
+        Assert.False(root.TryGetProperty("stackTraceString", out _));
+        Assert.False(root.TryGetProperty("innerException", out _));
+        Assert.False(root.TryGetProperty("errors", out _));
+
+        // Assert: проверка исходного тела ответа на отсутствие утечек секретов, внутреннего сообщения и стектрейса
+        Assert.DoesNotContain(sensitiveFaultPayload, body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(sensitiveInternalMessage, body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(syntheticPat, body, StringComparison.Ordinal);
+        Assert.DoesNotContain("InvalidOperationException", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("at Api.", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("at Application.", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("at Microsoft.AspNetCore", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("at System.", body, StringComparison.OrdinalIgnoreCase);
+    }
+
     #endregion
 
     #region 6.4. Сериализация JSON и enum

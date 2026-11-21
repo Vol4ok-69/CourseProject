@@ -45,7 +45,7 @@
 | **`TD-012`** | Расширение семантических эвристик в `SqlAnalyzer` | `SqlAnalyzer` | **P3** | `DEFERRED` | `DEFERRED` | `DEFERRED` | **Нет** | — |
 | **`TD-013`** | Документированный шаблон конфигурации переменных окружения | `Backend.Api` | **P3** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Закрыто в Этапе 6: `.env.example`, отказ от User Secrets |
 | **`TD-014`** | Синхронизация базовой документации (`Технический регламент`) | `Documentation` | **P3** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Синхронизировано по ревизии 2068c51 |
-| **`TD-015`** | Сквозные интеграционные тесты API (`WebApplicationFactory`) | `Backend.Tests` | **P2** | `ACCEPTED` | `IN_PROGRESS` | `PARTIALLY_VERIFIED` | **Нет** | Реализованы 33 теста в `ApiPipelineIntegrationTests`, ожидает теста 500 via HttpClient |
+| **`TD-015`** | Сквозные интеграционные тесты API (`WebApplicationFactory`) | `Backend.Tests` | **P2** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Закрыто: 34 сквозных теста в `ApiPipelineIntegrationTests` (включая HTTP 500 via HttpClient) |
 
 > [!WARNING]
 > **Задачи, затрагивающие схему базы данных PostgreSQL:**
@@ -349,18 +349,29 @@
 ### TD-015: Сквозные интеграционные тесты API на базе WebApplicationFactory
 - **Связанный раздел:** [Раздел 3 test-suite-evaluation.md](../audits/test-suite-evaluation.md#3-анализ-реализации-сквозных-интеграционных-тестов-webapplicationfactoryprogram-td-015)
 - **Компонент:** `Backend.Tests`
-- **Статус:** `IN_PROGRESS` (Частично реализовано: сквозной конвейер функционирует, ожидает теста HTTP 500 via HttpClient)
+- **Статус:** `VERIFIED` (Архитектурное решение `ACCEPTED`, реализация `VERIFIED`, проверка `VERIFIED`)
 - **Приоритет:** `P2`
 - **Миграция БД:** Нет
 - **Зависимости:** Нет
 - **Описание:** Создать набор интеграционных тестов с реальным HTTP-конвейером ASP.NET Core (`WebApplicationFactory<Program>`).
 - **Фактическое состояние реализации:**
-  1. Реализована тестовая инфраструктура [`ApiWebApplicationFactory.cs`](../../tests/Backend.Tests/Integration/ApiWebApplicationFactory.cs) и набор сквозных тестов [`ApiPipelineIntegrationTests.cs`](../../tests/Backend.Tests/Integration/ApiPipelineIntegrationTests.cs) (33 теста), взаимодействующих с реальным PostgreSQL через [`PostgreSqlFixture.cs`](../../tests/Backend.Tests/Integration/PostgreSqlFixture.cs).
+  1. Реализована тестовая инфраструктура [`ApiWebApplicationFactory.cs`](../../tests/Backend.Tests/Integration/ApiWebApplicationFactory.cs) и полный набор сквозных тестов [`ApiPipelineIntegrationTests.cs`](../../tests/Backend.Tests/Integration/ApiPipelineIntegrationTests.cs) (34 теста), взаимодействующих с реальным PostgreSQL через [`PostgreSqlFixture.cs`](../../tests/Backend.Tests/Integration/PostgreSqlFixture.cs).
   2. **Реализованные и проверенные критерии:**
      - **Rate Limiting:** тест `RateLimiting_BurstRequests_Returns429TooManyRequests_WithRetryAfterAndProblemDetails` проверяет лимит 10 токенов, отсечку 11-го запроса кодом 429, заголовок `Retry-After` и формат ProblemDetails (`RATE_LIMIT_EXCEEDED`).
      - **CORS Preflight:** тесты `CorsPreflight_AllowedOrigin5173_ReturnsAccessControlHeaders`, `CorsPreflight_AllowedOrigin3000_ReturnsAccessControlHeaders`, `CorsPreflight_UntrustedOrigin_DoesNotReturnAllowOriginHeader` проверяют реальные `OPTIONS`-запросы к конвейеру.
      - **JWT Bearer:** тесты проверяют анонимные запросы (401), поврежденные токены (401), токены с неверной подписью (401), истекшие токены (401) и успешную аутентификацию по валидному токену (200).
      - **Авторизация и IDOR:** проверка изоляции данных между пользователями и администратором (403 Forbidden).
      - **Жизненные циклы сущностей:** сквозные тесты проектов, коммитов, GitHub PAT и очереди задач анализа на реальном PostgreSQL.
-  3. **Остаточный критерий для закрытия задачи:**
-     - Сквозной тест обработки непредвиденных исключений через `HttpClient` тестовой фабрики (HTTP 500 со схемой RFC 9457 ProblemDetails и сокрытием стектрейса/секретов). В настоящее время логика 500 протестирована на изолированном middleware в `ProblemDetailsAndEnumTests.cs`, но требует добавления сквозного теста в `ApiPipelineIntegrationTests.cs`.
+     - **Обработка необработанных исключений (HTTP 500):** сквозной тест `UnhandledException_InEndpointExecution_Returns500ProblemDetails_WithMaskedDetails_AndTraceId` проверяет перехват непредвиденного сбоя в конвейере через `HttpClient`, возврат RFC 9457 ProblemDetails и строгое сокрытие внутренних сведений.
+- **Результат верификации:**
+  1. Использована инфраструктура `WebApplicationFactory<Program>` и реальный `HttpClient`.
+  2. Подтверждена работа реального HTTP-конвейера ASP.NET Core: прохождение запроса через middleware (`UseForwardedHeaders`, `UseExceptionHandler`, `UseStatusCodePages`, `UseCors`, `UseAuthentication`, `UseAuthorization`, `UseRateLimiter`), маршрутизацию и контроллер.
+  3. Проверено возникновение необработанного исключения на защищенном маршруте синхронизации GitHub (`POST /api/projects/{project.Id}/github/sync`) при сбое вызова `MockGitHubService.GetCommitsAsync`.
+  4. Подтверждено строгое соответствие ответа стандарту RFC 9457 ProblemDetails: возврат HTTP-статуса `500 Internal Server Error` и заголовка `Content-Type: application/problem+json`.
+  5. Проверено наличие и корректность обязательных полей ProblemDetails: `status: 500`, `title: "Внутренняя ошибка сервера"`, `detail: "Произошла непредвиденная ошибка на стороне сервера."`, `type: "https://httpstatuses.com/500"`, `code: "INTERNAL_SERVER_ERROR"`, `instance: "/api/projects/{project.Id}/github/sync"`, непустой `traceId`.
+  6. Проверено безопасное содержимое ответа и полное отсутствие утечки секретов и отладочных данных: синтетический PAT, уникальный секретный маркер, внутреннее сообщение об ошибке, тип исключения `InvalidOperationException` и трассировка стека (`at Api.`, `at Application.`, `at Microsoft.AspNetCore`, `at System.`) отсутствуют в теле ответа.
+  7. Подтверждено отсутствие технических полей исключения в структуре JSON (`exception`, `stackTrace`, `stackTraceString`, `innerException`, `errors`).
+  8. Подтверждён фактический вызов метода `MockGitHubService.GetCommitsAsync` ровно один раз (`Times.Once`).
+  9. Результаты тестирования:
+     - Адресный запуск (`UnhandledException_InEndpointExecution`): 1/1 пройден (0 ошибок).
+     - Полный запуск набора тестов `Backend.Tests`: 733/733 пройдено (0 ошибок, 0 пропущено).
