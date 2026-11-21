@@ -32,7 +32,7 @@
 ### 2.1. Спецификация и аудит DatabaseAnalyzer
 - **Расположение:** [`docs/Исполнительное резюме анализатор БД.md`](../Исполнительное%20резюме%20анализатор%20БД.md)
 - **Охват:** Архитектура статического анализа моделей EF Core, конвейер `IDatabaseProjectResolver` → `IEfCoreModelInspector` → `EfCoreMetadataMapper` → `DatabaseAnalyzer`, правила `DB01`–`DB05`.
-- **Статус реализации:** Реализован в `src/Analyzers/Database/` и `src/Analyzers/Database.Runner/`, покрыт 173 тестами в `tests/DatabaseAnalyzer.Tests/` и 103 тестами в `tests/DatabaseAnalyzer.Runner.Tests/`.
+- **Статус реализации:** Реализован в `src/Analyzers/Database/` и `src/Analyzers/Database.Runner/`, подтверждён запуском 21.11.2026: 188 тест-кейсов (180 тестовых методов) в `tests/DatabaseAnalyzer.Tests/` и 103 тест-кейса (82 тестовых метода) в `tests/DatabaseAnalyzer.Runner.Tests/` (суммарно 291 выполненный тест-кейс, 0 сбоев).
 - **Архитектурное решение (ADR-001):** [`docs/architecture/database-analyzer-isolation.md`](../architecture/database-analyzer-isolation.md) (ADR-001, статус архитектурного решения: `ACCEPTED`, статус реализации: в процессе (`IN_PROGRESS`), реализованы извлечение метаданных Roslyn C# AST, JSON-контракт Backend–Runner и запуск Runner в изолированном Docker-контейнере).
 
 ### 2.2. Спецификация компонента SqlAnalyzer
@@ -89,7 +89,7 @@
     2. *Автономный Runner:* отдельный проект `NetScope.DatabaseAnalyzer.Runner` (`src/Analyzers/Database.Runner/`) с независимыми DTO и реализацией правил `DB01`–`DB05`.
     3. *JSON-контракт Backend–Runner:* независимый версионированный протокол обмена (`input.json` / `output.json`) через выделенный том `courseproject-exchange-data` с проверкой схем.
     4. *Изолированный запуск в Docker:* адаптер `DockerCliProcessAdapter` и `DatabaseContainerRunner` запускают контейнер `netscope-database-analyzer:latest` со строгими политиками безопасности (непривилегированный пользователь `appuser`, режим `--network none`, `--read-only` root, `--tmpfs /tmp`, сброс capabilities `--cap-drop ALL`, лимиты CPU/RAM/PID, таймаут 60 с, валидация путей `ResolveVolumeSubpaths`).
-    5. *Тестовое покрытие:* 173 теста в `DatabaseAnalyzer.Tests` и 103 теста в `DatabaseAnalyzer.Runner.Tests`.
+    5. *Тестовое покрытие:* подтверждено запуском 21.11.2026 — 188 тест-кейсов (180 тестовых методов) в `DatabaseAnalyzer.Tests` и 103 тест-кейса (82 тестовых метода) в `DatabaseAnalyzer.Runner.Tests` (суммарно 291 выполненный тест-кейс, 0 сбоев).
   - **Оставшаяся работа (не реализовано):**
     1. *Отказоустойчивость конвейера (`TD-002`):* сохранение находок других анализаторов при частичном сбое анализатора БД и формирование диагностического предупреждения `Severity.Warning` в `AnalysisService` (архитектурное решение: `ACCEPTED`, статус реализации: `OPEN`).
     2. *Изоляция рабочих каталогов и безопасная очистка (`TD-003`):* переход на схему путей `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` и реализация фонового очистителя «сиротских» каталогов с распределенными блокировками `pg_advisory_lock` в PostgreSQL (архитектурное решение: `ACCEPTED`, статус реализации: `OPEN`, с известными 8 сбоями в `CSharpAnalyzer.Tests`).

@@ -1,3 +1,6 @@
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
+using Microsoft.EntityFrameworkCore;
+using DatabaseAnalyzer.Mapping;
 using Application.Analyzers;
 using DatabaseAnalyzer;
 using DatabaseAnalyzer.Metadata;
@@ -1222,4 +1225,435 @@ public sealed class DatabaseAnalyzerTests
         Assert.Contains(result, f => f.Message.Contains("PersonPerson"));
         Assert.Contains(result, f => f.Message.Contains("PersonPerson1"));
     }
+
+    #region TD-004: Regression Tests for DB04 and DB05 with Real EfCoreMetadataMapper
+
+    [Fact]
+    public void DB04_WhenForeignKeyIsAlsoPrimaryKey_InOneToOne_NoDB04Reported()
+    {
+        using var context = CreateDb04OneToOneContext();
+        var mapper = new EfCoreMetadataMapper();
+        var metadata = mapper.Map(context.Model);
+
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
+
+        Assert.DoesNotContain(findings, f => f.Rule == "DB04");
+    }
+
+    [Fact]
+    public void DB04_WhenForeignKeyIsCoveredByAlternateKey_NoDB04Reported()
+    {
+        using var context = CreateDb04AlternateKeyContext();
+        var mapper = new EfCoreMetadataMapper();
+        var metadata = mapper.Map(context.Model);
+
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
+
+        Assert.DoesNotContain(findings, f => f.Rule == "DB04");
+    }
+
+    [Fact]
+    public void DB04_WhenForeignKeyIsCoveredByLeadingPrefixOfCompositeIndex_NoDB04Reported()
+    {
+        using var context = CreateDb04CompositePrefixContext();
+        var mapper = new EfCoreMetadataMapper();
+        var metadata = mapper.Map(context.Model);
+
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
+
+        Assert.DoesNotContain(findings, f => f.Rule == "DB04");
+    }
+
+    [Fact]
+    public void DB04_WhenIndexHasReverseColumnOrder_ProducesDB04Finding()
+    {
+        using var context = CreateDb04ReverseOrderContext();
+        var mapper = new EfCoreMetadataMapper();
+        var metadata = mapper.Map(context.Model);
+
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
+
+        var finding = Assert.Single(findings, f => f.Rule == "DB04");
+        Assert.Contains("Employees", finding.FilePath);
+        Assert.Contains("CountryId", finding.Message);
+        Assert.Contains("CompanyId", finding.Message);
+    }
+
+    [Fact]
+    public void DB04_WhenForeignKeyIsNotLeadingPrefixOfIndex_ProducesDB04Finding()
+    {
+        using var context = CreateDb04NonLeadingColumnContext();
+        var mapper = new EfCoreMetadataMapper();
+        var metadata = mapper.Map(context.Model);
+
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
+
+        var finding = Assert.Single(findings, f => f.Rule == "DB04");
+        Assert.Contains("Employees", finding.FilePath);
+        Assert.Contains("CountryId", finding.Message);
+    }
+
+    [Fact]
+    public void DB05_PrimaryKeyAndExplicitNonUniqueIndex_DoesNotProduceDB05()
+    {
+        using var context = CreateDb05NonUniqueOverlapContext();
+        var mapper = new EfCoreMetadataMapper();
+        var metadata = mapper.Map(context.Model);
+
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
+
+        Assert.DoesNotContain(findings, f => f.Rule == "DB05");
+    }
+
+    [Fact]
+    public void DB05_PrimaryKeyAndExplicitUniqueIndex_ProducesDB05()
+    {
+        using var context = CreateDb05UniqueOverlapContext();
+        var mapper = new EfCoreMetadataMapper();
+        var metadata = mapper.Map(context.Model);
+
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
+
+        var finding = Assert.Single(findings, f => f.Rule == "DB05");
+        Assert.Contains("UniqueOverlaps", finding.FilePath);
+        Assert.Equal(Severity.Info, finding.Severity);
+    }
+
+    [Fact]
+    public void DB05_AlternateKeyAndExplicitUniqueIndex_ProducesDB05()
+    {
+        using var context = CreateDb05AlternateKeyUniqueOverlapContext();
+        var mapper = new EfCoreMetadataMapper();
+        var metadata = mapper.Map(context.Model);
+
+        var findings = DatabaseRuleEvaluator.Evaluate(metadata);
+
+        var finding = Assert.Single(findings, f => f.Rule == "DB05");
+        Assert.Contains("AkUniqueOverlaps", finding.FilePath);
+        Assert.Equal(Severity.Info, finding.Severity);
+    }
+
+    #region Helper Contexts and Entities for DB04 and DB05 Tests
+
+    private static Td004OneToOneDbContext CreateDb04OneToOneContext()
+    {
+        var options = new DbContextOptionsBuilder<Td004OneToOneDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        return new Td004OneToOneDbContext(options);
+    }
+
+    private static Td004AlternateKeyDbContext CreateDb04AlternateKeyContext()
+    {
+        var options = new DbContextOptionsBuilder<Td004AlternateKeyDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        return new Td004AlternateKeyDbContext(options);
+    }
+
+    private static Td004CompositePrefixDbContext CreateDb04CompositePrefixContext()
+    {
+        var options = new DbContextOptionsBuilder<Td004CompositePrefixDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        return new Td004CompositePrefixDbContext(options);
+    }
+
+    private static Td004ReverseOrderDbContext CreateDb04ReverseOrderContext()
+    {
+        var options = new DbContextOptionsBuilder<Td004ReverseOrderDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        return new Td004ReverseOrderDbContext(options);
+    }
+
+    private static Td004NonLeadingColumnDbContext CreateDb04NonLeadingColumnContext()
+    {
+        var options = new DbContextOptionsBuilder<Td004NonLeadingColumnDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        return new Td004NonLeadingColumnDbContext(options);
+    }
+
+    private static Td005NonUniqueOverlapDbContext CreateDb05NonUniqueOverlapContext()
+    {
+        var options = new DbContextOptionsBuilder<Td005NonUniqueOverlapDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        return new Td005NonUniqueOverlapDbContext(options);
+    }
+
+    private static Td005UniqueOverlapDbContext CreateDb05UniqueOverlapContext()
+    {
+        var options = new DbContextOptionsBuilder<Td005UniqueOverlapDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        return new Td005UniqueOverlapDbContext(options);
+    }
+
+    private static Td005AkUniqueOverlapDbContext CreateDb05AlternateKeyUniqueOverlapContext()
+    {
+        var options = new DbContextOptionsBuilder<Td005AkUniqueOverlapDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        return new Td005AkUniqueOverlapDbContext(options);
+    }
+
+    private sealed class Td004User
+    {
+        public int Id { get; set; }
+        public Td004UserProfile? Profile { get; set; }
+    }
+
+    private sealed class Td004UserProfile
+    {
+        public int Id { get; set; }
+        public Td004User User { get; set; } = null!;
+    }
+
+    private sealed class Td004OneToOneDbContext(DbContextOptions<Td004OneToOneDbContext> options) : DbContext(options)
+    {
+        public DbSet<Td004User> Users => Set<Td004User>();
+        public DbSet<Td004UserProfile> Profiles => Set<Td004UserProfile>();
+
+        protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+        {
+            configurationBuilder.Conventions.Remove(typeof(ForeignKeyIndexConvention));
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Td004User>(b =>
+            {
+                b.ToTable("Users");
+                b.HasKey(x => x.Id);
+            });
+
+            modelBuilder.Entity<Td004UserProfile>(b =>
+            {
+                b.ToTable("Profiles");
+                b.HasKey(x => x.Id);
+                b.HasOne(x => x.User)
+                    .WithOne(x => x.Profile)
+                    .HasForeignKey<Td004UserProfile>(x => x.Id);
+            });
+        }
+    }
+
+    private sealed class Td004Tenant
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class Td004Department
+    {
+        public int Id { get; set; }
+        public int TenantId { get; set; }
+        public string Code { get; set; } = null!;
+    }
+
+    private sealed class Td004AlternateKeyDbContext(DbContextOptions<Td004AlternateKeyDbContext> options) : DbContext(options)
+    {
+        public DbSet<Td004Tenant> Tenants => Set<Td004Tenant>();
+        public DbSet<Td004Department> Departments => Set<Td004Department>();
+
+        protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+        {
+            configurationBuilder.Conventions.Remove(typeof(ForeignKeyIndexConvention));
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Td004Tenant>(b =>
+            {
+                b.ToTable("Tenants");
+                b.HasKey(x => x.Id);
+            });
+
+            modelBuilder.Entity<Td004Department>(b =>
+            {
+                b.ToTable("Departments");
+                b.HasKey(x => x.Id);
+                b.HasAlternateKey(x => new { x.TenantId, x.Code });
+                b.HasOne<Td004Tenant>()
+                    .WithMany()
+                    .HasForeignKey(x => x.TenantId);
+            });
+        }
+    }
+
+    private sealed class Td004Company
+    {
+        public int CountryId { get; set; }
+        public int CompanyId { get; set; }
+    }
+
+    private sealed class Td004Employee
+    {
+        public int Id { get; set; }
+        public int CountryId { get; set; }
+        public int CompanyId { get; set; }
+        public DateTime CreatedAt { get; set; }
+    }
+
+    private sealed class Td004CompositePrefixDbContext(DbContextOptions<Td004CompositePrefixDbContext> options) : DbContext(options)
+    {
+        public DbSet<Td004Company> Companies => Set<Td004Company>();
+        public DbSet<Td004Employee> Employees => Set<Td004Employee>();
+
+        protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+        {
+            configurationBuilder.Conventions.Remove(typeof(ForeignKeyIndexConvention));
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Td004Company>(b =>
+            {
+                b.ToTable("Companies");
+                b.HasKey(x => new { x.CountryId, x.CompanyId });
+            });
+
+            modelBuilder.Entity<Td004Employee>(b =>
+            {
+                b.ToTable("Employees");
+                b.HasKey(x => x.Id);
+                b.HasIndex(x => new { x.CountryId, x.CompanyId, x.CreatedAt });
+                b.HasOne<Td004Company>()
+                    .WithMany()
+                    .HasForeignKey(x => new { x.CountryId, x.CompanyId });
+            });
+        }
+    }
+
+    private sealed class Td004ReverseOrderDbContext(DbContextOptions<Td004ReverseOrderDbContext> options) : DbContext(options)
+    {
+        public DbSet<Td004Company> Companies => Set<Td004Company>();
+        public DbSet<Td004Employee> Employees => Set<Td004Employee>();
+
+        protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+        {
+            configurationBuilder.Conventions.Remove(typeof(ForeignKeyIndexConvention));
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Td004Company>(b =>
+            {
+                b.ToTable("Companies");
+                b.HasKey(x => new { x.CountryId, x.CompanyId });
+            });
+
+            modelBuilder.Entity<Td004Employee>(b =>
+            {
+                b.ToTable("Employees");
+                b.HasKey(x => x.Id);
+                b.HasIndex(x => new { x.CompanyId, x.CountryId });
+                b.HasOne<Td004Company>()
+                    .WithMany()
+                    .HasForeignKey(x => new { x.CountryId, x.CompanyId });
+            });
+        }
+    }
+
+    private sealed class Td004Country
+    {
+        public int CountryId { get; set; }
+    }
+
+    private sealed class Td004NonLeadingColumnDbContext(DbContextOptions<Td004NonLeadingColumnDbContext> options) : DbContext(options)
+    {
+        public DbSet<Td004Country> Countries => Set<Td004Country>();
+        public DbSet<Td004Employee> Employees => Set<Td004Employee>();
+
+        protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+        {
+            configurationBuilder.Conventions.Remove(typeof(ForeignKeyIndexConvention));
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Td004Country>(b =>
+            {
+                b.ToTable("Countries");
+                b.HasKey(x => x.CountryId);
+            });
+
+            modelBuilder.Entity<Td004Employee>(b =>
+            {
+                b.ToTable("Employees");
+                b.HasKey(x => x.Id);
+                b.HasIndex(x => new { x.CompanyId, x.CountryId });
+                b.HasOne<Td004Country>()
+                    .WithMany()
+                    .HasForeignKey(x => x.CountryId);
+            });
+        }
+    }
+
+    private sealed class Td005NonUniqueOverlapEntity
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class Td005NonUniqueOverlapDbContext(DbContextOptions<Td005NonUniqueOverlapDbContext> options) : DbContext(options)
+    {
+        public DbSet<Td005NonUniqueOverlapEntity> Overlaps => Set<Td005NonUniqueOverlapEntity>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Td005NonUniqueOverlapEntity>(b =>
+            {
+                b.ToTable("NonUniqueOverlaps");
+                b.HasKey(x => x.Id);
+                b.HasIndex(x => x.Id).IsUnique(false);
+            });
+        }
+    }
+
+    private sealed class Td005UniqueOverlapEntity
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class Td005UniqueOverlapDbContext(DbContextOptions<Td005UniqueOverlapDbContext> options) : DbContext(options)
+    {
+        public DbSet<Td005UniqueOverlapEntity> Overlaps => Set<Td005UniqueOverlapEntity>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Td005UniqueOverlapEntity>(b =>
+            {
+                b.ToTable("UniqueOverlaps");
+                b.HasKey(x => x.Id);
+                b.HasIndex(x => x.Id).IsUnique(true);
+            });
+        }
+    }
+
+    private sealed class Td005AkUniqueOverlapEntity
+    {
+        public int Id { get; set; }
+        public string Code { get; set; } = null!;
+    }
+
+    private sealed class Td005AkUniqueOverlapDbContext(DbContextOptions<Td005AkUniqueOverlapDbContext> options) : DbContext(options)
+    {
+        public DbSet<Td005AkUniqueOverlapEntity> Overlaps => Set<Td005AkUniqueOverlapEntity>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Td005AkUniqueOverlapEntity>(b =>
+            {
+                b.ToTable("AkUniqueOverlaps");
+                b.HasKey(x => x.Id);
+                b.HasAlternateKey(x => x.Code);
+                b.HasIndex(x => x.Code).IsUnique(true);
+            });
+        }
+    }
+
+    #endregion
+
+    #endregion
 }

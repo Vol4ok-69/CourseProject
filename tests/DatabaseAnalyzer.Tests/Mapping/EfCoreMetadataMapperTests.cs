@@ -617,4 +617,216 @@ public sealed class EfCoreMetadataMapperTests
         public ICollection<TestPerson> Colleagues { get; set; } = [];
         public ICollection<TestPerson> ColleagueOf { get; set; } = [];
     }
+
+    #region TD-004: Primary and Alternate Keys in Indexes and Metadata
+
+    [Fact]
+    public void Map_ShouldIncludePrimaryKeyInIndexes_WithIsUniqueTrue()
+    {
+        using var context = CreateTd004Context();
+        var mapper = new EfCoreMetadataMapper();
+
+        var result = mapper.Map(context.Model);
+
+        var account = Assert.Single(
+            result.Entities,
+            entity => entity.EntityName == typeof(Td004Account).FullName);
+
+        var pkIndex = Assert.Single(
+            account.Indexes,
+            idx => idx.PropertyNames.SequenceEqual(["TenantId", "DepartmentId", "ItemId"]));
+
+        Assert.True(pkIndex.IsUnique);
+        Assert.Equal("PK_Accounts", pkIndex.Name);
+    }
+
+    [Fact]
+    public void Map_ShouldIncludeAlternateKeyInIndexes_WithIsUniqueTrue()
+    {
+        using var context = CreateTd004Context();
+        var mapper = new EfCoreMetadataMapper();
+
+        var result = mapper.Map(context.Model);
+
+        var account = Assert.Single(
+            result.Entities,
+            entity => entity.EntityName == typeof(Td004Account).FullName);
+
+        var akIndex = Assert.Single(
+            account.Indexes,
+            idx => idx.PropertyNames.SequenceEqual(["Email"]));
+
+        Assert.True(akIndex.IsUnique);
+        Assert.Equal("AK_Accounts_Email", akIndex.Name);
+    }
+
+    [Fact]
+    public void Map_ShouldPopulateAlternateKeys_WithNonPrimaryKeys()
+    {
+        using var context = CreateTd004Context();
+        var mapper = new EfCoreMetadataMapper();
+
+        var result = mapper.Map(context.Model);
+
+        var account = Assert.Single(
+            result.Entities,
+            entity => entity.EntityName == typeof(Td004Account).FullName);
+
+        var ak = Assert.Single(account.AlternateKeys);
+        Assert.False(ak.IsPrimaryKey);
+        Assert.Equal(["Email"], ak.PropertyNames);
+        Assert.Equal("AK_Accounts_Email", ak.Name);
+    }
+
+    [Fact]
+    public void Map_ShouldRetainBothPrimaryKeyAndAlternateKey_InKeys()
+    {
+        using var context = CreateTd004Context();
+        var mapper = new EfCoreMetadataMapper();
+
+        var result = mapper.Map(context.Model);
+
+        var account = Assert.Single(
+            result.Entities,
+            entity => entity.EntityName == typeof(Td004Account).FullName);
+
+        Assert.Equal(2, account.Keys.Count);
+
+        var pk = Assert.Single(account.Keys, k => k.IsPrimaryKey);
+        Assert.Equal(["TenantId", "DepartmentId", "ItemId"], pk.PropertyNames);
+
+        var ak = Assert.Single(account.Keys, k => !k.IsPrimaryKey);
+        Assert.Equal(["Email"], ak.PropertyNames);
+    }
+
+    [Fact]
+    public void Map_ShouldPreservePropertyOrder_InCompositeKeysAndIndexes()
+    {
+        using var context = CreateTd004Context();
+        var mapper = new EfCoreMetadataMapper();
+
+        var result = mapper.Map(context.Model);
+
+        var account = Assert.Single(
+            result.Entities,
+            entity => entity.EntityName == typeof(Td004Account).FullName);
+
+        var expectedOrder = new[] { "TenantId", "DepartmentId", "ItemId" };
+
+        var pk = Assert.Single(account.Keys, k => k.IsPrimaryKey);
+        Assert.Equal(expectedOrder, pk.PropertyNames);
+
+        var pkIndex = Assert.Single(
+            account.Indexes,
+            idx => idx.PropertyNames.SequenceEqual(expectedOrder));
+        Assert.Equal(expectedOrder, pkIndex.PropertyNames);
+        Assert.True(pkIndex.IsUnique);
+    }
+
+    [Fact]
+    public void Map_ShouldKeepPrimaryKeyAndExplicitNonUniqueIndexAsSeparateObjects()
+    {
+        using var context = CreateTd004Context();
+        var mapper = new EfCoreMetadataMapper();
+
+        var result = mapper.Map(context.Model);
+
+        var entity = Assert.Single(
+            result.Entities,
+            e => e.EntityName == typeof(Td004NonUniqueOverlap).FullName);
+
+        Assert.Equal(2, entity.Indexes.Count);
+
+        var pkIndex = Assert.Single(entity.Indexes, idx => idx.IsUnique);
+        Assert.Equal(["Id"], pkIndex.PropertyNames);
+        Assert.Equal("PK_NonUniqueOverlaps", pkIndex.Name);
+
+        var nonUniqueIndex = Assert.Single(entity.Indexes, idx => !idx.IsUnique);
+        Assert.Equal(["Id"], nonUniqueIndex.PropertyNames);
+        Assert.Equal("IX_NonUniqueOverlaps_Id", nonUniqueIndex.Name);
+    }
+
+    [Fact]
+    public void Map_ShouldKeepPrimaryKeyAndExplicitUniqueIndexAsSeparateObjects()
+    {
+        using var context = CreateTd004Context();
+        var mapper = new EfCoreMetadataMapper();
+
+        var result = mapper.Map(context.Model);
+
+        var entity = Assert.Single(
+            result.Entities,
+            e => e.EntityName == typeof(Td004UniqueOverlap).FullName);
+
+        Assert.Equal(2, entity.Indexes.Count);
+        Assert.All(entity.Indexes, idx =>
+        {
+            Assert.True(idx.IsUnique);
+            Assert.Equal(["Id"], idx.PropertyNames);
+        });
+
+        Assert.Contains(entity.Indexes, idx => idx.Name == "PK_UniqueOverlaps");
+        Assert.Contains(entity.Indexes, idx => idx.Name == "IX_UniqueOverlaps_Id");
+    }
+
+    private static Td004KeysDbContext CreateTd004Context()
+    {
+        var options = new DbContextOptionsBuilder<Td004KeysDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+
+        return new Td004KeysDbContext(options);
+    }
+
+    private sealed class Td004Account
+    {
+        public int Id { get; set; }
+        public string Email { get; set; } = null!;
+        public string TenantId { get; set; } = null!;
+        public string DepartmentId { get; set; } = null!;
+        public string ItemId { get; set; } = null!;
+    }
+
+    private sealed class Td004NonUniqueOverlap
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class Td004UniqueOverlap
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class Td004KeysDbContext(DbContextOptions<Td004KeysDbContext> options) : DbContext(options)
+    {
+        public DbSet<Td004Account> Accounts => Set<Td004Account>();
+        public DbSet<Td004NonUniqueOverlap> NonUniqueOverlaps => Set<Td004NonUniqueOverlap>();
+        public DbSet<Td004UniqueOverlap> UniqueOverlaps => Set<Td004UniqueOverlap>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Td004Account>(entity =>
+            {
+                entity.ToTable("Accounts");
+                entity.HasKey(x => new { x.TenantId, x.DepartmentId, x.ItemId });
+                entity.HasAlternateKey(x => x.Email);
+            });
+
+            modelBuilder.Entity<Td004NonUniqueOverlap>(entity =>
+            {
+                entity.ToTable("NonUniqueOverlaps");
+                entity.HasKey(x => x.Id);
+                entity.HasIndex(x => x.Id).IsUnique(false);
+            });
+
+            modelBuilder.Entity<Td004UniqueOverlap>(entity =>
+            {
+                entity.ToTable("UniqueOverlaps");
+                entity.HasKey(x => x.Id);
+                entity.HasIndex(x => x.Id).IsUnique(true);
+            });
+        }
+    }
+
+    #endregion
 }

@@ -20,6 +20,8 @@ public sealed class EfCoreMetadataMapper
 
     private static DatabaseEntityMetadata MapEntity(IEntityType entityType)
     {
+        var tableName = entityType.GetTableName() ?? entityType.Name;
+
         var properties = entityType.GetProperties().Select
         (
             property => new DatabasePropertyMetadata
@@ -37,11 +39,19 @@ public sealed class EfCoreMetadataMapper
 
         var keys = entityType.GetKeys().Select
         (
-            key => new DatabaseKeyMetadata
+            key =>
             {
-                Name = key.GetName() ?? key.Properties[0].Name,
-                PropertyNames = [.. key.Properties.Select(property => property.Name)],
-                IsPrimaryKey = key.IsPrimaryKey()
+                var propertyNames = key.Properties.Select(property => property.Name).ToList();
+                var fallbackName = key.IsPrimaryKey()
+                    ? $"PK_{tableName}"
+                    : $"AK_{tableName}_{string.Join("_", propertyNames)}";
+
+                return new DatabaseKeyMetadata
+                {
+                    Name = key.GetName() ?? fallbackName,
+                    PropertyNames = propertyNames,
+                    IsPrimaryKey = key.IsPrimaryKey()
+                };
             }
         ).ToList();
 
@@ -59,7 +69,7 @@ public sealed class EfCoreMetadataMapper
             }
         ).ToList();
 
-        var indexes = entityType.GetIndexes().Select
+        var explicitIndexes = entityType.GetIndexes().Select
         (
             index => new DatabaseIndexMetadata
             {
@@ -67,7 +77,27 @@ public sealed class EfCoreMetadataMapper
                 PropertyNames = [.. index.Properties.Select(property => property.Name)],
                 IsUnique = index.IsUnique
             }
-        ).ToList();
+        );
+
+        var keyIndexes = entityType.GetKeys().Select
+        (
+            key =>
+            {
+                var propertyNames = key.Properties.Select(property => property.Name).ToList();
+                var fallbackName = key.IsPrimaryKey()
+                    ? $"PK_{tableName}"
+                    : $"AK_{tableName}_{string.Join("_", propertyNames)}";
+
+                return new DatabaseIndexMetadata
+                {
+                    Name = key.GetName() ?? fallbackName,
+                    PropertyNames = propertyNames,
+                    IsUnique = true
+                };
+            }
+        );
+
+        var indexes = explicitIndexes.Concat(keyIndexes).ToList();
 
         var relationships = entityType.GetForeignKeys().Select
         (
@@ -106,10 +136,11 @@ public sealed class EfCoreMetadataMapper
         return new DatabaseEntityMetadata
         {
             EntityName = entityType.Name,
-            TableName = entityType.GetTableName() ?? entityType.Name,
+            TableName = tableName,
             SchemaName = entityType.GetSchema(),
             Properties = properties,
             Keys = keys,
+            AlternateKeys = keys.Where(k => !k.IsPrimaryKey).ToList(),
             ForeignKeys = foreignKeys,
             Indexes = indexes,
             Relationships = relationships,
@@ -117,39 +148,38 @@ public sealed class EfCoreMetadataMapper
         };
     }
 
-    
-	private static string GetRelationshipType(IForeignKey foreignKey)
-	{
-		if (foreignKey.IsOwnership)
-		{
-			return "Ownership";
-		}
+    private static string GetRelationshipType(IForeignKey foreignKey)
+    {
+        if (foreignKey.IsOwnership)
+        {
+            return "Ownership";
+        }
 
-		if (foreignKey.IsUnique)
-		{
-			return "OneToOne";
-		}
+        if (foreignKey.IsUnique)
+        {
+            return "OneToOne";
+        }
 
-		var dependentNavigation = foreignKey.DependentToPrincipal;
-		var principalNavigation = foreignKey.PrincipalToDependent;
+        var dependentNavigation = foreignKey.DependentToPrincipal;
+        var principalNavigation = foreignKey.PrincipalToDependent;
 
-		if (principalNavigation?.IsCollection == true)
-		{
-			return "OneToMany";
-		}
+        if (principalNavigation?.IsCollection == true)
+        {
+            return "OneToMany";
+        }
 
-		if (dependentNavigation is not null)
-		{
-			return "ManyToOne";
-		}
+        if (dependentNavigation is not null)
+        {
+            return "ManyToOne";
+        }
 
-		if (principalNavigation is not null)
-		{
-			return "OneToMany";
-		}
+        if (principalNavigation is not null)
+        {
+            return "OneToMany";
+        }
 
-		return "ManyToOne";
-	}
+        return "ManyToOne";
+    }
 
     private static bool IsDeclaredOrExplicitSkipNavigation(ISkipNavigation skipNav)
     {

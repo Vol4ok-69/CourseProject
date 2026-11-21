@@ -34,7 +34,7 @@
 | **`TD-001`** | Изоляция анализатора моделей EF Core (Roslyn + Runner в Docker) | `DatabaseAnalyzer` | **P1** | `ACCEPTED` | `IN_PROGRESS` | `PARTIALLY_VERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
 | **`TD-002`** | Отказоустойчивость конвейера анализа при сбоях анализатора БД | `DatabaseAnalyzer` | **P1** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
 | **`TD-003`** | Изоляция рабочих каталогов `{Path}/{Id}/{Token}` и безопасная очистка | `Backend.Infrastructure` | **P1** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
-| **`TD-004`** | Учет первичных/альтернативных ключей и порядка столбцов в DB04 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
+| **`TD-004`** | Учет первичных/альтернативных ключей и порядка столбцов в DB04 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Закрыто: маппинг PK/AK в `Indexes`, `AlternateKeys`, 15 тестов (7 тестов маппера + 8 тестов DB04/DB05) в `DatabaseAnalyzer.Tests` |
 | **`TD-005`** | Поддержка частичных/фильтрованных индексов в правиле DB05 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
 | **`TD-006`** | Инкрементальная синхронизация коммитов репозитория GitHub | `Backend.Infrastructure` | **P2** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
 | **`TD-007`** | Управление жизненным циклом очереди: retry, backoff, Poison Pill | `Backend.Queue` | **P2** | `NEEDS_DESIGN` | `OPEN` | `UNVERIFIED` | **ДА** | — |
@@ -159,17 +159,25 @@
 ### TD-004: Учет первичных/альтернативных ключей и порядка столбцов в DB04
 - **Связанный дефект:** [DEF-004](../audits/2026-11-06-technical-audit.md#def-004-ложные-срабатывания-правила-db04-для-первичных-и-альтернативных-ключей)
 - **Компонент:** `DatabaseAnalyzer` (`EfCoreMetadataMapper.cs`, `DatabaseAnalyzer.cs`)
-- **Статус:** `OPEN`
+- **Статус:** `VERIFIED` (Верифицировано по результатам архитектурного ревью: подтверждён тестовый запуск от 21.11.2026 — 188/188 тест-кейсов `DatabaseAnalyzer.Tests` [180 тестовых методов], 103/103 тест-кейса `DatabaseAnalyzer.Runner.Tests` [82 тестовых метода], код возврата 0)
 - **Приоритет:** `P2`
 - **Миграция БД:** Нет
 - **Зависимости:** Нет
 - **Описание:** Устранить ложные срабатывания правила `DB04` для внешних ключей, поддержанных первичными и альтернативными ключами.
 - **Критерии приёмки:**
-  1. `EfCoreMetadataMapper` включает свойства первичного ключа (`FindPrimaryKey`) и уникальных ключей (`GetKeys`) в список индексов сущности со свойством `IsUnique = true`.
+  1. `EfCoreMetadataMapper` включает свойства всех ключей сущности (первичного и альтернативных) из `entityType.GetKeys()` в список индексов сущности со свойством `IsUnique = true` (отдельный вызов `FindPrimaryKey()` не требуется, так как первичный ключ входит в `GetKeys()`).
   2. Правило `DB04` проверяет, что столбцы внешнего ключа совпадают с префиксом составного индекса в том же порядке следования столбцов.
+- **Фактический результат реализации:**
+  1. `EfCoreMetadataMapper.cs` обновлен: в коллекцию `Indexes` включаются все ключи из `entityType.GetKeys()` (первичный и альтернативные) со свойством `IsUnique = true`, именем ограничения (`key.GetName()` с fallback `PK_{Table}` / `AK_{Table}_{Props}`) и сохранением порядка столбцов.
+  2. Заполняется свойство `AlternateKeys = keys.Where(k => !k.IsPrimaryKey).ToList()` в `DatabaseEntityMetadata`.
+  3. В рамках задачи TD-004 добавлено 15 новых тестов в тестовый набор `DatabaseAnalyzer.Tests` (не путать с общим количеством тестов анализатора или всего проекта):
+     - 7 адресных unit-тестов маппера в `EfCoreMetadataMapperTests.cs` (PK/AK в `Indexes`, заполнение `AlternateKeys`, сохранение порядка свойств в составных ключах, раздельное представление PK и явных неуникальных/уникальных индексов);
+     - 8 регрессионных тестов в `DatabaseAnalyzerTests.cs` для сквозного маппинга и правил DB04/DB05 через `DatabaseRuleEvaluator` (связи 1:1, альтернативные ключи, составные префиксы, обратный порядок столбцов, проверка отсутствия ложных DB05).
 - **Необходимые тесты:**
-  - Тест модели 1:1 с общим первичным/внешним ключом (отсутствие ложного срабатывания DB04).
-  - Тест составного индекса с правильным и неправильным порядком столбцов.
+  - Тест модели 1:1 с общим первичным/внешним ключом (отсутствие ложного срабатывания DB04) — реализован и проверен (`DB04_WhenForeignKeyIsAlsoPrimaryKey_InOneToOne_NoDB04Reported`).
+  - Тест составного индекса с правильным и неправильным порядком столбцов — реализован и проверен (`DB04_WhenForeignKeyIsCoveredByLeadingPrefixOfCompositeIndex_NoDB04Reported`, `DB04_WhenIndexHasReverseColumnOrder_ProducesDB04Finding`, `DB04_WhenForeignKeyIsNotLeadingPrefixOfIndex_ProducesDB04Finding`).
+  - Тесты покрытия FK альтернативным ключом — реализован и проверен (`DB04_WhenForeignKeyIsCoveredByAlternateKey_NoDB04Reported`).
+  - Тесты верификации влияния на правило DB05 — реализованы и проверены (`DB05_PrimaryKeyAndExplicitNonUniqueIndex_DoesNotProduceDB05`, `DB05_PrimaryKeyAndExplicitUniqueIndex_ProducesDB05`, `DB05_AlternateKeyAndExplicitUniqueIndex_ProducesDB05`).
 
 ---
 
