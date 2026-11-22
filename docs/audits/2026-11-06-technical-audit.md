@@ -68,13 +68,13 @@
 ---
 
 ### DEF-002: Сбой всего анализа коммита при отсутствии `IDesignTimeDbContextFactory`
-- **Статус:** `CONFIRMED`
+- **Статус:** `RESOLVED` (Устранён в рамках задачи [TD-002](../plans/Technical-Debt-Plan.md#td-002))
 - **Приоритет:** `P1 (Critical)`
-- **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/Providers/`)
+- **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/`), `AnalysisService` (`src/Backend/Application/Services/AnalysisService.cs`)
 - **Ссылки на код:**
-  - [`EfCoreModelInspector.cs#L64-L69`](../../src/Analyzers/Database/Providers/EfCoreModelInspector.cs#L64-L69)
-  - [`EfCoreMetadataProvider.cs#L28-L31`](../../src/Analyzers/Database/Providers/EfCoreMetadataProvider.cs#L28-L31)
-  - [`AnalysisService.cs#L190-L205`](../../src/Backend/Application/Services/AnalysisService.cs#L190-L205)
+  - [`DatabaseAnalyzer.cs#L25-L100`](../../src/Analyzers/Database/DatabaseAnalyzer.cs)
+  - [`AnalysisService.cs#L190-L368`](../../src/Backend/Application/Services/AnalysisService.cs#L190-L368)
+  - [`IDatabaseAnalyzer.cs`](../../src/Backend/Application/Analyzers/IDatabaseAnalyzer.cs)
 
 1. **Первоначальное обнаруженное состояние (на 06.11.2026):**
    - Метод `EfCoreModelInspector.InspectAsync` искал исключительно реализацию интерфейса `IDesignTimeDbContextFactory<T>`. Если исследуемый проект использовал стандартную регистрацию `AddDbContext<AppDbContext>` в `Program.cs` и не объявлял фабрику времени разработки, инспектор выбрасывал исключение `InvalidOperationException("No IDesignTimeDbContextFactory was found...")`.
@@ -89,12 +89,16 @@
    - **Защита от ложных срабатываний:** Если метаданные модели извлечены частично, правила `DB01`–`DB05` не должны выдавать ложные предупреждения по неполным связям; проверки пропускаются или выполняются только по гарантированно разрешенным сущностям с явной отметкой о частичности модели.
    - **Категорический запрет универсальной подмены SQLite:** Запрещено использовать универсальную подмену провайдера на SQLite in-memory (`UseSqlite`), так как реальные модели EF Core содержат PostgreSQL-специфичные конструкции (`jsonb`, массивы, расширения `citext`, identity), приводящие к сбою валидации в SQLite.
 
-3. **Фактически реализованные компоненты (по состоянию на 20.11.2026):**
+3. **Фактически реализованное решение (ноябрь 2026 г., TD-002):**
    - Реализованный статический Roslyn-парсер (`RoslynMetadataExtractor`) не требует наличия `IDesignTimeDbContextFactory<T>` и извлекает метаданные напрямую из синтаксических деревьев `DbContext` и конфигурационных классов.
    - Автономный раннер `Database.Runner` выполняет валидацию входных данных и возвращает структурированный результат со статусом выполнения.
+   - В `AnalysisService.cs` реализована отказоустойчивость: сбой или информационный пропуск `DatabaseAnalyzer` изолируется и не роняет общий конвейер, если отработал хотя бы один другой анализатор. Находки сохраняются, формируются предупреждения `Severity.Warning` (`DatabaseAnalyzerRules.InternalAnalyzerError`, `ContainerError`, `ContainerTimeout`, `ExtractionError`).
+   - Разграничены информационный пропуск (`MissingDbContext`, `DatabaseAnalysisExecutionStatus.InformationSkipped`) и критические ошибки.
+   - Реализована защита целостности Lease Renewal (`LeaseRenewalState`) и гарантий владения задачей: штатная остановка не может замаскировать критическую ошибку продления аренды, а при потере владения запрещены модифицирующие операции (`FailAsync`, `CompleteAsync`, небезопасная очистка).
 
-4. **Оставшаяся работа:**
-   - Задача **`TD-002`** ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-002)), статус реализации: **`OPEN`**. Требуется рефакторинг `AnalysisService.ExecuteAnalysisAsync` для перехвата сбоев и таймаутов анализатора БД с выставлением диагностического замечания `Severity.Warning` и гарантированным сохранением результатов остальных анализаторов.
+4. **Статус устранения дефекта:**
+   - Дефект **полностью устранён** в рамках задачи **`TD-002`** ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-002)), статус реализации: **`VERIFIED`**.
+   - Решение подтверждено набором из 91 теста в `AnalysisServiceQueueTests` (включая сценарии A–G и 6 специальных тестов граничных условий Lease Renewal), 0 сбоев.
 
 ---
 
