@@ -50,7 +50,7 @@ source*.md
 review*.md
 *review.md
 dumps/
-
+!TD-007-Technical-Investigation-Review.md
 swagger.json
 *test*.ps1
 !tests/test_all.ps1
