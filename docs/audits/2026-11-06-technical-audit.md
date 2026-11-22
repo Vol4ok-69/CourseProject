@@ -60,10 +60,10 @@
    - В `src/Analyzers/Database.Runner/` реализован автономный исполняемый раннер `NetScope.DatabaseAnalyzer.Runner`, проверяющий правила `DB01`–`DB05` со своими моделями DTO.
    - Реализован версионированный JSON-протокол обмена через файлы `/exchange/in/input.json` (монтирование readonly) и `/exchange/out/output.json` с независимой валидацией схем на стороне бэкенда и раннера.
    - В бэкенде реализованы `DockerCliProcessAdapter` и `DatabaseContainerRunner`, запускающие контейнер `netscope-database-analyzer:latest` со всеми политиками безопасности (`--network none`, `--read-only`, `tmpfs`, лимиты CPU/памяти/процессов, `appuser`, таймаут 60 с).
-   - Модульные тесты подтверждают корректность работы компонентов: `DatabaseAnalyzer.Tests` (173 теста) и `DatabaseAnalyzer.Runner.Tests` (103 теста).
+   - Модульные тесты подтверждают корректность работы компонентов: `DatabaseAnalyzer.Tests` (190 тестов) и `DatabaseAnalyzer.Runner.Tests` (105 тестов).
 
-4. **Оставшаяся работа:**
-   - Задача **`TD-001`** ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-001)), статус реализации: **`IN_PROGRESS`**. Требуется окончательное подтверждение всех приёмочных критериев (комплексные тесты парсинга сложных моделей Fluent API / Data Annotations, разделение контекстов и стабильность конвейера).
+4. **Статус задачи:**
+   - Задача **`TD-001`** ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-001)), статус реализации: **`VERIFIED`**. Все 10 приёмочных критериев Stage 2 подтверждены тестами парсинга моделей Fluent API / Data Annotations, разделения контекстов и запуска изолированного раннера.
 
 ---
 
@@ -182,38 +182,47 @@
 ---
 
 ### DEF-005: Ложные срабатывания правила DB05 для частичных и фильтрованных индексов
-- **Статус:** `CONFIRMED`
+- **Статус:** `RESOLVED` в целевом конвейере ADR-001 / [TD-005](../plans/Technical-Debt-Plan.md#td-005) (Legacy-класс `EfCoreMetadataMapper.cs` не используется в production)
 - **Приоритет:** `P2 (High)`
-- **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/`)
+- **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/`, `src/Analyzers/Database.Runner/`)
 - **Ссылки на код:**
-  - [`EfCoreMetadataMapper.cs#L62-L70`](../../src/Analyzers/Database/Mapping/EfCoreMetadataMapper.cs#L62-L70)
-  - [`DatabaseAnalyzer.cs#L125-L152`](../../src/Analyzers/Database/DatabaseAnalyzer.cs#L125-L152)
-- **Описание проблемы:**
-  - `EfCoreMetadataMapper` при извлечении метаданных индексов копирует свойства `Name`, `PropertyNames` и `IsUnique`, но игнорирует предикат фильтра `index.GetFilter()`.
-  - В реальных проектах на один и тот же столбец часто создаются два индекса: один общий, а второй частичный (например, для мягкого удаления `WHERE "IsDeleted" = false`), либо два частичных индекса с непересекающимися условиями.
-  - Анализатор `DatabaseAnalyzer` в правиле `DB05` сравнивает только состав столбцов и ложно помечает частичные индексы как избыточные дубликаты.
-- **Требуемое исправление:**
-  - Добавить свойство `Filter` в DTO метаданных индекса `IndexMetadata`.
-  - Признавать индексы дублирующимися только при совпадении набора столбцов, уникальности и идентичности фильтра (либо когда оба фильтра отсутствуют).
+  - [`FluentApiParser.cs#L597-L603`](../../src/Analyzers/Database/Roslyn/FluentApiParser.cs#L597-L603)
+  - [`DatabaseContainerRunner.cs#L434`](../../src/Analyzers/Database/Runner/DatabaseContainerRunner.cs#L434)
+  - [`SqlFilterComparer.cs`](../../src/Analyzers/Database.Runner/Rules/SqlFilterComparer.cs)
+  - [`DatabaseRulesEngine.cs#L528-L544`](../../src/Analyzers/Database.Runner/Rules/DatabaseRulesEngine.cs#L528-L544)
+  - [`EfCoreMetadataMapper.cs#L72-L80`](../../src/Analyzers/Database/Mapping/EfCoreMetadataMapper.cs#L72-L80) *(устаревший in-process маппер)*
+- **Первоначальное состояние проблемы (на 06.11.2026):**
+  - Устаревший класс `EfCoreMetadataMapper` при извлечении метаданных индексов игнорировал предикат фильтра `index.GetFilter()`.
+  - В реальных проектах на один и тот же столбец часто создаются два индекса: общий и частичный (например, для мягкого удаления `WHERE "IsDeleted" = false`), либо два частичных индекса с непересекающимися условиями.
+  - Анализатор ложно помечал частичные индексы как избыточные дубликаты DB05.
+- **Фактическое состояние реализации в целевом конвейере (ADR-001):**
+  - В целевом архитектурном решении статический экстрактор `FluentApiParser.cs` извлекает `.HasFilter(filterVal)` и сохраняет его в `IndexMetadata.Filter`.
+  - Контейнерный раннер передает фильтр в DTO обмена `input.json` (`AnalysisInputContract.cs:235-236`).
+  - Правило `DB05` в `DatabaseRulesEngine.cs` сравнивает фильтры через консервативный парсер `SqlFilterComparer.AreFiltersEquivalent(idx1.Filter, idx2.Filter, out var isAmbiguous)`. Если предикаты фильтрации отличаются или фильтр задан только для одного индекса, дубликат не рапортуется (ложное срабатывание исключено).
+  - Поведение верифицировано тестом `DatabaseRulesEngineTests.cs:1192` (`DB05_DifferentFiltersOnSameColumns_NoFinding`) и набором `SqlFilterComparerTests.cs`.
+  - Устаревший класс `EfCoreMetadataMapper.cs` не используется ни в одном сервисе бэкенда. Дефект в эксплуатируемом конвейере полностью устранён.
 
 ---
 
 ### DEF-006: Ограничение длины хеша коммита в CreateCommitDto (SHA-1 vs SHA-256)
-- **Статус:** `PARTIALLY_CONFIRMED`
+- **Статус:** `RESOLVED` (Устранён в рамках задачи [TD-008](../plans/Technical-Debt-Plan.md#td-008))
 - **Приоритет:** `P3 (Medium)`
 - **Компонент:** `Backend.Application` (`src/Backend/Application/DTOs/`)
 - **Ссылки на код:**
-  - [`CreateCommitDto.cs#L14-L15`](../../src/Backend/Application/DTOs/CreateCommitDto.cs#L14-L15)
-  - [`Commit.cs#L12`](../../src/Backend/Domain/Entities/Commit.cs#L12)
-  - [`CommitConfiguration.cs#L17`](../../src/Backend/Infrastructure/Data/Configurations/CommitConfiguration.cs#L17)
-- **Фактическое состояние:**
-  - В DTO ручного создания коммита `CreateCommitDto` задан атрибут: `[StringLength(40, MinimumLength = 7)]`. Это блокирует ручное добавление коммитов современных репозиториев Git, использующих алгоритм хеширования SHA-256 (длина хеша 64 символа).
+  - [`CreateCommitDto.cs#L12-L16`](../../src/Backend/Application/DTOs/CreateCommitDto.cs#L12-L16)
+  - [`Commit.cs#L9`](../../src/Backend/Domain/Entities/Commit.cs#L9)
+  - [`CommitConfiguration.cs#L17-L18`](../../src/Backend/Infrastructure/Data/Configurations/CommitConfiguration.cs#L17-L18)
+- **Первоначальное обнаруженное состояние (на 06.11.2026):**
+  - В DTO ручного создания коммита `CreateCommitDto` был задан атрибут: `[StringLength(40, MinimumLength = 7)]`. Это блокировало ручное добавление коммитов современных репозиториев Git, использующих алгоритм хеширования SHA-256 (длина хеша 64 символа).
   - При этом доменная сущность `Commit.cs` содержит `public string CommitHash { get; set; }` без ограничений длины.
   - Конфигурация EF Core `CommitConfiguration.cs` отображает свойство в тип `text` PostgreSQL, а составной индекс `IX_Commits_ProjectId_CommitHash` успешно индексирует строки до 64+ символов.
-  - Автоматическая синхронизация через `GitHubSyncService` переносит хеши коммитов напрямую из GitHub API в сущность, минуя `CreateCommitDto`.
-- **Требуемое исправление:**
-  - Расширить длину в `CreateCommitDto`: `[StringLength(64, MinimumLength = 7)]`.
-  - Добавить строгую валидацию шестнадцатеричного формата (hex): `[RegularExpression("^[0-9a-fA-F]{7,64}$", ErrorMessage = "Хеш коммита должен содержать от 7 до 64 шестнадцатеричных символов.")]`.
+- **Фактически реализованное решение (ноябрь 2026 г., коммит `57da9b8`):**
+  1. В `CreateCommitDto.cs` расширен допустимый диапазон длины: `[StringLength(64, MinimumLength = 7, ErrorMessage = "Хэш коммита должен содержать от 7 до 64 символов.")]`.
+  2. Добавлена строгая проверка шестнадцатеричного формата: `[RegularExpression(@"\A[0-9a-fA-F]{7,64}\z", ErrorMessage = "Хэш коммита должен содержать только шестнадцатеричные символы.")]`.
+  3. Реализация полностью подтверждена тестами:
+     - unit-тесты валидации DTO в `DtoValidationAndAnalysisErrorTests.cs` (тесты SHA-1, SHA-256, 7 hex, смешанного регистра и 11 негативных граничных случаев);
+     - сквозные тесты в `ApiPipelineIntegrationTests.cs`: `CreateCommit_WithSha256Hash_SucceedsAndPersistsInDatabase` (201 Created + сохранение в PostgreSQL) и `CreateCommit_WithInvalidHash_Returns400BadRequest_WithValidationProblemDetails` (400 ProblemDetails).
+  - Дефект полностью устранён, задача TD-008 переведена в статус `VERIFIED`.
 
 ---
 

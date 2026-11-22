@@ -2,15 +2,17 @@
 
 **Дата аудита:** Ноябрь 2026 г. (Актуализировано по результатам реализации TD-002, 22.11.2026)<br/>
 **Базовый коммит:** `main`<br/>
-**Фактическое число тестов в решении (`CourseProject.slnx`):** 1180 тестов (1172 успешно, 8 известных воспроизводимых сбоев TD-003) в 6 тестовых сборках:
-- `Backend.Tests`: 768 тестов (все успешно)
-- `DatabaseAnalyzer.Tests`: 190 тестов (все успешно)
-- `DatabaseAnalyzer.Runner.Tests`: 105 тестов (все успешно)
-- `SecurityAnalyzer.Tests`: 56 тестов (все успешно)
-- `SqlAnalyzer.Tests`: 44 теста (все успешно)
-- `CSharpAnalyzer.Tests`: 17 тестов (9 успешно, 8 известных сбоев TD-003 в классе `RepositorySourceServiceTests`)
+**Фактическое число тестов в решении (`CourseProject.slnx`):** 1180 тестов (1172 успешно, 8 известных сбоев TD-003) в 6 тестовых сборках:
+- `Backend.Tests`: 768 тестов (все успешно, exit code 0)
+- `DatabaseAnalyzer.Tests`: 190 тестов (все успешно, exit code 0)
+- `DatabaseAnalyzer.Runner.Tests`: 105 тестов (все успешно, exit code 0)
+- `SecurityAnalyzer.Tests`: 56 тестов (все успешно, exit code 0)
+- `SqlAnalyzer.Tests`: 44 теста (все успешно, exit code 0)
+- `CSharpAnalyzer.Tests`: 17 тестов (9 успешно, 8 известных сбоев TD-003 в классе `RepositorySourceServiceTests`, exit code 1)
 
-*Последняя известная статистика тестового набора, полученная в подтверждённом цикле тестирования реализации TD-002 (22.11.2026).*
+*Команда полного запуска `dotnet test --no-restore` завершается с кодом возврата (exit code) **1** исключительно из-за 8 непрошедших тестов проекта `CSharpAnalyzer.Tests`. В остальных 5 проектах суммарно 1172 теста завершаются с exit code **0**. Инструментальное сравнение с предварительно сохранённой внешней базовой линией (baseline diff) не производилось; все 8 сбоев точно соответствуют известному состоянию отложенной задачи TD-003 (требование `IAnalysisLeaseGuard` в `RepositorySourceService`).*
+
+*Примечание об источниках данных: отдельные файлы отчётов (`.trx`) или полные дампы вывода команд для запуска от 22.11.2026 в репозиторий не сохранялись; статистика набора тестов приведена по отчёту запуска сессии Antigravity, а не по приложенным сохранённым логам.*
 
 ---
 
@@ -55,28 +57,48 @@
 
 | Тестовый набор | Кол-во тестов | Оценка (0-10) | Назначение и качество | Решение | Аргументация и статус |
 | :--- | :---: | :---: | :--- | :---: | :--- |
-| **`DatabaseAnalyzer.Tests`** | 190 тест-кейсов | **8/10** | Проверка правил `DB01`–`DB05`, маппинга метаданных `EfCoreMetadataMapper`, разрешения проектов и моделей, изоляции и обработки частичных сбоев в рамках TD-001/TD-002. | **`KEEP`** | Тщательно покрывает логику анализатора моделей. Задачи TD-004 и TD-002 закрыты (`VERIFIED`, подтверждено 190/190 успешно); для правила `DB05` открыта задача TD-005. |
+| **`DatabaseAnalyzer.Tests`** | 190 тест-кейсов | **8/10** | Проверка правил `DB01`–`DB05`, маппинга метаданных `EfCoreMetadataMapper`, разрешения проектов и моделей, изоляции и обработки частичных сбоев в рамках TD-001/TD-002. | **`KEEP`** | Тщательно покрывает логику анализатора моделей. Задачи TD-001, TD-002, TD-004 и TD-005 закрыты (`VERIFIED`, подтверждено 190/190 успешно в `DatabaseAnalyzer.Tests` и 105/105 успешно в `DatabaseAnalyzer.Runner.Tests`). |
 | **`DatabaseAnalyzer.Runner.Tests`** | 105 тест-кейсов | **9/10** | Проверка CLI-адаптера Docker, параметров запуска контейнера и контракта обмена runner. | **`KEEP`** | Обеспечивает верификацию взаимодействия с Docker CLI и изоляцию контейнера анализатора (подтверждено 105/105 успешно). |
 
 ---
 
 ### 2.3. Серверная часть и контроллеры API (`Backend.Tests` — 768 тестов)
 
-| Тестовый класс | Кол-во тестов | Оценка (0-10) | Тип конвейера | Решение | Аргументация и статус |
-| :--- | :---: | :---: | :--- | :---: | :--- |
-| **`ApiPipelineIntegrationTests.cs`** | 33 | **9/10** | Настоящий HTTP Integration (`WebApplicationFactory` + PostgreSQL) | **`KEEP`** | Сквозные интеграционные тесты реального HTTP-конвейера: Rate Limiting (429 Retry-After), CORS (OPTIONS 5173/3000/untrusted), JWT Bearer (401/200), RBAC (403/200), IDOR, RFC 9457 ProblemDetails, enum строки, жизненный цикл проектов, коммитов, PAT и очереди задач на реальном PostgreSQL. |
-| **`CorsPolicyTests.cs`** | 41 | **9/10** | Unit-тест CORS-пайплайна и парсера | **`KEEP`** | Тщательно проверяет строгий разбор портов (1..65535, запрет порта 0, пустых портов, нечисловых значений), нормализацию по RFC 6454 (удаление портов 80/443), а также unit-пайплайн `CorsMiddleware`. |
-| **`RateLimitingTests.cs`** | 10 | **5/10** | Синтетический pipeline | **`KEEP`** | Дополняет сквозные интеграционные тесты проверкой базовой конфигурации Token Bucket. |
-| **`ProblemDetailsAndEnumTests.cs`** | 18 | **9/10** | Сериализация JSON и Middleware ExceptionHandler | **`KEEP`** | Проверяет сериализацию перечислений строками, структуру RFC 9457 `ProblemDetails` и обработку необработанных исключений в `UseExceptionHandler` (возврат 500, маскирование секретов и стека). |
-| **`AppDbContextQueueModelTests.cs`** | 12 | **9/10** | SQLite in-memory / EF Model | **`KEEP`** | Тщательно проверяет соответствие модели EF Core: типы полей очереди, составные уникальные индексы. **Важно:** не классифицировать эти тесты как «PostgreSQL-интеграционные», так как они выполняются на базе SQLite in-memory провайдера. |
-| **`JwtLoggingTests.cs`** | 8 | **7/10** | Изолированный логгер | **`KEEP`** | Проверяет подавление токенов в логах и валидацию заголовка `Authorization`. |
-| **`AdminProtectionTests.cs`** | 14 | **8/10** | Unit-тесты сервиса | **`KEEP`** | Проверяет логику запрета деградации/удаления последнего админа на уровне `UserService` (согласовано с защитой через advisory lock в СУБД). |
-| **`AnalysisServiceQueueTests.cs`** | 91 | **9/10** | Service-level (SQLite in-memory + моки) | **`KEEP`** | Детально проверяет смену статусов очереди, генерацию токенов выполнения, продление и истечение аренды, сценарии частичных сбоев DatabaseAnalyzer (сценарии A–G), потокобезопасность `LeaseRenewalState` и изоляцию отмены при гонках завершения анализа (6 выделенных тестов TD-002). |
-| **`ProjectsControllerTests.cs`** | 42 | **8/10** | Controller Unit | **`KEEP`** | Тщательное тестирование авторизации, изоляции пользователей (IDOR) и маппинга DTO. |
-| **`CommitsControllerTests.cs`** | 36 | **8/10** | Controller Unit | **`KEEP`** | Проверяет CRUD коммитов, пагинацию и обработку конфликтов уникальности 409. |
-| **`AnalysesControllerTests.cs`** | 38 | **8/10** | Controller Unit | **`KEEP`** | Проверяет возвращение кода 202 Accepted, валидацию и получение результатов. |
-| **`AuthControllerTests.cs`** | 28 | **8/10** | Controller Unit | **`KEEP`** | Проверяет регистрацию, логин, валидацию паролей и выдачу JWT. |
-| **Прочие тесты репозиториев, сервисов и интеграций** | 396 | **8/10** | Unit / Component / Integration | **`KEEP`** | Обеспечивают высокую плотность проверки бизнес-логики, валидации DTO, шифрования токенов и PostgreSQL-фикстур. |
+Полная и верифицированная разборка всех 30 тестовых классов сборки `Backend.Tests` (ровно 768 тестов, 0 сбоев, exit code 0):
+
+| № | Тестовый класс | Кол-во тестов | Оценка (0-10) | Тип конвейера | Решение | Назначение и проверяемые сценарии |
+| :-: | :--- | :-: | :-: | :--- | :-: | :--- |
+| 1 | **`AnalysisServiceQueueTests`** | 91 | **9/10** | Service-level (SQLite + моки) | **`KEEP`** | Жизненный цикл очереди, смена статусов, генерация токенов выполнения, сценарии частичных сбоев DatabaseAnalyzer (A–G), потокобезопасность `LeaseRenewalState` и изоляция отмены при гонках (6 тестов TD-002). |
+| 2 | **`CorsPolicyTests`** | 84 | **9/10** | Unit / Middleware | **`KEEP`** | Строгий разбор портов (1..65535, запрет 0, пустых и нечисловых), нормализация по RFC 6454 (порты 80/443), белый список origin'ов, middleware CORS. |
+| 3 | **`DtoValidationAndAnalysisErrorTests`** | 68 | **8/10** | Unit / Validation | **`KEEP`** | Валидация входных DTO (пароли, логины, URL репозиториев, хеши коммитов SHA-1 и SHA-256 по TD-008), санитайзер сообщений об ошибках (маскирование IP-адресов, абсолютных путей, паролей). |
+| 4 | **`GitHubServiceTests`** | 50 | **8/10** | Unit / Mock HTTP | **`KEEP`** | Интеграция с GitHub API: получение коммитов, проверка веток, валидация URL, устойчивость к сбоям сети и таймаутам, безопасная передача токенов. |
+| 5 | **`ApiPipelineIntegrationTests`** | 45 | **9/10** | HTTP Integration (`WebApplicationFactory` + PG) | **`KEEP`** | Сквозной HTTP-конвейер: Rate Limiting (429 Retry-After), CORS (OPTIONS 5173/3000/untrusted), JWT Bearer (401/200), RBAC (403/200), IDOR, RFC 9457 ProblemDetails, enum строки, SHA-256 (TD-008), сквозные исключения HTTP 500 через HttpClient (TD-015). |
+| 6 | **`RepositorySourceServiceTests`** | 38 | **8/10** | Unit / Security | **`KEEP`** | Скачивание и распаковка архивов репозиториев с обязательной проверкой `IAnalysisLeaseGuard`, защита от Path Traversal, Zip Slip и атак по префиксу каталога. |
+| 7 | **`PostgreSqlWorkspaceCleanupIntegrationTests`** | 38 | **9/10** | Database Integration (PostgreSQL) | **`KEEP`** | Интеграционная очистка рабочих каталогов на PostgreSQL, сценарии A–H, атомарность токенов выполнения, advisory locks, блокировка очистки при активном воркере. |
+| 8 | **`ProblemDetailsAndEnumTests`** | 36 | **9/10** | Component / Serialization | **`KEEP`** | Строковая сериализация перечислений, RFC 9457 `ProblemDetails`, маскирование стека и исключений в `UseExceptionHandler` (HTTP 500). |
+| 9 | **`PaginationTests`** | 34 | **8/10** | Unit / Controller | **`KEEP`** | Пагинация списков сущностей, валидация `page`/`pageSize`, граничные значения, заголовки и метаданные пагинации. |
+| 10 | **`GitHubSyncServiceTests`** | 32 | **8/10** | Unit / Service | **`KEEP`** | Синхронизация коммитов репозитория, сопоставление веток, сохранение авторов и дат в БД. |
+| 11 | **`ProjectsControllerTests`** | 25 | **8/10** | Controller Unit | **`KEEP`** | CRUD проектов, проверка прав владельца (защита от IDOR), валидация DTO, сопоставление маршрутов. |
+| 12 | **`TokenEncryptionServiceTests`** | 24 | **9/10** | Unit / Cryptography | **`KEEP`** | Симметричное шифрование AES-256-GCM для токенов GitHub PAT, валидация ключей (256 бит Base64), защита от повреждения шифротекста/тегов. |
+| 13 | **`RateLimitingTests`** | 23 | **7/10** | Unit / Pipeline | **`KEEP`** | Конфигурация лимитов Token Bucket (AuthPolicy, GeneralPolicy), проверка счетчиков и алгоритмов скользящего окна. |
+| 14 | **`GitHubCredentialServiceTests`** | 21 | **8/10** | Unit / Security | **`KEEP`** | Безопасное сохранение, извлечение и удаление токенов доступа GitHub, привязка к пользователю. |
+| 15 | **`AuthGitHubControllerTests`** | 19 | **8/10** | Controller Unit | **`KEEP`** | OAuth/PAT флоу интеграции с GitHub, валидация учетных данных, связывание аккаунтов. |
+| 16 | **`PostgreSqlAdvisoryLockIntegrationTests`** | 16 | **9/10** | Database Integration (PostgreSQL) | **`KEEP`** | Конкурентные транзакционные распределенные блокировки (`pg_advisory_xact_lock`), защита от гонок регистрации и захвата задач. |
+| 17 | **`AnalysesControllerTests`** | 15 | **8/10** | Controller Unit | **`KEEP`** | Эндпоинты запуска и проверки анализа, возврат HTTP 202 Accepted, проверка прав доступа к результатам. |
+| 18 | **`AdminUsersControllerTests`** | 15 | **8/10** | Controller Unit | **`KEEP`** | Управление пользователями из административной панели, валидация прав администратора, запрет самодеградации. |
+| 19 | **`AuthControllerTests`** | 14 | **8/10** | Controller Unit | **`KEEP`** | Регистрация, аутентификация, валидация сложности паролей, выдача JWT токенов. |
+| 20 | **`AnalysisQueueTests`** | 13 | **8/10** | Service-level (SQLite) | **`KEEP`** | Базовая работа очереди задач, смена статусов `Pending` -> `Running` -> `Completed`/`Failed`. |
+| 21 | **`AdminProtectionTests`** | 13 | **8/10** | Unit / Service | **`KEEP`** | Защита последнего администратора от удаления и понижения роли на уровне сервиса `UserService`. |
+| 22 | **`DatabaseInitializationAndHealthTests`** | 10 | **9/10** | Database Integration (PostgreSQL) | **`KEEP`** | Накат миграций EF Core, health checks базы данных, проверка корректности структуры схем и таблиц. |
+| 23 | **`CommitsControllerTests`** | 9 | **8/10** | Controller Unit | **`KEEP`** | Получение списка коммитов проекта, пагинация, фильтрация по веткам. |
+| 24 | **`RepositoryArchiveSecurityTests`** | 7 | **8/10** | Unit / Security | **`KEEP`** | Защита от Zip Bomb, симлинков, выходов за пределы целевой папки при распаковке ZIP. |
+| 25 | **`WorkspaceFileLockProviderTests`** | 7 | **8/10** | Unit / FileLock | **`KEEP`** | Межпроцессные файловые блокировки `FileShare.None` на каталоги анализа, предотвращение конфликтов очистки. |
+| 26 | **`JwtLoggingTests`** | 7 | **7/10** | Unit / Logging | **`KEEP`** | Маскирование чувствительных данных: токены `Bearer`, пароли и секреты исключаются из журналов логов. |
+| 27 | **`DatabaseUniqueConstraintTests`** | 5 | **9/10** | Component / EF Model | **`KEEP`** | Валидация уникальных ограничений EF Core: `(ProjectId, Hash)`, `(Username)` и составные ключи. |
+| 28 | **`AnalysisDeduplicationTests`** | 5 | **8/10** | Service-level | **`KEEP`** | Предотвращение дублирования задач анализа для одного и того же коммита в очереди. |
+| 29 | **`AnalysisBackgroundServiceTests`** | 3 | **8/10** | Service-level | **`KEEP`** | Жизненный цикл фонового воркера `AnalysisBackgroundService`, обработка исключений в цикле обработки. |
+| 30 | **`AppDbContextQueueModelTests`** | 1 | **8/10** | Component / EF Model | **`KEEP`** | Проверка соответствия модели EF Core для сущностей распределенной очереди. |
+| **ИТОГО** | **30 тестовых классов** | **768** | **8.4/10** | **Смешанный (Unit, Component, Integration)** | **`KEEP`** | **Все 768 тестов успешно пройдены (0 непрошедших, 0 пропущенных, код возврата 0)** |
 
 #### 2.3.1. Выделенные тесты целостности Lease Renewal и изоляции отмены в `AnalysisServiceQueueTests` (TD-002)
 
@@ -150,9 +172,9 @@
 4. **Сериализация HTTP-контрактов и валидация DTO — ПОДТВЕРЖДЕНО (`VERIFIED`):**
    - Методы: `EnumProperties_SerializedAsString_NotNumeric`, `MalformedJson_Returns400BadRequest_WithValidationProblemDetails`, `MissingRequiredDtoFields_Returns400BadRequest_WithErrorsDictionary`.
 
-5. **Сквозная обработка ошибок (RFC 9457 ProblemDetails при необработанных исключениях 500) — ЧАСТИЧНО (`IN_PROGRESS`):**
-   - **Фактическое состояние:** Обработка непредвиденных исключений через `UseExceptionHandler` и возврат RFC 9457 `500 Internal Server Error` со схемой ProblemDetails (скрытие стектрейса и паролей, генерация `traceId`) протестирована на уровне конвейера middleware в [`ProblemDetailsAndEnumTests.cs#L136-L178`](../../tests/Backend.Tests/ProblemDetailsAndEnumTests.cs#L136-L178) (`Pipeline_UnhandledException_Returns500ProblemDetailsWithMaskedDetails`).
-   - **Остаточный критерий для закрытия TD-015:** Добавить в `ApiPipelineIntegrationTests.cs` сквозной вызов через `HttpClient` тестовой фабрики, провоцирующий непредвиденное исключение (через мок зависимости или тестовую конфигурацию), с валидацией HTTP 500 и формата ProblemDetails. В связи с этим задача **TD-015** сохраняется в статусе **`IN_PROGRESS`** до реализации этого теста.
+5. **Сквозная обработка ошибок (RFC 9457 ProblemDetails при необработанных исключениях 500) — ПОДТВЕРЖДЕНО (`VERIFIED`):**
+   - **Фактическое состояние:** Обработка непредвиденных исключений через `UseExceptionHandler` и возврат RFC 9457 `500 Internal Server Error` со схемой ProblemDetails (скрытие стектрейса и паролей, генерация `traceId`) полностью верифицирована сквозным HTTP-тестом `UnhandledException_InEndpointExecution_Returns500ProblemDetails_WithMaskedDetails_AndTraceId` в [`ApiPipelineIntegrationTests.cs`](../../tests/Backend.Tests/Integration/ApiPipelineIntegrationTests.cs) (коммит `e12b4ba`). Запрос через реальный `HttpClient` к маршруту `POST /api/projects/{project.Id}/github/sync` моделирует сбой зависимости (`MockGitHubService.GetCommitsAsync`), подтверждает возврат статуса 500, заголовок `application/problem+json`, обязательные поля RFC 9457, сокрытие внутреннего сообщения/секретов и однократный вызов сервиса.
+   - Все критерии задачи **TD-015** полностью выполнены и проверены, задача закрыта в статусе **`VERIFIED`**.
 
 ---
 

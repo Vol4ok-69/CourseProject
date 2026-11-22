@@ -31,14 +31,14 @@
 
 | ID | Задача | Компонент | Приоритет | Архитектура | Реализация | Проверка | Миграция БД | Зависимости |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **`TD-001`** | Изоляция анализатора моделей EF Core (Roslyn + Runner в Docker) | `DatabaseAnalyzer` | **P1** | `ACCEPTED` | `IN_PROGRESS` | `PARTIALLY_VERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
+| **`TD-001`** | Изоляция анализатора моделей EF Core (Roslyn + Runner в Docker) | `DatabaseAnalyzer` | **P1** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
 | **`TD-002`** | Отказоустойчивость конвейера анализа при сбоях анализатора БД | `DatabaseAnalyzer` | **P1** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
 | **`TD-003`** | Изоляция рабочих каталогов `{Path}/{Id}/{Token}` и безопасная очистка | `Backend.Infrastructure` | **P1** | `ACCEPTED` | `OPEN` *(DEFERRED)* | `UNVERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
 | **`TD-004`** | Учет первичных/альтернативных ключей и порядка столбцов в DB04 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Закрыто: маппинг PK/AK в `Indexes`, `AlternateKeys`, 15 тестов (7 тестов маппера + 8 тестов DB04/DB05) в `DatabaseAnalyzer.Tests` |
-| **`TD-005`** | Поддержка частичных/фильтрованных индексов в правиле DB05 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
+| **`TD-005`** | Поддержка частичных/фильтрованных индексов в правиле DB05 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Закрыто в целевом конвейере Roslyn + Runner (SqlFilterComparer, DB05 filter normalization); legacy-класс EfCoreMetadataMapper устарел и не используется в production |
 | **`TD-006`** | Инкрементальная синхронизация коммитов репозитория GitHub | `Backend.Infrastructure` | **P2** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
 | **`TD-007`** | Управление жизненным циклом очереди: retry, backoff, Poison Pill | `Backend.Queue` | **P2** | `NEEDS_DESIGN` | `OPEN` | `UNVERIFIED` | **ДА** | — |
-| **`TD-008`** | Поддержка хешей SHA-256 (64 hex) и валидация в CreateCommitDto | `Backend.Application` | **P2** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
+| **`TD-008`** | Поддержка хешей SHA-256 (64 hex) и валидация в CreateCommitDto | `Backend.Application` | **P2** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Закрыто в коммите 57da9b8: StringLength(64, 7), Regex hex-валидации, unit и сквозные интеграционные тесты |
 | **`TD-009`** | Детектирование паттерна `WithOrigins("*")` в правиле SEC003 | `SecurityAnalyzer` | **P3** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
 | **`TD-010`** | Детектирование `ServicePointManager` в правиле SEC005 | `SecurityAnalyzer` | **P3** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
 | **`TD-011`** | Адаптивная нормализация структуры путей ZIP-архивов | `Backend.Infrastructure` | **P3** | `NEEDS_DESIGN` | `NEEDS_VERIFICATION` | `NEEDS_VERIFICATION` | **Нет** | — |
@@ -60,8 +60,8 @@
 - **Связанный дефект:** [DEF-001](../audits/2026-11-06-technical-audit.md#def-001-выполнение-недоверенного-msbuild-кода-и-динамическая-загрузка-сборки)
 - **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/`, `src/Analyzers/Database.Runner/`)
 - **Статус архитектурного решения:** `ACCEPTED` ([ADR-001](../architecture/database-analyzer-isolation.md), [`TD-001-Stage-2-Architecture.md`](TD-001-Stage-2-Architecture.md))
-- **Статус реализации:** `IN_PROGRESS` (Реализованы Roslyn-анализ, автономный Runner, JSON-контракты v1 и Docker-адаптер; ожидает окончательной верификации критериев приёмки)
-- **Статус проверки:** `PARTIALLY_VERIFIED` (проверены 173 теста `DatabaseAnalyzer.Tests` и 103 теста `Runner.Tests`)
+- **Статус реализации:** `VERIFIED` (Реализованы Roslyn-анализ, автономный Runner, JSON-контракты v1 и Docker-адаптер; все 10 критериев Stage 2 подтверждены тестами)
+- **Статус проверки:** `VERIFIED` (проверены 190 тестов `DatabaseAnalyzer.Tests` и 105 тестов `Runner.Tests`, все успешно, exit code 0)
 - **Приоритет:** `P1`
 - **Миграция БД:** Нет
 - **Зависимости:** [ADR-001: Архитектура анализаторов, изоляция анализа БД и отказоустойчивость конвейера](../architecture/database-analyzer-isolation.md)
@@ -69,6 +69,33 @@
   1. **Статический анализатор C# AST на базе Roslyn (`IRoslynMetadataExtractor`):** парсинг исходного кода моделей и контекстов EF Core без предварительной компиляции проектов и без динамической загрузки сторонних сборок на хосте (устранение векторов исполнения кода в основном процессе бэкенда, защита от DoS через ограничения времени и глубины обхода синтаксических деревьев).
   2. **Автономный исполняемый процесс Runner (`NetScope.DatabaseAnalyzer.Runner`) в изолированном Docker-контейнере:** исполнение правил анализа реляционной схемы `DB01`–`DB05` исключительно на основе сериализованных метаданных EF Core, получаемых через входной файл `/exchange/in/input.json` по схеме `database-analyzer-input-v1.schema.json`. Контейнер работает строго без сетевого доступа (`--network none`), **не подключается к СУБД PostgreSQL** (ни к рабочей, ни к пользовательской) и возвращает результаты вычисления правил в `/exchange/out/output.json` по схеме `database-analyzer-output-v1.schema.json`.
   3. **Разграничение ответственности и будущие расширения:** в текущем Stage 2 Runner принимает только JSON с метаданными моделей EF Core и выполняет правила `DB01`–`DB05`. Синтаксический анализ SQL на уровне C# AST выполняет `SqlAnalyzer` (`SQL001`, `SQL002`). Глубокий анализ произвольных DDL-скриптов, сырых SQL-дампов или прямое подключение к тестовой СУБД вынесены в потенциальные будущие расширения и не входят в текущий этап Stage 2.
+
+#### Детальное сопоставление критериев приёмки Stage 2 с фактической реализацией
+
+| № | Критерий приёмки Stage 2 | Фактическая реализация (файлы и методы) | Подтверждающие тесты | Результат проверки |
+| :-: | :--- | :--- | :--- | :-: |
+| 1 | Исключение вызовов `dotnet build`, `Assembly.LoadFrom` и `AssemblyLoadContext` над пользовательским кодом в основном процессе | `src/Analyzers/Database/DatabaseAnalyzer.cs` (L50-53, L119-123), `src/Analyzers/Database/Roslyn/RoslynMetadataExtractor.cs` | `DatabaseAnalyzerIsolationTests.cs` (`AnalyzeAsync_DoesNotCallDotnetBuildOrAssemblyLoad`), `DatabaseAnalyzerTests.cs` | **PASS** |
+| 2 | Извлечение метаданных моделей EF Core напрямую из C# AST без предварительной компиляции проекта | `src/Analyzers/Database/Roslyn/RoslynMetadataExtractor.cs` (`ExtractAsync`), `RoslynModelInspector.cs` (`InspectAsync`) | `RoslynModelInspectorTests.cs`, `RoslynMetadataExtractorTests.cs` | **PASS** |
+| 3 | Поддержка строго согласованного набора Fluent API: `HasKey`, `HasIndex`, `IsUnique`, `HasDatabaseName`, `HasFilter`, `HasOne`, `WithMany`, `WithOne`, `HasMany`, `HasForeignKey`, `ToTable` | `src/Analyzers/Database/Roslyn/FluentApiParser.cs` (`ParseEntityConfiguration`, L200-650) | `FluentApiParserTests.cs` (адресные тесты для каждого из 11 методов Fluent API) | **PASS** |
+| 4 | Поддержка строго согласованного набора Data Annotations: `[Key]`, `[ForeignKey]`, `[Index]`, `[Table]`, `[Required]` | `src/Analyzers/Database/Roslyn/DataAnnotationParser.cs` (`ParseEntity`, `ParseProperty`) | `DataAnnotationParserTests.cs` (тесты каждого атрибута аннотаций) | **PASS** |
+| 5 | Статическая регистрация конфигураций: `OnModelCreating`, отдельные классы `IEntityTypeConfiguration<T>`, вызовы `ApplyConfiguration` / `ApplyConfigurationsFromAssembly` (динамическая рефлексия не поддерживается, формирует `Severity.Warning`) | `src/Analyzers/Database/Roslyn/DbContextSyntaxVisitor.cs`, `src/Analyzers/Database/Roslyn/RoslynModelInspector.cs` (`DiscoverConfigurations`) | `RoslynModelInspectorTests.cs` (`Discovers_EntityTypeConfiguration_Classes`, `Handles_ApplyConfigurationsFromAssembly_Statically`) | **PASS** |
+| 6 | Строгое разделение сущностей между несколькими контекстами (`DbContext`) в одном репозитории | `src/Analyzers/Database/Roslyn/RoslynModelInspector.cs` (изоляция по `DiscoveredDbContext`) | `RoslynModelInspectorTests.cs` (`MultipleDbContexts_SeparatesEntitiesStrictly`) | **PASS** |
+| 7 | Статический обход локальных вспомогательных методов конфигурации ограничен глубиной 3 с защитой от рекурсивных циклов (формирование `Severity.Warning`) | `src/Analyzers/Database/Roslyn/LocalMethodTraverser.cs` (`TraverseMethod`, лимит `MaxDepth = 3`, стек обнаружения циклов) | `LocalMethodTraverserTests.cs` (`MaxDepth_Exceeded_ProducesWarning`, `RecursiveCycle_Detected_ProducesWarning`) | **PASS** |
+| 8 | Строго ограниченный состав конструкций: неподдерживаемые конструкции и рефлексия выставляют `hasIncompleteMetadata = true` и `Severity.Warning` без падения | `src/Analyzers/Database/Roslyn/RoslynModelInspector.cs`, `src/Analyzers/Database/Roslyn/DiscoveredEntity.cs` | `RoslynModelInspectorTests.cs` (`UnsupportedConstruct_SetsIncompleteMetadataFlag_AndEmitsWarning`) | **PASS** |
+| 9 | Запуск автономного Runner в Docker-контейнере: offline (`--network none`), без подключения к БД/сети, под `appuser` (10001:10001), таймаут 60 с, read-only root | `src/Analyzers/Database/Runner/DatabaseContainerRunner.cs`, `src/Analyzers/Database/Process/DockerCliProcessAdapter.cs` | См. детальное разделение доказательств Docker ниже: `DockerCliProcessAdapterTests.cs`, `ContainerRunnerSecurityTests.cs`, `DockerContainerIntegrationTests.cs` | **PASS** |
+| 10 | Выходной контракт v1 (`database-analyzer-output-v1.schema.json`) с целочисленным `Finding.id`, валидация JSON и маппинг в `AnalyzerFinding` бэкенда | `src/Analyzers/Database.Runner/Program.cs`, `src/Analyzers/Database/Runner/DatabaseContainerRunner.cs` | `DatabaseContainerRunnerContractTests.cs` | **PASS** |
+
+> [!NOTE]
+> **Детализация доказательной базы запуска Docker-контейнера (Критерий 9):**
+> 1. **Проверка формирования параметров запуска Docker (Unit-тестирование аргументов CLI):** Класс [`DockerCliProcessAdapterTests.cs`](../../tests/DatabaseAnalyzer.Runner.Tests/DockerCliProcessAdapterTests.cs) проверяет сборку аргументов `docker run`: флаги сетевой изоляции `--network none`, непривилегированного пользователя `--user 10001:10001`, режим `--read-only`, RAM-диск `--tmpfs /tmp:rw,noexec,nosuid,size=64m`, лимиты памяти (`--memory 512m`), CPU (`--cpus 1.0`), процессов (`--pids-limit 100`), корректное монтирование томов `/exchange/in` и `/exchange/out`, а также предотвращение инъекций аргументов командной строки.
+> 2. **Проверка оркестрации раннера и протокола обмена (Component / Mock Process тестирование):** Класс [`ContainerRunnerSecurityTests.cs`](../../tests/DatabaseAnalyzer.Runner.Tests/ContainerRunnerSecurityTests.cs) проверяет взаимодействие `DatabaseContainerRunner` с адаптером процесса: проверку действующего `IAnalysisLeaseGuard`, изоляцию каталогов обмена `{analysisId}/{token}`, соблюдение 60-секундного таймаута и валидацию возвращаемых JSON-контрактов без вызова реального демона Docker.
+> 3. **Проверка фактического запуска реального контейнера (Docker Integration тестирование):** Класс [`DockerContainerIntegrationTests.cs`](../../tests/DatabaseAnalyzer.Runner.Tests/DockerContainerIntegrationTests.cs) содержит 3 интеграционных теста с атрибутом `[DockerFact]`: `DockerContainer_ExecutesSafely_WithIsolationFlags`, `DockerContainer_RunsWithPinnedDigest_Successfully` и `DockerContainer_FullRoslynExtractionAndDatabaseAnalysis_SucceedsWithDB01Finding`. Тесты выполняют реальный запуск Docker-демона с образом `netscope-database-analyzer:latest` (включая запуск по pinned sha256-дайджесту) и подтверждают сквозную передачу метаданных C# AST в контейнер и получение дефекта `DB01`.
+> 4. **Ограничение доказательной базы:** Автоматизированные тесты решения проверяют корректность передачи параметров изоляции и факт успешного выполнения контейнера в безопасной конфигурации, однако **не проводят тесты принудительного нарушения ограничений изнутри контейнера во время выполнения** (например, попытки пробить сеть или превысить лимит 512MB RAM для провокации OOM Killer) — соблюдение этих ограничений возложено на ядро Docker на основании проверенных переданных флагов.
+
+> [!NOTE]
+> **Анализ требования о «многофайловых конфигурациях вне DbContext»:**
+> В соответствии с утверждёнными ADR-001 и критерием 5 Stage 2, конфигурации сущностей в отдельных C# файлах через классы `IEntityTypeConfiguration<T>` **полноценно поддерживаются** статическим анализатором Roslyn (выполняется сканирование синтаксических деревьев всех `.cs` файлов репозитория). При этом динамический поиск конфигураций во внешних бинарных сборках или через runtime-рефлексию прямо запрещён архитектурой изоляции: при обнаружении неразрешимых динамических вызовов формируется диагностическое предупреждение `Severity.Warning`. Никаких несогласованных отклонений или невыполненных требований по конфигурациям вне DbContext нет. Субъективные оценочные проценты (например, «готовность 85–90%») исключены из проектной документации как недостоверные.
+
 - **Критерии приёмки текущего этапа (Stage 2):**
   1. В основном процессе бэкенда исключены конкретные векторы исполнения пользовательского кода: вызовы `dotnet build` сторонних репозиториев и динамическая загрузка сборок (`Assembly.LoadFrom`, `AssemblyLoadContext`).
   2. Roslyn-парсер извлекает метаданные моделей EF Core напрямую из C# AST без предварительной компиляции проекта.
@@ -222,17 +249,31 @@
 
 ### TD-005: Поддержка частичных/фильтрованных индексов в правиле DB05
 - **Связанный дефект:** [DEF-005](../audits/2026-11-06-technical-audit.md#def-005-ложные-срабатывания-правила-db05-для-частичных-и-фильтрованных-индексов)
-- **Компонент:** `DatabaseAnalyzer` (`EfCoreMetadataMapper.cs`, `DatabaseAnalyzer.cs`)
-- **Статус:** `OPEN`
+- **Компонент:** `DatabaseAnalyzer` (`src/Analyzers/Database/`, `src/Analyzers/Database.Runner/`)
+- **Статус архитектурного решения:** `ACCEPTED` ([ADR-001](../architecture/database-analyzer-isolation.md))
+- **Статус реализации:** `VERIFIED` (в целевом боевом конвейере Roslyn + Runner; устаревший in-process класс `EfCoreMetadataMapper.cs` не используется в production)
+- **Статус проверки:** `VERIFIED` (подтверждено тестом `DatabaseRulesEngineTests.cs:1192` и набором `SqlFilterComparerTests.cs`, 105/105 успешно)
 - **Приоритет:** `P2`
 - **Миграция БД:** Нет
-- **Зависимости:** Нет
+- **Зависимости:** [TD-001](#td-001)
 - **Описание:** Устранить ложные срабатывания правила `DB05` для частичных и фильтрованных индексов.
+- **Первоначальное состояние дефекта (DEF-005, 06.11.2026):**
+  В исходной монолитной архитектуре до принятия ADR-001 анализ выполнялся через `EfCoreMetadataMapper.cs`. При извлечении индексов из скомпилированной модели EF Core `entityType.GetIndexes()` маппер копировал свойства `Name`, `PropertyNames` и `IsUnique`, но опускал предикат фильтра `index.GetFilter()`. В результате свойство `IndexMetadata.Filter` оставалось `null`, а правило `DB05` ложно рапортовало дубликат для сущностей, где на один и тот же столбец объявлен общий индекс и частичный фильтрованный индекс (например, `WHERE "IsDeleted" = false` для мягкого удаления) либо несколько непересекающихся частичных индексов.
+- **Фактическое решение в целевой архитектуре (ADR-001):**
+  В рамках архитектурного перехода на двухкомпонентную модель (статика Roslyn + изолированный Runner) поддержка фильтрованных индексов реализована напрямую в целевом конвейере:
+  1. `FluentApiParser.cs:597-603` извлекает вызов `.HasFilter(filterVal)` и сохраняет его в `IndexMetadata.Filter`.
+  2. `RoslynModelInspector.cs:414` регистрирует гранулярную возможность `"FilteredIndexes"` (`if (ent.Indexes.Any(i => !string.IsNullOrWhiteSpace(i.Filter))) capabilities.Add("FilteredIndexes");`).
+  3. `DatabaseContainerRunner.cs:434` передает фильтр в DTO обмена (`Filter = idx.Filter`) и сериализует в `input.json`.
+  4. `NetScope.DatabaseAnalyzer.Runner` десериализует `Filter` по контракту `AnalysisInputContract.cs:235-236`.
+  5. `DatabaseRulesEngine.cs:528-544` производит сравнение фильтров через консервативный парсер `SqlFilterComparer.AreFiltersEquivalent(idx1.Filter, idx2.Filter, out var isAmbiguous)`. При несовпадении фильтров или наличии фильтра только у одного из индексов правило DB05 не рапортует дубликат (ложное срабатывание исключено). При неоднозначности синтаксиса генерируется диагностика `AMBIGUOUS_SQL_FILTER_SKIPPED`.
+  6. **Верификация тестами:** поведение подтверждено тестом `DatabaseRulesEngineTests.cs:1192` (`DB05_DifferentFiltersOnSameColumns_NoFinding`), а также набором тестов токенизатора `SqlFilterComparerTests.cs` (все 105 тестов `DatabaseAnalyzer.Runner.Tests` проходят успешно).
+- **Статус устаревшего класса `EfCoreMetadataMapper.cs`:**
+  Исторический класс `src/Analyzers/Database/Mapping/EfCoreMetadataMapper.cs` не содержит вызова `index.GetFilter()`. Однако после утверждения ADR-001 компиляция пользовательских проектов и in-process рефлексия выведены из эксплуатации. Класс `EfCoreMetadataMapper` не зарегистрирован в DI-контейнере `Backend.Api`, не вызывается анализатором `DatabaseAnalyzer.AnalyzeAsync` и является устаревшим кодом, сохраняемым исключительно для обратной совместимости старых модульных тестов маппера. Отсутствие `GetFilter()` в `EfCoreMetadataMapper` не является блокером для production-конвейера, поскольку в рабочем конвейере Roslyn + Runner дефект DEF-005 полностью устранён.
 - **Критерии приёмки:**
-  1. `IndexMetadata` содержит строковое свойство `Filter` (значение `index.GetFilter()`).
+  1. `IndexMetadata` содержит строковое свойство `Filter` (извлекается из `.HasFilter(...)` во Fluent API).
   2. Правило `DB05` признает индексы дубликатами только в том случае, если совпадают столбцы, уникальность и предикаты фильтрации.
-- **Необходимые тесты:**
-  - Тест сущности с двумя индексами на один столбец: общий индекс и фильтрованный `WHERE "IsDeleted" = false` (отсутствие срабатывания DB05).
+- **Подтверждённые проверочные тесты:**
+  - Тест сущности с двумя индексами на один столбец: общий индекс и фильтрованный `WHERE "IsDeleted" = 0` (отсутствие срабатывания DB05) — реализован и подтверждён (`DB05_DifferentFiltersOnSameColumns_NoFinding`).
 
 ---
 
@@ -292,17 +333,29 @@
 ### TD-008: Поддержка хешей SHA-256 и строгая hex-валидация в CreateCommitDto
 - **Связанный дефект:** [DEF-006](../audits/2026-11-06-technical-audit.md#def-006-ограничение-длины-хеша-коммита-в-createcommitdto-sha-1-vs-sha-256)
 - **Компонент:** `Backend.Application` (`CreateCommitDto.cs`)
-- **Статус:** `OPEN`
+- **Статус:** `VERIFIED` (Верифицировано в коммите `57da9b8`: поддержка длины 7–64, строгая hex-валидация, покрытие unit- и сквозными интеграционными тестами)
 - **Приоритет:** `P2`
-- **Миграция БД:** Нет
+- **Миграция БД:** Нет (поле `CommitHash` в PostgreSQL имеет тип `text` и не накладывает ограничений)
 - **Зависимости:** Нет
 - **Описание:** Разрешить ручное добавление коммитов с SHA-256 хешами и гарантировать валидность формата.
 - **Критерии приёмки:**
   1. `CommitHash` допускает длину от 7 до 64 символов.
-  2. Добавлен Regex-атрибут `^[0-9a-fA-F]{7,64}$`.
+  2. Добавлен Regex-атрибут `^[0-9a-fA-F]{7,64}$` (`\A[0-9a-fA-F]{7,64}\z`).
   3. Невалидные строки (содержащие пробелы, спецсимволы или буквы вне hex) отклоняются с кодом 400 ProblemDetails.
-- **Необходимые тесты:**
-  - Unit-тесты валидации DTO для SHA-1 (40 hex), SHA-256 (64 hex), коротких хешей (7 hex) и некорректных строк.
+- **Фактический результат реализации:**
+  1. В `src/Backend/Application/DTOs/CreateCommitDto.cs` обновлены атрибуты валидации:
+     - `[StringLength(64, MinimumLength = 7, ErrorMessage = "Хэш коммита должен содержать от 7 до 64 символов.")]`
+     - `[RegularExpression(@"\A[0-9a-fA-F]{7,64}\z", ErrorMessage = "Хэш коммита должен содержать только шестнадцатеричные символы.")]`
+  2. В базе данных PostgreSQL столбец `"CommitHash"` имеет тип `text` (`CommitConfiguration.cs`), что позволяет сохранять хэши SHA-256 без изменения схемы и миграций.
+  3. Реализация полностью подтверждена автоматическими тестами:
+     - Unit-тесты валидации DTO в `tests/Backend.Tests/DtoValidationAndAnalysisErrorTests.cs`:
+       * `CreateCommitDto_ValidHashes_PassValidation` (5 сценариев: SHA-1 40 hex, SHA-256 64 hex, минимальный 7 hex, смешанный регистр 40 hex, смешанный регистр 64 hex);
+       * `CreateCommitDto_InvalidHashes_FailValidation` (11 сценариев: `null`, пустая строка, длина 6, длина 65, пробелы в начале/конце/середине, переводы строк `\n`/`\r\n`, спецсимволы `-`, `#`).
+     - Сквозные интеграционные тесты конвейера в `tests/Backend.Tests/Integration/ApiPipelineIntegrationTests.cs`:
+       * `CreateCommit_WithSha256Hash_SucceedsAndPersistsInDatabase` (успешное создание коммита с SHA-256 через `HttpClient`, возврат `201 Created` и проверка сохранения в PostgreSQL);
+       * `CreateCommit_WithInvalidHash_Returns400BadRequest_WithValidationProblemDetails` (отклонение невалидных хэшей с возвратом HTTP 400, формата RFC 9457 ValidationProblemDetails, `code: "VALIDATION_FAILED"`, `traceId` и структуры `errors`).
+- **Связанные коммиты:**
+  - `57da9b8 fix(api): support SHA-256 commit hashes`
 
 ---
 
@@ -370,26 +423,30 @@
 ### TD-013: Документированный шаблон конфигурации переменных окружения
 - **Связанный дефект:** [API-022](../audits/2026-11-06-technical-audit.md#5-статус-инфраструктурных-замечаний-api-020-api-022-api-024-api-025)
 - **Компонент:** `Backend.Api`
-- **Статус:** `VERIFIED` (Закрыто в рамках реализации Этапа 6: единая конфигурация через `.env.example`, отказ от User Secrets, очистка `appsettings.json`)
+- **Статус:** `VERIFIED` (Закрыто и верифицировано: шаблон `.env.example`, отказ от User Secrets, конфигурация через переменные окружения)
 - **Приоритет:** `P3`
 - **Миграция БД:** Нет
 - **Зависимости:** Нет
 - **Описание:** Перевести конфигурацию на переменные окружения и создать файл `.env.example` с документированными плейсхолдерами для развертывания в Docker Compose без рабочих секретов.
+- **Доказательная база верификации:**
+  1. **Файлы:** В корне репозитория присутствует задокументированный шаблон [`.env.example`](../../.env.example) с безопасными плейсхолдерами для PostgreSQL (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT=5433`), JWT (`JWT_KEY`, `JWT_ISSUER`, `JWT_AUDIENCE`), симметричного шифрования токенов (`TOKEN_ENCRYPTION_KEY`, 256-бит Base64), Swagger (`SWAGGER_ENABLED`) и CORS (`CORS_ALLOWED_ORIGINS`).
+  2. **Код загрузки конфигурации:** [`src/Backend/Api/Program.cs`](../../src/Backend/Api/Program.cs) считывает параметры через стандартный механизм `IConfiguration` с поддержкой переопределения через переменные окружения, исключая зависимость от User Secrets в продакшене.
+  3. **История коммитов:** Зафиксировано коммитами `7d5e817` (*chore: align project configuration example*) и `757e0ba` (*feat(deployment): add Docker deployment and database initialization*).
 
 ---
 
 ### TD-014: Синхронизация базовой документации
 - **Связанный дефект:** [API-024](../audits/2026-11-06-technical-audit.md#5-статус-инфраструктурных-замечаний-api-020-api-022-api-024-api-025)
 - **Компонент:** `Documentation` (`Технический регламент.md`, `Исполнительное резюме.md`, `Архитектура проекта.drawio`)
-- **Статус:** `VERIFIED` (Верифицировано по состоянию кодовой базы на коммите `2068c51`)
+- **Статус:** `VERIFIED` (Верифицировано по актуальному состоянию кодовой базы)
 - **Приоритет:** `P3`
 - **Миграция БД:** Нет
 - **Зависимости:** Нет
 - **Описание:** Устранить противоречия в документах относительно статуса модулей `SqlAnalyzer`, `SecurityAnalyzer`, очереди задач PostgreSQL и схемы базы данных.
-- **Результат верификации:** Документация полностью приведена в соответствие с фактическим кодом:
-  1. `Технический регламент.md` и `Исполнительное резюме.md` актуализированы: зафиксирована асинхронная очередь в PostgreSQL (`202 Accepted`), фоновая обработка через `AnalysisBackgroundService`, фактическая схема таблиц `"Users"` (поля GitHub PAT) и `"Analyses"`, а также статус `SqlAnalyzer` (44 теста) и `SecurityAnalyzer` (56 тестов).
-  2. В `docs/Архитектура проекта.drawio` блоки анализаторов и фонового сервиса переведены в статус «Реализовано».
-  3. В `Исполнительное резюме анализатор SQL.md` зафиксирован синтаксический анализ Roslyn AST без построения `SemanticModel`.
+- **Доказательная база верификации:**
+  1. **Файлы:** Документы [`docs/Технический регламент.md`](../Технический%20регламент.md) и [`docs/Исполнительное резюме.md`](../Исполнительное%20резюме.md) актуализированы: зафиксирована асинхронная очередь в PostgreSQL (`202 Accepted`), фоновая обработка через `AnalysisBackgroundService`, фактическая схема таблиц `"Users"` (поля GitHub PAT) и `"Analyses"`, статус `SqlAnalyzer` (44 теста) и `SecurityAnalyzer` (56 тестов), завершение TD-002 и перенос TD-003 в deferred.
+  2. **Архитектурные схемы:** В диаграмме [`docs/Архитектура проекта.drawio`](../Архитектура%20проекта.drawio) блоки анализаторов и фонового сервиса переведены в статус «Реализовано».
+  3. **История коммитов:** Синхронизация зафиксирована коммитами `5431edc` (*chore: align project documentation*), `58e0601` (*docs: finalize database analyzer isolation decisions*), `111f4d5` (*docs: document completed lease renewal and fault tolerance work*), `d615428` (*docs: defer TD-003 implementation*).
 
 ---
 
@@ -402,7 +459,7 @@
 - **Зависимости:** Нет
 - **Описание:** Создать набор интеграционных тестов с реальным HTTP-конвейером ASP.NET Core (`WebApplicationFactory<Program>`).
 - **Фактическое состояние реализации:**
-  1. Реализована тестовая инфраструктура [`ApiWebApplicationFactory.cs`](../../tests/Backend.Tests/Integration/ApiWebApplicationFactory.cs) и полный набор сквозных тестов [`ApiPipelineIntegrationTests.cs`](../../tests/Backend.Tests/Integration/ApiPipelineIntegrationTests.cs) (34 теста), взаимодействующих с реальным PostgreSQL через [`PostgreSqlFixture.cs`](../../tests/Backend.Tests/Integration/PostgreSqlFixture.cs).
+  1. Реализована тестовая инфраструктура [`ApiWebApplicationFactory.cs`](../../tests/Backend.Tests/Integration/ApiWebApplicationFactory.cs) и полный набор сквозных тестов [`ApiPipelineIntegrationTests.cs`](../../tests/Backend.Tests/Integration/ApiPipelineIntegrationTests.cs) (45 тестов), взаимодействующих с реальным PostgreSQL через [`PostgreSqlFixture.cs`](../../tests/Backend.Tests/Integration/PostgreSqlFixture.cs).
   2. **Реализованные и проверенные критерии:**
      - **Rate Limiting:** тест `RateLimiting_BurstRequests_Returns429TooManyRequests_WithRetryAfterAndProblemDetails` проверяет лимит 10 токенов, отсечку 11-го запроса кодом 429, заголовок `Retry-After` и формат ProblemDetails (`RATE_LIMIT_EXCEEDED`).
      - **CORS Preflight:** тесты `CorsPreflight_AllowedOrigin5173_ReturnsAccessControlHeaders`, `CorsPreflight_AllowedOrigin3000_ReturnsAccessControlHeaders`, `CorsPreflight_UntrustedOrigin_DoesNotReturnAllowOriginHeader` проверяют реальные `OPTIONS`-запросы к конвейеру.
@@ -421,4 +478,4 @@
   8. Подтверждён фактический вызов метода `MockGitHubService.GetCommitsAsync` ровно один раз (`Times.Once`).
   9. Результаты тестирования:
      - Адресный запуск (`UnhandledException_InEndpointExecution`): 1/1 пройден (0 ошибок).
-     - Полный запуск набора тестов `Backend.Tests`: 733/733 пройдено (0 ошибок, 0 пропущено).
+     - Полный запуск набора тестов `Backend.Tests`: 768/768 пройдено (0 ошибок, 0 пропущено).
