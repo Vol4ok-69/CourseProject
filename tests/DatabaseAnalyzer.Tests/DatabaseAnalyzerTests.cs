@@ -24,7 +24,56 @@ public sealed class DatabaseAnalyzerTests
     }
 
     [Fact]
+    public void ExecutionStatus_InitialValue_ShouldBeNotStarted()
+    {
+        var mockExtractor = new Mock<IRoslynMetadataExtractor>();
+        var analyzer = new DatabaseAnalyzer(mockExtractor.Object);
+
+        Assert.Equal(DatabaseAnalysisExecutionStatus.NotStarted, analyzer.ExecutionStatus);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_ShouldCallRoslynMetadataExtractor()
+    {
+        var mockExtractor = new Mock<IRoslynMetadataExtractor>();
+        var tempDir = Path.Combine(Path.GetTempPath(), "DbAnalyzerTest_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            mockExtractor
+                .Setup(e => e.ExtractAsync(tempDir, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new RoslynModelExtractionResult
+                {
+                    Contexts = [new DiscoveredDbContext { Name = "AppDbContext" }]
+                });
+
+            var analyzer = new DatabaseAnalyzer(mockExtractor.Object);
+
+            var context = new AnalyzerContext
+            {
+                RepositoryPath = tempDir,
+                CommitHash = "test-commit"
+            };
+
+            var result = await analyzer.AnalyzeAsync(context);
+
+            mockExtractor.Verify(
+                e => e.ExtractAsync(tempDir, It.IsAny<CancellationToken>()),
+                Times.Once);
+
+            Assert.Contains(result, f => f.Rule == DatabaseAnalyzer.ContainerUnavailableRule);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_WhenNoDbContextFound_ReturnsInformationSkippedStatusAndNoContainerUnavailableFinding()
     {
         var mockExtractor = new Mock<IRoslynMetadataExtractor>();
         var tempDir = Path.Combine(Path.GetTempPath(), "DbAnalyzerTest_" + Guid.NewGuid().ToString("N"));
@@ -45,11 +94,9 @@ public sealed class DatabaseAnalyzerTests
 
             var result = await analyzer.AnalyzeAsync(context);
 
-            mockExtractor.Verify(
-                e => e.ExtractAsync(tempDir, It.IsAny<CancellationToken>()),
-                Times.Once);
-
-            Assert.Contains(result, f => f.Rule == DatabaseAnalyzer.ContainerUnavailableRule);
+            Assert.Equal(DatabaseAnalysisExecutionStatus.InformationSkipped, analyzer.ExecutionStatus);
+            Assert.Contains(result, f => f.Rule == DatabaseAnalyzer.MissingDbContextRule);
+            Assert.DoesNotContain(result, f => f.Rule == DatabaseAnalyzer.ContainerUnavailableRule);
         }
         finally
         {
@@ -86,7 +133,8 @@ public sealed class DatabaseAnalyzerTests
             var finding = findings.First(f => f.Rule == DatabaseAnalyzer.ExtractionErrorRule);
             Assert.Contains("Test error", finding.Message);
             Assert.Equal(Severity.Warning, finding.Severity);
-            Assert.Contains(findings, f => f.Rule == DatabaseAnalyzer.ContainerUnavailableRule);
+            Assert.DoesNotContain(findings, f => f.Rule == DatabaseAnalyzer.ContainerUnavailableRule);
+            Assert.Equal(DatabaseAnalysisExecutionStatus.ExtractionError, analyzer.ExecutionStatus);
         }
         finally
         {

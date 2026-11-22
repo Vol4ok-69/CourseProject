@@ -1,5 +1,8 @@
 using NetScope.DatabaseAnalyzer.Runner.Contracts;
 using NetScope.DatabaseAnalyzer.Runner.Rules;
+using DatabaseAnalyzer.Contracts;
+using DatabaseAnalyzer.Roslyn;
+using DatabaseAnalyzer.Runner;
 
 namespace DatabaseAnalyzer.Runner.Tests;
 
@@ -1417,6 +1420,137 @@ public sealed class DatabaseRulesEngineTests
 
         // DB01 выполнен и нашёл отсутствие PK
         Assert.Contains(output.Findings, f => f.RuleId == "DB01");
+    }
+
+    [Fact]
+    public void GranularCapabilities_IncompleteMetadata_SkipsAllDbRulesForIncompleteEntity_AndEvaluatesValidEntity()
+    {
+        var input = CreateBaseInput();
+        // 1. Сущность с неполными метаданными (hasIncompleteMetadata = true):
+        // Несмотря на отсутствие PK, FK индексов и навигаций, правила DB01–DB05 не должны рапортовать ложные дефекты
+        input.Metadata.DbContexts[0].Entities.Add(new EntityDto
+        {
+            Name = "IncompleteEntity",
+            MappingType = "Table",
+            HasIncompleteMetadata = true,
+            Properties = [new PropertyDto { Name = "Data", ColumnName = "Data" }],
+            Keys = [],
+            ForeignKeys = [new ForeignKeyDto { PrincipalEntityName = "Other", Properties = ["OtherId"] }],
+            Indexes = []
+        });
+
+        // 2. Достоверная сущность с реальным дефектом DB01 (отсутствие PK)
+        input.Metadata.DbContexts[0].Entities.Add(new EntityDto
+        {
+            Name = "ValidEntityWithoutPk",
+            MappingType = "Table",
+            HasIncompleteMetadata = false,
+            Properties = [new PropertyDto { Name = "Name", ColumnName = "Name" }],
+            Keys = []
+        });
+
+        var output = _engine.Evaluate(input);
+
+        // Для сущности с неполными метаданными не формируются ложные срабатывания
+        Assert.DoesNotContain(output.Findings, f => f.TargetEntityName == "IncompleteEntity");
+
+        // Формируются диагностические предупреждения о пропуске проверок из-за неполноты
+        Assert.Contains(output.Diagnostics, d => d.Code == "INCOMPLETE_METADATA_SKIPPED" && d.EntityId == "IncompleteEntity");
+
+        // Для достоверной сущности дефект DB01 найден
+        Assert.Contains(output.Findings, f => f.RuleId == "DB01" && f.TargetEntityName == "ValidEntityWithoutPk");
+    }
+
+    [Fact]
+    public async Task EndToEnd_RoslynExtraction_ToDto_ToJson_ToRunnerRulesEngine_IncompleteMetadataHandledCorrectly()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "RoslynToRunnerE2E_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var dbContextSource = """
+                using Microsoft.EntityFrameworkCore;
+
+                namespace TestApp;
+
+                public class AppDbContext : DbContext
+                {
+                    public DbSet<ValidEntityWithoutPk> ValidEntities => Set<ValidEntityWithoutPk>();
+                    public DbSet<IncompleteEntity> IncompleteEntities => Set<IncompleteEntity>();
+                }
+                """;
+
+            var validEntitySource = """
+                namespace TestApp;
+
+                public class ValidEntityWithoutPk
+                {
+                    public string Title { get; set; } = string.Empty;
+                }
+                """;
+
+            var incompleteEntitySource = """
+                namespace TestApp;
+
+                public class IncompleteEntity : ExternalBaseClassWithoutSource
+                {
+                    public string Description { get; set; } = string.Empty;
+                }
+                """;
+
+            await File.WriteAllTextAsync(Path.Combine(tempDir, "AppDbContext.cs"), dbContextSource);
+            await File.WriteAllTextAsync(Path.Combine(tempDir, "ValidEntityWithoutPk.cs"), validEntitySource);
+            await File.WriteAllTextAsync(Path.Combine(tempDir, "IncompleteEntity.cs"), incompleteEntitySource);
+
+            // 1. Извлечение метаданных через Roslyn
+            var extractor = new RoslynMetadataExtractor();
+            var extraction = await extractor.ExtractAsync(tempDir);
+
+            Assert.Single(extraction.Contexts);
+            var dbContext = extraction.Contexts[0];
+            Assert.Equal(2, dbContext.Entities.Count);
+
+            var incompleteDiscovered = dbContext.Entities.First(e => e.EntityName == "IncompleteEntity");
+            var validDiscovered = dbContext.Entities.First(e => e.EntityName == "ValidEntityWithoutPk");
+
+            Assert.True(incompleteDiscovered.HasIncompleteMetadata);
+            Assert.True(incompleteDiscovered.HasIncompleteKeys);
+            Assert.False(validDiscovered.HasIncompleteMetadata);
+
+            // 2. Преобразование метаданных Roslyn в DTO документа ввода контейнера
+            var inputDoc = DatabaseContainerRunner.BuildInputDocument(extraction, 77, Guid.NewGuid());
+
+            // 3. Сериализация в JSON
+            var json = System.Text.Json.JsonSerializer.Serialize(inputDoc, DatabaseAnalyzerJsonContext.Default.DatabaseAnalyzerInputDocument);
+            Assert.Contains("\"hasIncompleteMetadata\":true", json);
+            Assert.Contains("\"hasIncompleteKeys\":true", json);
+
+            // 4. Десериализация JSON на стороне Runner в контракт AnalysisInputContract
+            var runnerContract = System.Text.Json.JsonSerializer.Deserialize<AnalysisInputContract>(
+                json,
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            Assert.NotNull(runnerContract);
+
+            // 5. Выполнение движка правил Runner
+            var output = _engine.Evaluate(runnerContract);
+
+            // Проверка: IncompleteEntity НЕ содержит ложных дефектов DB01–DB05
+            Assert.DoesNotContain(output.Findings, f => f.TargetEntityName == "IncompleteEntity");
+
+            // Проверка: IncompleteEntity содержит диагностику о пропуске проверок из-за неполноты
+            Assert.Contains(output.Diagnostics, d =>
+                d.Code == "INCOMPLETE_METADATA_SKIPPED" || d.Code == "INCOMPLETE_KEYS_SKIPPED");
+
+            // Проверка: Достоверная сущность без ключа ValidEntityWithoutPk проверена и для неё зафиксирован DB01
+            Assert.Contains(output.Findings, f => f.RuleId == "DB01" && f.TargetEntityName == "ValidEntityWithoutPk");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
     }
 
     #endregion

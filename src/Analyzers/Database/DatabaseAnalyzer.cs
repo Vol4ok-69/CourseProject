@@ -14,17 +14,28 @@ namespace DatabaseAnalyzer;
 /// При наличии подключённого IDatabaseContainerRunner делегирует выполнение правил DB01–DB05 изолированному контейнеру.
 /// При отсутствии подключённого контейнера формирует явное диагностическое предупреждение.
 /// </summary>
-public sealed class DatabaseAnalyzer : IAnalyzer
+public sealed class DatabaseAnalyzer : IDatabaseAnalyzer
 {
-    public const string ContainerUnavailableRule = "DB_CONTAINER_UNAVAILABLE";
-    public const string MissingDbContextRule = "MISSING_DBCONTEXT";
-    public const string RoslynWarningRule = "DB_ROSLYN_WARNING";
-    public const string ExtractionErrorRule = "DB_EXTRACTION_ERROR";
-    public const string ContainerExecutionErrorRule = "DB_CONTAINER_ERROR";
+    public const string ContainerUnavailableRule = DatabaseAnalyzerRules.ContainerUnavailable;
+    public const string MissingDbContextRule = DatabaseAnalyzerRules.MissingDbContext;
+    public const string RoslynWarningRule = DatabaseAnalyzerRules.RoslynWarning;
+    public const string ExtractionErrorRule = DatabaseAnalyzerRules.ExtractionError;
+    public const string ContainerExecutionErrorRule = DatabaseAnalyzerRules.ContainerError;
+    public const string ContainerErrorRule = DatabaseAnalyzerRules.ContainerError;
+    public const string ContainerTimeoutRule = DatabaseAnalyzerRules.ContainerTimeout;
+    public const string InternalAnalyzerErrorRule = DatabaseAnalyzerRules.InternalAnalyzerError;
+    public const string UnsupportedFluentApiRule = DatabaseAnalyzerRules.UnsupportedFluentApi;
+    public const string SyntaxErrorRule = DatabaseAnalyzerRules.SyntaxError;
+    public const string AmbiguousModelRule = DatabaseAnalyzerRules.AmbiguousModel;
 
     private readonly IRoslynMetadataExtractor _metadataExtractor;
 
     public AnalyzerType Type => AnalyzerType.Database;
+
+    /// <summary>
+    /// Фактический статус последнего выполнения анализатора в соответствии с ADR-001 / TD-002.
+    /// </summary>
+    public DatabaseAnalysisExecutionStatus ExecutionStatus { get; private set; } = DatabaseAnalysisExecutionStatus.NotStarted;
 
     /// <summary>
     /// Опциональный исполнитель изолированного контейнера базы данных.
@@ -45,6 +56,7 @@ public sealed class DatabaseAnalyzer : IAnalyzer
         AnalyzerContext context,
         CancellationToken cancellationToken = default)
     {
+        ExecutionStatus = DatabaseAnalysisExecutionStatus.NotStarted;
         ArgumentNullException.ThrowIfNull(context);
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -53,6 +65,7 @@ public sealed class DatabaseAnalyzer : IAnalyzer
         // Проверка пути к репозиторию
         if (string.IsNullOrWhiteSpace(context.RepositoryPath))
         {
+            ExecutionStatus = DatabaseAnalysisExecutionStatus.ExtractionError;
             findings.Add(new AnalyzerFinding
             {
                 Rule = ExtractionErrorRule,
@@ -63,7 +76,6 @@ public sealed class DatabaseAnalyzer : IAnalyzer
                 Recommendation = "Убедитесь, что репозиторий успешно загружен перед запуском анализа."
             });
 
-            findings.Add(CreateContainerUnavailableFinding());
             return findings;
         }
 
@@ -74,6 +86,7 @@ public sealed class DatabaseAnalyzer : IAnalyzer
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            ExecutionStatus = DatabaseAnalysisExecutionStatus.ExtractionError;
             findings.Add(new AnalyzerFinding
             {
                 Rule = ExtractionErrorRule,
@@ -84,12 +97,12 @@ public sealed class DatabaseAnalyzer : IAnalyzer
                 Recommendation = "Проверьте корректность пути к рабочей директории анализа."
             });
 
-            findings.Add(CreateContainerUnavailableFinding());
             return findings;
         }
 
         if (!Directory.Exists(fullPath))
         {
+            ExecutionStatus = DatabaseAnalysisExecutionStatus.ExtractionError;
             findings.Add(new AnalyzerFinding
             {
                 Rule = ExtractionErrorRule,
@@ -100,7 +113,6 @@ public sealed class DatabaseAnalyzer : IAnalyzer
                 Recommendation = "Проверьте путь к рабочему каталогу репозитория и статус загрузки исходного кода."
             });
 
-            findings.Add(CreateContainerUnavailableFinding());
             return findings;
         }
 
@@ -113,8 +125,17 @@ public sealed class DatabaseAnalyzer : IAnalyzer
         {
             throw;
         }
+        catch (Exception ex) when (ex is AggregateException agg && agg.Flatten().InnerExceptions.Any(e => e is OperationCanceledException))
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex.InnerException is OperationCanceledException || cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
+            ExecutionStatus = DatabaseAnalysisExecutionStatus.ExtractionError;
             findings.Add(new AnalyzerFinding
             {
                 Rule = ExtractionErrorRule,
@@ -125,7 +146,6 @@ public sealed class DatabaseAnalyzer : IAnalyzer
                 Recommendation = "Проверьте структуру файлов C# и синтаксическую корректность моделей Entity Framework Core."
             });
 
-            findings.Add(CreateContainerUnavailableFinding());
             return findings;
         }
 
@@ -143,9 +163,10 @@ public sealed class DatabaseAnalyzer : IAnalyzer
             });
         }
 
-        // 2. Отсутствие DbContext в репозитории (ADR-001 / TD-002: Partial Success)
+        // 2. Отсутствие DbContext в репозитории (ADR-001 / TD-002: InformationSkipped)
         if (extraction.Contexts.Count == 0)
         {
+            ExecutionStatus = DatabaseAnalysisExecutionStatus.InformationSkipped;
             findings.Add(new AnalyzerFinding
             {
                 Rule = MissingDbContextRule,
@@ -155,11 +176,14 @@ public sealed class DatabaseAnalyzer : IAnalyzer
                 Severity = Severity.Info,
                 Recommendation = "Если в репозитории используется база данных, убедитесь, что класс контекста наследует Microsoft.EntityFrameworkCore.DbContext."
             });
+
+            return findings;
         }
 
         // 3. Выполнение проверок DB01–DB05 через изолированный контейнер
         if (ContainerRunner == null)
         {
+            ExecutionStatus = DatabaseAnalysisExecutionStatus.ContainerError;
             // Диагностическое предупреждение о том, что контейнер не подключён
             findings.Add(CreateContainerUnavailableFinding());
             return findings;
@@ -167,7 +191,16 @@ public sealed class DatabaseAnalyzer : IAnalyzer
 
         if (context.LeaseGuard == null)
         {
-            findings.Add(CreateContainerUnavailableFinding());
+            ExecutionStatus = DatabaseAnalysisExecutionStatus.InternalError;
+            findings.Add(new AnalyzerFinding
+            {
+                Rule = InternalAnalyzerErrorRule,
+                FilePath = string.Empty,
+                LineNumber = 0,
+                Message = "Не предоставлен IAnalysisLeaseGuard для запуска контейнера базы данных.",
+                Severity = Severity.Warning,
+                Recommendation = "Проверьте инициализацию контекста выполнения анализа."
+            });
             return findings;
         }
 
@@ -183,8 +216,18 @@ public sealed class DatabaseAnalyzer : IAnalyzer
                 context.LeaseGuard,
                 cancellationToken);
 
+            if (string.Equals(containerResult.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new OperationCanceledException(containerResult.ErrorMessage ?? "Database analyzer container execution was cancelled.");
+            }
+
             if (containerResult.Status == "Success" || containerResult.Status == "PartialSuccess")
             {
+                ExecutionStatus = containerResult.Status == "Success"
+                    ? DatabaseAnalysisExecutionStatus.Success
+                    : DatabaseAnalysisExecutionStatus.PartialSuccess;
+
                 findings.AddRange(containerResult.Findings);
 
                 foreach (var diag in containerResult.Diagnostics)
@@ -202,14 +245,27 @@ public sealed class DatabaseAnalyzer : IAnalyzer
             }
             else
             {
+                var isTimeout = string.Equals(containerResult.Status, "TimedOut", StringComparison.OrdinalIgnoreCase);
+                ExecutionStatus = isTimeout
+                    ? DatabaseAnalysisExecutionStatus.ContainerTimeout
+                    : DatabaseAnalysisExecutionStatus.ContainerError;
+
+                var rule = isTimeout ? ContainerTimeoutRule : ContainerErrorRule;
+                var message = isTimeout
+                    ? "Превышено максимальное время выполнения изолированного анализатора базы данных (таймаут 60 с)."
+                    : $"Ошибка выполнения изолированного анализатора базы данных: {containerResult.ErrorMessage ?? containerResult.Status}";
+                var recommendation = isTimeout
+                    ? "Увеличьте лимиты времени или проверьте размер и сложность анализируемой модели базы данных."
+                    : "Проверьте доступность контейнерной среды и корректность структуры моделей.";
+
                 findings.Add(new AnalyzerFinding
                 {
-                    Rule = ContainerExecutionErrorRule,
+                    Rule = rule,
                     FilePath = string.Empty,
                     LineNumber = 0,
-                    Message = $"Ошибка выполнения изолированного анализатора базы данных: {containerResult.ErrorMessage ?? containerResult.Status}",
+                    Message = message,
                     Severity = Severity.Warning,
-                    Recommendation = "Проверьте доступность контейнерной среды и корректность структуры моделей."
+                    Recommendation = recommendation
                 });
             }
         }
@@ -217,11 +273,20 @@ public sealed class DatabaseAnalyzer : IAnalyzer
         {
             throw;
         }
+        catch (Exception ex) when (ex is AggregateException agg && agg.Flatten().InnerExceptions.Any(e => e is OperationCanceledException))
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex.InnerException is OperationCanceledException || cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
+            ExecutionStatus = DatabaseAnalysisExecutionStatus.ContainerError;
             findings.Add(new AnalyzerFinding
             {
-                Rule = ContainerExecutionErrorRule,
+                Rule = ContainerErrorRule,
                 FilePath = string.Empty,
                 LineNumber = 0,
                 Message = $"Исключение при вызове изолированного контейнерного анализатора: {ex.Message}",

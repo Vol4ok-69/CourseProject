@@ -121,8 +121,9 @@ public sealed class RoslynDatabaseAnalyzerSafePipelineTests : IDisposable
         var findings = await analyzer.AnalyzeAsync(context);
 
         Assert.NotNull(findings);
+        Assert.Equal(Application.Analyzers.DatabaseAnalysisExecutionStatus.InformationSkipped, analyzer.ExecutionStatus);
         Assert.Contains(findings, f => f.Rule == DbAnalyzer.MissingDbContextRule);
-        Assert.Contains(findings, f => f.Rule == DbAnalyzer.ContainerUnavailableRule);
+        Assert.DoesNotContain(findings, f => f.Rule == DbAnalyzer.ContainerUnavailableRule);
 
         var missingFinding = findings.First(f => f.Rule == DbAnalyzer.MissingDbContextRule);
         Assert.Equal(Severity.Info, missingFinding.Severity);
@@ -248,6 +249,13 @@ public sealed class RoslynDatabaseAnalyzerSafePipelineTests : IDisposable
     [Fact]
     public async Task Scenario7_MissingContainer_ProducesDiagnosticWarningWithRecommendation()
     {
+        var dbContextSource = """
+            using Microsoft.EntityFrameworkCore;
+            namespace Test;
+            public class TestDbContext : DbContext { }
+            """;
+        await File.WriteAllTextAsync(Path.Combine(_tempDirectory, "TestDbContext.cs"), dbContextSource);
+
         var extractor = new RoslynMetadataExtractor();
         var analyzer = new DbAnalyzer(extractor);
         var context = new AnalyzerContext { RepositoryPath = _tempDirectory, CommitHash = "hash5" };
@@ -284,7 +292,7 @@ public sealed class RoslynDatabaseAnalyzerSafePipelineTests : IDisposable
         Assert.Equal("CS001", otherResult[0].Rule);
 
         Assert.Equal(AnalyzerType.Database, dbAnalyzer.Type);
-        Assert.Contains(dbResult, f => f.Rule == DbAnalyzer.ContainerUnavailableRule);
+        Assert.Contains(dbResult, f => f.Rule == DbAnalyzer.MissingDbContextRule);
     }
 
     [Fact]
@@ -363,7 +371,7 @@ public sealed class RoslynDatabaseAnalyzerSafePipelineTests : IDisposable
         var errorFinding = findings.First(f => f.Rule == DbAnalyzer.ExtractionErrorRule);
         Assert.Equal(Severity.Warning, errorFinding.Severity);
         Assert.Contains("Каталог репозитория не найден", errorFinding.Message);
-        Assert.Contains(findings, f => f.Rule == DbAnalyzer.ContainerUnavailableRule);
+        Assert.DoesNotContain(findings, f => f.Rule == DbAnalyzer.ContainerUnavailableRule);
     }
 
     [Fact]
@@ -385,7 +393,7 @@ public sealed class RoslynDatabaseAnalyzerSafePipelineTests : IDisposable
         Assert.Equal(Severity.Warning, errorFinding.Severity);
         Assert.Contains("Ошибка статического извлечения метаданных EF Core", errorFinding.Message);
         Assert.Contains("Имитация сбоя ввода-вывода", errorFinding.Message);
-        Assert.Contains(findings, f => f.Rule == DbAnalyzer.ContainerUnavailableRule);
+        Assert.DoesNotContain(findings, f => f.Rule == DbAnalyzer.ContainerUnavailableRule);
     }
 
     [Fact]
@@ -428,7 +436,7 @@ public sealed class RoslynDatabaseAnalyzerSafePipelineTests : IDisposable
         // Подтверждаем, что сбой в DatabaseAnalyzer не остановил остальные анализаторы
         Assert.Contains(pipelineFindings, f => f.Rule == "CS001");
         Assert.Contains(pipelineFindings, f => f.Rule == DbAnalyzer.ExtractionErrorRule);
-        Assert.Contains(pipelineFindings, f => f.Rule == DbAnalyzer.ContainerUnavailableRule);
+        Assert.DoesNotContain(pipelineFindings, f => f.Rule == DbAnalyzer.ContainerUnavailableRule);
         Assert.Contains(pipelineFindings, f => f.Rule == "SQL001");
         Assert.Contains(pipelineFindings, f => f.Rule == "SEC001");
     }

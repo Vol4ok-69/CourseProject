@@ -212,6 +212,8 @@ internal sealed class DataAnnotationParser
             if (candidates.Count == 0)
             {
                 _warnings.Add($"Базовый тип '{baseTypeName}' сущности '{entity.EntityName}' не найден среди анализируемых исходников; унаследованные свойства и ключи не могут быть извлечены.");
+                entity.HasIncompleteMetadata = true;
+                entity.HasIncompleteKeys = true;
                 continue;
             }
 
@@ -232,6 +234,8 @@ internal sealed class DataAnnotationParser
                 if (resolvedCandidate is null)
                 {
                     _warnings.Add($"Не удалось однозначно разрешить базовый тип '{baseTypeName}' сущности '{entity.EntityName}': обнаружено несколько определений в разных пространствах имён ({string.Join(", ", candidates.Select(c => c.Namespace))}).");
+                    entity.HasIncompleteMetadata = true;
+                    entity.HasIncompleteKeys = true;
                     continue;
                 }
             }
@@ -239,6 +243,7 @@ internal sealed class DataAnnotationParser
             if (!visited.Add(resolvedCandidate.SyntaxNode))
             {
                 _warnings.Add($"Обнаружен цикл в наследовании базового класса '{baseTypeName}' сущности '{entity.EntityName}'. Обход прерван.");
+                entity.HasIncompleteMetadata = true;
                 continue;
             }
 

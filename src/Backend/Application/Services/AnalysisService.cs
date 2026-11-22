@@ -113,15 +113,16 @@ public class AnalysisService(
             }
 
             var effectiveLeaseDuration = leaseDuration ?? TimeSpan.FromMinutes(2);
-            using var leaseCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var leaseRenewalTask = StartLeaseRenewalAsync(analysisId, executionToken, effectiveLeaseDuration, guard, leaseCts);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var renewalState = new LeaseRenewalState();
+            var leaseRenewalTask = StartLeaseRenewalAsync(analysisId, executionToken, effectiveLeaseDuration, guard, linkedCts, renewalState);
 
-            var ownershipLost = false;
+            var ownershipConfirmed = true;
 
             try
             {
                 var commit = (analysis.Commit?.Project != null ? analysis.Commit : null)
-                    ?? await commitRepository.GetByIdAsync(analysis.CommitId, leaseCts.Token)
+                    ?? await commitRepository.GetByIdAsync(analysis.CommitId, linkedCts.Token)
                     ?? throw new InvalidOperationException($"Коммит {analysis.CommitId} не найден.");
 
                 if (commit.Project == null)
@@ -129,7 +130,7 @@ public class AnalysisService(
                     throw new InvalidOperationException($"Проект для коммита {commit.Id} не найден.");
                 }
 
-                var personalAccessToken = await _gitHubCredentialService.GetUserTokenAsync(commit.Project.OwnerId, leaseCts.Token);
+                var personalAccessToken = await _gitHubCredentialService.GetUserTokenAsync(commit.Project.OwnerId, linkedCts.Token);
 
                 if (string.IsNullOrWhiteSpace(personalAccessToken))
                 {
@@ -145,7 +146,7 @@ public class AnalysisService(
                     executionToken,
                     personalAccessToken,
                     guard,
-                    leaseCts.Token);
+                    linkedCts.Token);
 
                 var context = new AnalyzerContext
                 {
@@ -157,19 +158,175 @@ public class AnalysisService(
                 };
 
                 var results = new List<AnalysisResult>();
+                var usefulWorkCompleted = false;
+                var totalAnalyzersCount = 0;
 
                 foreach (var analyzer in analyzers)
                 {
-                    leaseCts.Token.ThrowIfCancellationRequested();
-
-                    var isStillOwner = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], leaseCts.Token);
-                    if (!isStillOwner)
+                    totalAnalyzersCount++;
+                    linkedCts.Token.ThrowIfCancellationRequested();
+                    if (renewalState.IsTerminal)
                     {
-                        ownershipLost = true;
+                        throw new OperationCanceledException(linkedCts.Token);
+                    }
+
+                    bool isStillOwner;
+                    try
+                    {
+                        isStillOwner = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], linkedCts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        ownershipConfirmed = false;
                         return false;
                     }
 
-                    var findings = await analyzer.AnalyzeAsync(context, leaseCts.Token);
+                    if (!isStillOwner)
+                    {
+                        ownershipConfirmed = false;
+                        return false;
+                    }
+
+                    IReadOnlyList<AnalyzerFinding> findings;
+
+                    if (analyzer.Type == AnalyzerType.Database)
+                    {
+                        try
+                        {
+                            findings = await analyzer.AnalyzeAsync(context, linkedCts.Token);
+
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                throw new OperationCanceledException(cancellationToken);
+                            }
+
+                            if (linkedCts.IsCancellationRequested || renewalState.IsTerminal)
+                            {
+                                throw new OperationCanceledException(linkedCts.Token);
+                            }
+
+                            if (analyzer is IDatabaseAnalyzer dbAnalyzer)
+                            {
+                                var status = dbAnalyzer.ExecutionStatus;
+                                if (status is DatabaseAnalysisExecutionStatus.Success or DatabaseAnalysisExecutionStatus.PartialSuccess)
+                                {
+                                    usefulWorkCompleted = true;
+                                }
+                            }
+                            else
+                            {
+                                var hasFatalDbError = findings.Any(f =>
+                                    f.Rule is DatabaseAnalyzerRules.ContainerTimeout
+                                           or DatabaseAnalyzerRules.ContainerError
+                                           or DatabaseAnalyzerRules.InternalAnalyzerError
+                                           or DatabaseAnalyzerRules.ExtractionError
+                                           or "DB_CONTAINER_ERROR");
+
+                                var isInformationSkipped = findings.Any(f => f.Rule == DatabaseAnalyzerRules.MissingDbContext);
+
+                                if (!hasFatalDbError && !isInformationSkipped)
+                                {
+                                    usefulWorkCompleted = true;
+                                }
+                            }
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            // Отмена вызывающего кода пробрасывается наверх
+                            throw;
+                        }
+                        catch (OperationCanceledException) when (renewalState.StopReason is LeaseRenewalStopReason.OwnershipLost or LeaseRenewalStopReason.OwnershipValidationException)
+                        {
+                            // Подтверждённая потеря владения или ошибка проверки владения в цикле renewal
+                            ownershipConfirmed = false;
+                            throw;
+                        }
+                        catch (OperationCanceledException ex)
+                        {
+                            // Если остановка вызвана сбоем продления аренды в БД, прерываем конвейер
+                            if (renewalState.StopReason is LeaseRenewalStopReason.RenewalException)
+                            {
+                                throw;
+                            }
+
+                            bool isStillOwnerAfterCancel = false;
+                            try
+                            {
+                                isStillOwnerAfterCancel = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
+                            }
+                            catch { }
+
+                            if (!isStillOwnerAfterCancel)
+                            {
+                                ownershipConfirmed = false;
+                                throw;
+                            }
+
+                            // Если токен отменен или зафиксирована терминальная причина, прерываем
+                            if (linkedCts.IsCancellationRequested && renewalState.IsTerminal)
+                            {
+                                throw;
+                            }
+
+                            findings =
+                            [
+                                new AnalyzerFinding
+                                {
+                                    Rule = DatabaseAnalyzerRules.InternalAnalyzerError,
+                                    FilePath = string.Empty,
+                                    LineNumber = 0,
+                                    Message = $"Операция анализатора базы данных была отменена: {ex.Message}",
+                                    Severity = Severity.Warning,
+                                    Recommendation = "Проверьте конфигурацию и таймауты изолированного анализатора базы данных."
+                                }
+                            ];
+                        }
+                        catch (Exception ex)
+                        {
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                throw new OperationCanceledException(cancellationToken);
+                            }
+
+                            if (linkedCts.IsCancellationRequested || renewalState.IsTerminal)
+                            {
+                                throw new OperationCanceledException(linkedCts.Token);
+                            }
+
+                            findings =
+                            [
+                                new AnalyzerFinding
+                                {
+                                    Rule = DatabaseAnalyzerRules.InternalAnalyzerError,
+                                    FilePath = string.Empty,
+                                    LineNumber = 0,
+                                    Message = $"Ошибка анализатора базы данных: {SanitizeErrorMessage(ex)}",
+                                    Severity = Severity.Warning,
+                                    Recommendation = "Проверьте структуру моделей Entity Framework Core и параметры конфигурации базы данных."
+                                }
+                            ];
+                        }
+                    }
+                    else
+                    {
+                        findings = await analyzer.AnalyzeAsync(context, linkedCts.Token);
+
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            throw new OperationCanceledException(cancellationToken);
+                        }
+
+                        if (linkedCts.IsCancellationRequested || renewalState.IsTerminal)
+                        {
+                            throw new OperationCanceledException(linkedCts.Token);
+                        }
+
+                        usefulWorkCompleted = true;
+                    }
 
                     foreach (var finding in findings)
                     {
@@ -187,20 +344,74 @@ public class AnalysisService(
                     }
                 }
 
-                var isStillOwnerBeforeComplete = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
-                if (!isStillOwnerBeforeComplete)
+                // TD-002: Если все анализаторы завершились ошибкой или ни один не выполнил полезной работы
+                if (!usefulWorkCompleted && totalAnalyzersCount > 0)
                 {
-                    ownershipLost = true;
+                    renewalState.RequestNormalStop();
+                    linkedCts.Cancel();
+                    try { await leaseRenewalTask; } catch { }
+
+                    if (renewalState.IsTerminal)
+                    {
+                        throw new OperationCanceledException(linkedCts.Token);
+                    }
+
+                    bool isStillOwnerOnFail = false;
+                    try
+                    {
+                        isStillOwnerOnFail = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
+                    }
+                    catch
+                    {
+                        isStillOwnerOnFail = false;
+                    }
+
+                    if (isStillOwnerOnFail)
+                    {
+                        var failMessage = "Все анализаторы завершились ошибкой или не смогли предоставить результаты.";
+                        var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, failMessage, CancellationToken.None);
+                        if (!failed)
+                        {
+                            ownershipConfirmed = false;
+                        }
+                    }
+                    else
+                    {
+                        ownershipConfirmed = false;
+                    }
+
                     return false;
                 }
 
-                leaseCts.Cancel();
+                renewalState.RequestNormalStop();
+                linkedCts.Cancel();
                 try { await leaseRenewalTask; } catch { }
+
+                if (renewalState.IsTerminal)
+                {
+                    throw new OperationCanceledException(linkedCts.Token);
+                }
+
+                bool isStillOwnerBeforeComplete = false;
+                try
+                {
+                    isStillOwnerBeforeComplete = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
+                }
+                catch
+                {
+                    isStillOwnerBeforeComplete = false;
+                }
+
+                if (!isStillOwnerBeforeComplete)
+                {
+                    ownershipConfirmed = false;
+                    return false;
+                }
 
                 var completed = await analysisRepository.CompleteAsync(analysis.Id, executionToken, results, CancellationToken.None);
                 if (!completed)
                 {
-                    ownershipLost = true;
+                    ownershipConfirmed = false;
                     return false;
                 }
 
@@ -208,25 +419,8 @@ public class AnalysisService(
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                leaseCts.Cancel();
-                try { await leaseRenewalTask; } catch { }
-
-                // При штатной остановке приложения НЕ помечаем задачу как Failed,
-                // чтобы после истечения аренды она могла быть повторно захвачена.
-                throw;
-            }
-            catch (OperationCanceledException) when (leaseCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                ownershipLost = true;
-                leaseCts.Cancel();
-                try { await leaseRenewalTask; } catch { }
-
-                // Потеря или истечение аренды: не перезаписываем чужую задачу
-                return false;
-            }
-            catch (Exception ex)
-            {
-                leaseCts.Cancel();
+                renewalState.TrySetTerminalReason(LeaseRenewalStopReason.ExternalCancellation);
+                linkedCts.Cancel();
                 try { await leaseRenewalTask; } catch { }
 
                 bool isStillOwner = false;
@@ -236,29 +430,169 @@ public class AnalysisService(
                 }
                 catch
                 {
+                    isStillOwner = false;
+                }
+
+                if (!isStillOwner)
+                {
+                    ownershipConfirmed = false;
+                }
+
+                // При штатной остановке приложения НЕ помечаем задачу как Failed,
+                // чтобы после истечения аренды она могла быть повторно захвачена.
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                linkedCts.Cancel();
+                try { await leaseRenewalTask; } catch { }
+
+                if (cancellationToken.IsCancellationRequested || renewalState.StopReason == LeaseRenewalStopReason.ExternalCancellation)
+                {
+                    bool isStillOwnerOnCancel = false;
+                    try
+                    {
+                        isStillOwnerOnCancel = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
+                    }
+                    catch
+                    {
+                        isStillOwnerOnCancel = false;
+                    }
+
+                    if (!isStillOwnerOnCancel)
+                    {
+                        ownershipConfirmed = false;
+                    }
+
+                    throw;
+                }
+
+                // 1. Подтверждённая потеря владения
+                if (renewalState.StopReason == LeaseRenewalStopReason.OwnershipLost)
+                {
+                    ownershipConfirmed = false;
+                    return false;
+                }
+
+                // 2. Исключение при проверке владения: состояние владения неизвестно
+                if (renewalState.StopReason == LeaseRenewalStopReason.OwnershipValidationException)
+                {
+                    ownershipConfirmed = false;
+                    return false;
+                }
+
+                // 3. Проверяем актуальное состояние владения
+                bool isStillOwner = false;
+                try
+                {
+                    isStillOwner = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
+                }
+                catch
+                {
+                    isStillOwner = false;
+                }
+
+                if (!isStillOwner)
+                {
+                    ownershipConfirmed = false;
+                    return false;
+                }
+
+                // Владение ПОДТВЕРЖДЕНО!
+                string errorMessage;
+                if (renewalState.StopReason == LeaseRenewalStopReason.RenewalException)
+                {
+                    errorMessage = renewalState.Exception != null
+                        ? $"Сбой продления аренды анализа: {SanitizeErrorMessage(renewalState.Exception)}"
+                        : "Не удалось продлить аренду анализа в базе данных.";
+                }
+                else
+                {
+                    errorMessage = $"Операция анализа была отменена: {SanitizeErrorMessage(ex)}";
+                }
+
+                var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, errorMessage, CancellationToken.None);
+                if (!failed)
+                {
+                    ownershipConfirmed = false;
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                linkedCts.Cancel();
+                try { await leaseRenewalTask; } catch { }
+
+                if (cancellationToken.IsCancellationRequested || renewalState.StopReason == LeaseRenewalStopReason.ExternalCancellation)
+                {
+                    bool isStillOwnerOnCancel = false;
+                    try
+                    {
+                        isStillOwnerOnCancel = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
+                    }
+                    catch
+                    {
+                        isStillOwnerOnCancel = false;
+                    }
+
+                    if (!isStillOwnerOnCancel)
+                    {
+                        ownershipConfirmed = false;
+                    }
+
+                    throw;
+                }
+
+                if (renewalState.StopReason == LeaseRenewalStopReason.OwnershipLost ||
+                    renewalState.StopReason == LeaseRenewalStopReason.OwnershipValidationException)
+                {
+                    ownershipConfirmed = false;
+                    return false;
+                }
+
+                bool isStillOwner = false;
+                try
+                {
+                    isStillOwner = await guard.ValidateOwnershipAsync([(int)AnalysisStatus.Running], CancellationToken.None);
+                }
+                catch
+                {
+                    isStillOwner = false;
                 }
 
                 if (isStillOwner)
                 {
-                    var errorMessage = SanitizeErrorMessage(ex);
+                    string errorMessage;
+                    if (renewalState.StopReason == LeaseRenewalStopReason.RenewalException)
+                    {
+                        errorMessage = renewalState.Exception != null
+                            ? $"Сбой продления аренды анализа: {SanitizeErrorMessage(renewalState.Exception)}"
+                            : "Не удалось продлить аренду анализа в базе данных.";
+                    }
+                    else
+                    {
+                        errorMessage = SanitizeErrorMessage(ex);
+                    }
+
                     var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, errorMessage, CancellationToken.None);
                     if (!failed)
                     {
-                        ownershipLost = true;
+                        ownershipConfirmed = false;
                     }
                 }
                 else
                 {
-                    ownershipLost = true;
+                    ownershipConfirmed = false;
                 }
 
                 return false;
             }
             finally
             {
-                // Очищаем временные файлы только если обработчик не потерял владение задачей
-                // (чтобы не удалить файлы другого воркера, перехватившего задачу)
-                if (!ownershipLost)
+                // Очищаем временные файлы только если владение подтверждено
+                // (при потере владения или при невозможности подтвердить владение очистка запрещена)
+                if (ownershipConfirmed)
                 {
                     try
                     {
@@ -276,12 +610,107 @@ public class AnalysisService(
         }
     }
 
+    private enum LeaseRenewalStopReason
+    {
+        None,
+        NormalStop,
+        OwnershipLost,
+        RenewalException,
+        OwnershipValidationException,
+        ExternalCancellation
+    }
+
+    private sealed class LeaseRenewalState
+    {
+        private readonly object _syncRoot = new();
+        private LeaseRenewalStopReason _stopReason = LeaseRenewalStopReason.None;
+        private Exception? _exception;
+
+        public LeaseRenewalStopReason StopReason
+        {
+            get
+            {
+                lock (_syncRoot)
+                {
+                    return _stopReason;
+                }
+            }
+        }
+
+        public Exception? Exception
+        {
+            get
+            {
+                lock (_syncRoot)
+                {
+                    return _exception;
+                }
+            }
+        }
+
+        public bool IsTerminal
+        {
+            get
+            {
+                lock (_syncRoot)
+                {
+                    return IsTerminalReason(_stopReason);
+                }
+            }
+        }
+
+        public static bool IsTerminalReason(LeaseRenewalStopReason reason) =>
+            reason is LeaseRenewalStopReason.OwnershipLost
+                   or LeaseRenewalStopReason.RenewalException
+                   or LeaseRenewalStopReason.OwnershipValidationException
+                   or LeaseRenewalStopReason.ExternalCancellation;
+
+        public bool TrySetTerminalReason(LeaseRenewalStopReason reason, Exception? exception = null)
+        {
+            if (!IsTerminalReason(reason))
+            {
+                throw new ArgumentException($"Причина {reason} не является терминальной.", nameof(reason));
+            }
+
+            lock (_syncRoot)
+            {
+                if (IsTerminalReason(_stopReason))
+                {
+                    if (_stopReason == reason && _exception == null && exception != null)
+                    {
+                        _exception = exception;
+                    }
+                    return false;
+                }
+
+                _stopReason = reason;
+                _exception = exception;
+                return true;
+            }
+        }
+
+        public bool RequestNormalStop()
+        {
+            lock (_syncRoot)
+            {
+                if (IsTerminalReason(_stopReason))
+                {
+                    return false;
+                }
+
+                _stopReason = LeaseRenewalStopReason.NormalStop;
+                return true;
+            }
+        }
+    }
+
     private async Task StartLeaseRenewalAsync(
         int analysisId,
         Guid executionToken,
         TimeSpan leaseDuration,
         IAnalysisLeaseGuard guard,
-        CancellationTokenSource linkedCts)
+        CancellationTokenSource linkedCts,
+        LeaseRenewalState renewalState)
     {
         var interval = leaseDuration.TotalSeconds >= 3
             ? TimeSpan.FromSeconds(Math.Clamp(leaseDuration.TotalSeconds / 3, 1, 5))
@@ -293,27 +722,59 @@ public class AnalysisService(
             {
                 await Task.Delay(interval, linkedCts.Token);
 
-                using var validationTimeout = new CancellationTokenSource(
-                    TimeSpan.FromSeconds(5));
-
-                var isOwner = await guard.ValidateOwnershipAsync(
-                    [(int)AnalysisStatus.Running],
-                    validationTimeout.Token);
-
-                if (!isOwner)
+                bool isOwner;
+                try
                 {
+                    using var validationTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    isOwner = await guard.ValidateOwnershipAsync(
+                        [(int)AnalysisStatus.Running],
+                        validationTimeout.Token);
+                }
+                catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // Исключение при проверке владения: состояние владения неизвестно
+                    renewalState.TrySetTerminalReason(LeaseRenewalStopReason.OwnershipValidationException, ex);
                     linkedCts.Cancel();
                     return;
                 }
 
-                var renewed = await analysisRepository.RenewLeaseAsync(
-                    analysisId,
-                    executionToken,
-                    leaseDuration,
-                    linkedCts.Token);
+                if (!isOwner)
+                {
+                    // Подтверждённая потеря владения
+                    renewalState.TrySetTerminalReason(LeaseRenewalStopReason.OwnershipLost);
+                    linkedCts.Cancel();
+                    return;
+                }
+
+                bool renewed;
+                try
+                {
+                    renewed = await analysisRepository.RenewLeaseAsync(
+                        analysisId,
+                        executionToken,
+                        leaseDuration,
+                        linkedCts.Token);
+                }
+                catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // Исключение при вызове RenewLeaseAsync (например, таймаут БД)
+                    renewalState.TrySetTerminalReason(LeaseRenewalStopReason.RenewalException, ex);
+                    linkedCts.Cancel();
+                    return;
+                }
 
                 if (!renewed)
                 {
+                    // Отказ продления аренды в БД (RenewLeaseAsync вернул false: задача в БД изменена или перехвачена)
+                    renewalState.TrySetTerminalReason(LeaseRenewalStopReason.OwnershipLost);
                     linkedCts.Cancel();
                     return;
                 }
@@ -323,9 +784,10 @@ public class AnalysisService(
         {
             // Штатная остановка цикла.
         }
-        catch
+        catch (Exception ex)
         {
-            // При невозможности подтвердить владение работа прекращается.
+            // Непредвиденное исключение в цикле продления аренды
+            renewalState.TrySetTerminalReason(LeaseRenewalStopReason.RenewalException, ex);
             linkedCts.Cancel();
         }
     }

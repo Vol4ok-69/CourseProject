@@ -336,7 +336,7 @@ public sealed class DatabaseContainerRunner : IDatabaseContainerRunner
         }
     }
 
-    private static DatabaseAnalyzerInputDocument BuildInputDocument(
+    public static DatabaseAnalyzerInputDocument BuildInputDocument(
         RoslynModelExtractionResult extraction,
         int analysisId,
         Guid executionToken)

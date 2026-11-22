@@ -1,4 +1,5 @@
 ﻿using IAnalysisLeaseGuard = Application.Interfaces.IAnalysisLeaseGuard;
+using IAnalysisLeaseGuardProvider = Application.Interfaces.IAnalysisLeaseGuardProvider;
 using DatabaseAnalyzer.Runner;
 using System.Reflection;
 using Application.Exceptions;
@@ -1518,4 +1519,1386 @@ public sealed class AnalysisServiceQueueTests
 
         Assert.Equal("CancellationToken was cancelled during repository download.", sanitized);
     }
+
+    #region TD-002: Pipeline Fault-Tolerance for DatabaseAnalyzer
+
+    private static (Analysis analysis, Guid token, Mock<IAnalysisRepository> analysisRepo, Mock<ICommitRepository> commitRepo, Mock<IRepositorySourceService> sourceService, Mock<IGitHubCredentialService> credentialService) CreateAnalysisPipelineContext(int analysisId = 101)
+    {
+        var token = Guid.NewGuid();
+        var analysis = new Analysis
+        {
+            Id = analysisId,
+            CommitId = 1,
+            Status = AnalysisStatus.Running,
+            ExecutionToken = token,
+            Commit = new Commit
+            {
+                Id = 1,
+                CommitHash = "hash-td002",
+                Project = new Project { RepoUrl = "https://github.com/test/repo", OwnerId = 1 }
+            }
+        };
+
+        var analysisRepo = new Mock<IAnalysisRepository>();
+        var commitRepo = new Mock<ICommitRepository>();
+        var sourceService = new Mock<IRepositorySourceService>();
+        var credentialService = new Mock<IGitHubCredentialService>();
+
+        credentialService.Setup(x => x.GetUserTokenAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync("ghp_test_token");
+
+        analysisRepo.Setup(x => x.GetByIdAsync(analysisId, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
+        analysisRepo.Setup(x => x.FailAsync(analysisId, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.CompleteAsync(analysisId, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+
+        sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), analysisId, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("C:\\TempRepo");
+
+        return (analysis, token, analysisRepo, commitRepo, sourceService, credentialService);
+    }
+
+    [Fact]
+    public async Task TD002_Test1_WhenDatabaseAnalyzerFindsNoDbContext_CompletesWithInfoAndPreservesOtherResults()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(111);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding
+            {
+                Rule = DatabaseAnalyzerRules.MissingDbContext,
+                Message = "В проекте не найдено контекстов данных Entity Framework Core (DbContext). Проверки схемы базы данных пропущены.",
+                Severity = Severity.Info
+            }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 2 &&
+                r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.MissingDbContext && x.Severity == Severity.Info && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test2_WhenDatabaseAnalyzerThrowsException_CompletesWithWarningAndPreservesOtherResults()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(112);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Fatal database engine crash"));
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 2 &&
+                r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.InternalAnalyzerError &&
+                           x.Severity == Severity.Warning &&
+                           x.Message.Contains("Fatal database engine crash") &&
+                           x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test3_WhenDatabaseContainerFails_CompletesWithWarningAndPreservesOtherResults()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(113);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding
+            {
+                Rule = DatabaseAnalyzerRules.ContainerError,
+                Message = "Ошибка выполнения изолированного анализатора базы данных: non-zero exit code 1",
+                Severity = Severity.Warning,
+                Recommendation = "Проверьте доступность контейнерной среды и корректность структуры моделей."
+            }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 2 &&
+                r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerError && x.Severity == Severity.Warning && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test4_WhenDatabaseAnalyzerTimesOut_CompletesWithWarningAndPreservesOtherResults()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(114);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding
+            {
+                Rule = DatabaseAnalyzerRules.ContainerTimeout,
+                Message = "Превышено максимальное время выполнения изолированного анализатора базы данных (таймаут 60 с).",
+                Severity = Severity.Warning,
+                Recommendation = "Увеличьте лимиты времени или проверьте размер и сложность анализируемой модели базы данных."
+            }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 2 &&
+                r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerTimeout && x.Severity == Severity.Warning && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test5_WhenDatabaseAnalyzerReportsPartialMetadata_PreservesValidResultsAndDiagnostics()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(115);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new AnalyzerFinding { Rule = "DB01", Message = "Primary Key Required", Severity = Severity.Warning },
+                new AnalyzerFinding { Rule = DatabaseAnalyzerRules.RoslynWarning, Message = "Неполные метаданные для IncompleteEntity", Severity = Severity.Warning }
+            ]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 3 &&
+                r.Any(x => x.Rule == "CS001") &&
+                r.Any(x => x.Rule == "DB01") &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.RoslynWarning && x.Severity == Severity.Warning)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test6_WhenAllAnalyzersFail_MarksAnalysisFailed()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(116);
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Solo database analyzer crashed"));
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test7_WhenGlobalCancellationTriggered_RethrowsAndDoesNotConvertToWarning()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(117);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new OperationCanceledException(cts.Token));
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ExecuteAnalysisAsync(analysis.Id, token, cts.Token));
+
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test8_WhenAllAnalyzersSucceed_CompletesWithAllResultsAndNoExtraWarnings()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(118);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "DB01", Message = "Missing PK", Severity = Severity.Warning }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 2 &&
+                r.Any(x => x.Rule == "CS001") &&
+                r.Any(x => x.Rule == "DB01") &&
+                !r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerTimeout ||
+                            x.Rule == DatabaseAnalyzerRules.ContainerError ||
+                            x.Rule == DatabaseAnalyzerRules.InternalAnalyzerError)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test9_WhenDatabaseAnalyzerReturnsDB01AlongsideContainerError_SoloAnalyzer_MarksAnalysisFailed()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(119);
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new AnalyzerFinding { Rule = "DB01", Message = "Missing PK", Severity = Severity.Warning },
+                new AnalyzerFinding { Rule = DatabaseAnalyzerRules.ContainerError, Message = "Container execution failed", Severity = Severity.Warning }
+            ]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test10_WhenDatabaseAnalyzerReturnsDB01AlongsideContainerError_WithOtherAnalyzer_CompletesWithAllFindings()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(120);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var dbMock = new Mock<IAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new AnalyzerFinding { Rule = "DB01", Message = "Missing PK", Severity = Severity.Warning },
+                new AnalyzerFinding { Rule = DatabaseAnalyzerRules.ContainerError, Message = "Container execution failed", Severity = Severity.Warning }
+            ]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 3 &&
+                r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
+                r.Any(x => x.Rule == "DB01" && x.AnalyzerType == AnalyzerType.Database) &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerError && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test11_WhenDatabaseAnalyzerImplementsIDatabaseAnalyzer_PartialSuccess_CountsAsSuccessful()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(121);
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.SetupGet(a => a.ExecutionStatus).Returns(DatabaseAnalysisExecutionStatus.PartialSuccess);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new AnalyzerFinding { Rule = "DB01", Message = "Primary Key Required", Severity = Severity.Warning },
+                new AnalyzerFinding { Rule = DatabaseAnalyzerRules.RoslynWarning, Message = "Partial metadata warning", Severity = Severity.Info }
+            ]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 2 &&
+                r.Any(x => x.Rule == "DB01") &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.RoslynWarning)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test12_WhenDatabaseAnalyzerImplementsIDatabaseAnalyzer_ContainerError_CountsAsFailed()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(122);
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.SetupGet(a => a.ExecutionStatus).Returns(DatabaseAnalysisExecutionStatus.ContainerError);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new AnalyzerFinding { Rule = "DB01", Message = "Primary Key Required", Severity = Severity.Warning },
+                new AnalyzerFinding { Rule = DatabaseAnalyzerRules.ContainerError, Message = "Container crashed", Severity = Severity.Warning }
+            ]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test13_WhenAnalyzersPassedAsSinglePassEnumerable_ExecutesSafelyWithoutMultipleEnumeration()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(123);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        static IEnumerable<IAnalyzer> CreateSinglePassSequence(IAnalyzer item)
+        {
+            var enumerated = 0;
+            if (Interlocked.Increment(ref enumerated) > 1)
+            {
+                throw new InvalidOperationException("Single-pass sequence was enumerated more than once!");
+            }
+
+            yield return item;
+        }
+
+        var service = new AnalysisService(
+            analysisRepo.Object,
+            commitRepo.Object,
+            sourceService.Object,
+            CreateSinglePassSequence(csMock.Object),
+            credentialService.Object,
+            new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r => r.Count == 1 && r[0].Rule == "CS001"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD002_Test14_WhenDatabaseAnalyzerReturnsMissingDbContext_AsSoloAnalyzer_MarksAnalysisFailed()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(124);
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.SetupGet(a => a.ExecutionStatus).Returns(DatabaseAnalysisExecutionStatus.InformationSkipped);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding
+            {
+                Rule = DatabaseAnalyzerRules.MissingDbContext,
+                Message = "В проекте не найдено контекстов данных Entity Framework Core (DbContext). Проверки схемы базы данных пропущены.",
+                Severity = Severity.Info
+            }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test15_WhenLeaseLostDuringDatabaseAnalyzerExecution_ReturnsFalseWithoutCallingFailAsyncOrCompleteAsync_AndDoesNotConvertToWarningOrTimeout()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(125);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        var validationCount = 0;
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                validationCount++;
+                // Начальная проверка владения успешна, при последующих (после потери аренды) возвращает false
+                return validationCount == 1;
+            });
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(125, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.SetupGet(a => a.ExecutionStatus).Returns(DatabaseAnalysisExecutionStatus.NotStarted);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new OperationCanceledException("Workspace lease lost during database execution."));
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.False(success);
+        // Не перезаписываем чужую задачу при потере аренды
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_Test16_RealDatabaseAnalyzer_ResetsStatus_AndExecutesCorrectlyThroughAnalysisService()
+    {
+        var tempRepoPath = Path.Combine(Path.GetTempPath(), "NetScope_RealDbTest_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRepoPath);
+        try
+        {
+            var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(126);
+            sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 126, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(tempRepoPath);
+
+            var mockExtractor = new Mock<DatabaseAnalyzer.Roslyn.IRoslynMetadataExtractor>();
+
+            // Создаём реальный экземпляр DatabaseAnalyzer
+            var realAnalyzer = new DatabaseAnalyzer.DatabaseAnalyzer(mockExtractor.Object);
+
+            // Проверяем начальное состояние до запуска
+            Assert.Equal(DatabaseAnalysisExecutionStatus.NotStarted, realAnalyzer.ExecutionStatus);
+
+            // Настройка экстрактора: нет контекстов данных
+            mockExtractor
+                .Setup(x => x.ExtractAsync(tempRepoPath, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new DatabaseAnalyzer.Roslyn.RoslynModelExtractionResult());
+
+            var csMock = new Mock<IAnalyzer>();
+            csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+            csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+            var service = new AnalysisService(
+                analysisRepo.Object,
+                commitRepo.Object,
+                sourceService.Object,
+                [csMock.Object, realAnalyzer],
+                credentialService.Object,
+                new InMemoryAnalysisLeaseGuardProvider());
+
+            var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+            Assert.True(success);
+            Assert.Equal(DatabaseAnalysisExecutionStatus.InformationSkipped, realAnalyzer.ExecutionStatus);
+            analysisRepo.Verify(x => x.CompleteAsync(
+                analysis.Id,
+                token,
+                It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                    r.Count == 2 &&
+                    r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
+                    r.Any(x => x.Rule == DatabaseAnalyzerRules.MissingDbContext && x.Severity == Severity.Info && x.AnalyzerType == AnalyzerType.Database)),
+                It.IsAny<CancellationToken>()), Times.Once);
+            analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+            // Повторный запуск того же экземпляра realAnalyzer при ошибке извлечения:
+            // статус должен сброситься и установиться в ExtractionError
+            mockExtractor
+                .Setup(x => x.ExtractAsync(tempRepoPath, It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidOperationException("Extraction crashed"));
+
+            var (analysis2, token2, analysisRepo2, commitRepo2, sourceService2, credentialService2) = CreateAnalysisPipelineContext(127);
+            sourceService2.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 127, token2, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(tempRepoPath);
+
+            var service2 = new AnalysisService(
+                analysisRepo2.Object,
+                commitRepo2.Object,
+                sourceService2.Object,
+                [realAnalyzer],
+                credentialService2.Object,
+                new InMemoryAnalysisLeaseGuardProvider());
+
+            var success2 = await service2.ExecuteAnalysisAsync(analysis2.Id, token2);
+
+            Assert.False(success2);
+            Assert.Equal(DatabaseAnalysisExecutionStatus.ExtractionError, realAnalyzer.ExecutionStatus);
+            analysisRepo2.Verify(x => x.FailAsync(analysis2.Id, token2, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+            analysisRepo2.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRepoPath))
+            {
+                Directory.Delete(tempRepoPath, recursive: true);
+            }
+        }
+    }
+
+    #region TD-002: Mandatory Scenarios A-G
+
+    [Fact]
+    public async Task TD002_ScenarioA_DatabaseAnalyzerSoloInformationSkipped_MarksAnalysisFailed()
+    {
+        // Сценарий A: DatabaseAnalyzer один в конвейере возвращает InformationSkipped (отсутствие DbContext)
+        // -> анализ завершается Failed (не было полезной работы), CompleteAsync НЕ вызывается, вызывается FailAsync.
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(201);
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.SetupGet(a => a.ExecutionStatus).Returns(DatabaseAnalysisExecutionStatus.InformationSkipped);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding
+            {
+                Rule = DatabaseAnalyzerRules.MissingDbContext,
+                Message = "В проекте не найдено контекстов данных Entity Framework Core (DbContext).",
+                Severity = Severity.Info
+            }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_ScenarioB_DatabaseAnalyzerInformationSkipped_WithSuccessfulCodeAnalyzer_CompletesSuccessfullyWithBothResults()
+    {
+        // Сценарий B: DatabaseAnalyzer возвращает InformationSkipped, а CodeAnalyzer успешно находит замечания
+        // -> анализ завершается Completed, вызывается CompleteAsync, сохраняются результаты обоих анализаторов (включая Info-запись DbContext).
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(202);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.SetupGet(a => a.ExecutionStatus).Returns(DatabaseAnalysisExecutionStatus.InformationSkipped);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding
+            {
+                Rule = DatabaseAnalyzerRules.MissingDbContext,
+                Message = "В проекте не найдено контекстов данных Entity Framework Core (DbContext).",
+                Severity = Severity.Info
+            }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 2 &&
+                r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.MissingDbContext && x.Severity == Severity.Info && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_ScenarioC_DatabaseAnalyzerContainerErrorOrException_WithSuccessfulCodeAnalyzer_CompletesWithWarningAndPreservesResults()
+    {
+        // Сценарий C: DatabaseAnalyzer завершается с ошибкой (ContainerError или выбрасывает исключение), а CodeAnalyzer успешен
+        // -> анализ Completed, вызывается CompleteAsync, сохраняются замечания CodeAnalyzer + Warning о сбое контейнера (с исходным сообщением об ошибке контейнера).
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(203);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        const string containerErrorMessage = "Сбой контейнера: non-zero exit code 137 (OOMKilled)";
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.SetupGet(a => a.ExecutionStatus).Returns(DatabaseAnalysisExecutionStatus.ContainerError);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding
+            {
+                Rule = DatabaseAnalyzerRules.ContainerError,
+                Message = containerErrorMessage,
+                Severity = Severity.Warning
+            }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 2 &&
+                r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerError &&
+                           x.Severity == Severity.Warning &&
+                           x.Message.Contains(containerErrorMessage) &&
+                           x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_ScenarioD_DatabaseAnalyzerContainerTimeout_WithSuccessfulCodeAnalyzer_CompletesWithWarningAndPreservesResults()
+    {
+        // Сценарий D: DatabaseAnalyzer завершается по таймауту контейнера (ContainerTimeout), а CodeAnalyzer успешен
+        // -> анализ Completed, сохраняются замечания CodeAnalyzer + Warning о таймауте контейнера.
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(204);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.SetupGet(a => a.ExecutionStatus).Returns(DatabaseAnalysisExecutionStatus.ContainerTimeout);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding
+            {
+                Rule = DatabaseAnalyzerRules.ContainerTimeout,
+                Message = "Превышено максимальное время выполнения изолированного анализатора базы данных.",
+                Severity = Severity.Warning
+            }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object, dbMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(
+            analysis.Id,
+            token,
+            It.Is<IReadOnlyList<AnalysisResult>>(r =>
+                r.Count == 2 &&
+                r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
+                r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerTimeout &&
+                           x.Severity == Severity.Warning &&
+                           x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_ScenarioE_ThirdPartyOperationCanceledException_WithoutLeaseLoss_MarksAnalysisFailed()
+    {
+        // Сценарий E: Сторонняя отмена (сторонний OperationCanceledException без отмены cancellationToken и без потери lease) в анализаторе
+        // -> анализ помечается Failed (вызывается FailAsync), задача НЕ зависает в Running.
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(205);
+
+        var failingAnalyzer = new Mock<IAnalyzer>();
+        failingAnalyzer.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        failingAnalyzer.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new OperationCanceledException("Third-party internal timeout/cancellation."));
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [failingAnalyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("Операция анализа была отменена")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_ScenarioF_CallerCancellation_RethrowsAndNeverCallsFailAsyncOrCompleteAsync()
+    {
+        // Сценарий F: Вызывающая отмена (cancellationToken.IsCancellationRequested)
+        // -> пробрасывается исключение, FailAsync НЕ вызывается, статус задачи в БД НЕ меняется (не помечается Failed).
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(206);
+
+        using var callerCts = new CancellationTokenSource();
+        callerCts.Cancel();
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ExecuteAnalysisAsync(analysis.Id, token, callerCts.Token));
+
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_ScenarioG_ConfirmedLeaseLoss_ReturnsFalseWithoutCallingFailAsyncOrCompleteAsync()
+    {
+        // Сценарий G: Потеря владения арендой (lease loss подтверждён)
+        // -> сервис возвращает false, FailAsync НЕ вызывается, статус задачи в БД НЕ перезаписывается.
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(207);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        var validationCount = 0;
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                validationCount++;
+                // Первая проверка владения (начальная) успешна, последующие проверки - аренда потеряна
+                return validationCount == 1;
+            });
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(207, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new OperationCanceledException("Lease expired"));
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    #endregion
+
+    #region TD-002: Specific Lease Renewal Lifecycle and Ownership Validation Tests
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_WhenRenewLeaseFails_WhileOwnershipStillConfirmed_MarksTaskFailed()
+    {
+        // Ошибка RenewLeaseAsync при сохранении владения (ValidateOwnershipAsync == true):
+        // не классифицируется как потеря владения другому узлу, помечается Failed, не зависает в Running
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(208);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true); // Владение подтверждено!
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(208, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        // RenewLeaseAsync выбрасывает исключение (сбой продления аренды в БД из-за таймаута сети)
+        analysisRepo.Setup(x => x.RenewLeaseAsync(208, token, It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("PostgreSQL renewal timeout"));
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                var tcs = new TaskCompletionSource<IReadOnlyList<AnalyzerFinding>>();
+                using var reg = ct.Register(() => tcs.TrySetCanceled(ct));
+                return await tcs.Task;
+            });
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        // Передаем короткую длительность аренды, чтобы фоновый цикл сработал быстро
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(60));
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(msg => msg != null && msg.Contains("аренд")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_WhenValidateOwnershipReturnsFalse_DoesNotCallFailAsyncOrCompleteAsync()
+    {
+        // Отрицательный результат ValidateOwnershipAsync в цикле renewal (подтверждённая потеря владения):
+        // ни CompleteAsync, ни FailAsync не вызываются, очистка каталога не производится
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(209);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        var validationCount = 0;
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                validationCount++;
+                return validationCount == 1; // 1-й вызов (начальный) true, в цикле renewal false
+            });
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(209, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                var tcs = new TaskCompletionSource<IReadOnlyList<AnalyzerFinding>>();
+                using var reg = ct.Register(() => tcs.TrySetCanceled(ct));
+                return await tcs.Task;
+            });
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(60));
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        sourceService.Verify(x => x.CleanupAsync(209, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_WhenValidateOwnershipThrowsException_DoesNotCallFailAsyncOrCompleteAsync()
+    {
+        // Исключение при проверке владения в цикле renewal (состояние владения неизвестно):
+        // выполнение прекращается, операции CompleteAsync, FailAsync и CleanupAsync запрещены
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(210);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        var validationCount = 0;
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .Returns<int[], CancellationToken>((_, _) =>
+            {
+                validationCount++;
+                if (validationCount == 1)
+                {
+                    return Task.FromResult(true);
+                }
+
+                throw new InvalidOperationException("PostgreSQL connection abruptly terminated");
+            });
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(210, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                var tcs = new TaskCompletionSource<IReadOnlyList<AnalyzerFinding>>();
+                using var reg = ct.Register(() => tcs.TrySetCanceled(ct));
+                return await tcs.Task;
+            });
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(60));
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        sourceService.Verify(x => x.CleanupAsync(210, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_WhenExternalCancellationRequested_RethrowsAndNeverCallsFailAsync()
+    {
+        // Внешняя отмена (cancellationToken.IsCancellationRequested):
+        // пробрасывает исключение, FailAsync НЕ вызывается
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(211);
+
+        using var callerCts = new CancellationTokenSource();
+        callerCts.Cancel();
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.ExecuteAnalysisAsync(analysis.Id, token, callerCts.Token));
+
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_WhenExternalCancellationTriggeredDuringExecution_RethrowsAndNeverCallsFailAsyncOrCompleteAsync()
+    {
+        // Внешняя отмена непосредственно во время выполнения анализа (после старта анализатора):
+        // 1. Создать действующий CancellationTokenSource.
+        // 2. Запустить AnalysisService.ExecuteAnalysisAsync.
+        // 3. Использовать TaskCompletionSource, чтобы тест точно знал, что анализатор начал выполнение.
+        // 4. Дождаться сигнала начала выполнения анализатора.
+        // 5. Вызвать Cancel() у внешнего CancellationTokenSource.
+        // 6. Дождаться завершения ExecuteAnalysisAsync.
+        // 7. Проверить получение OperationCanceledException.
+        // 8. Проверить, что FailAsync не вызывался.
+        // 9. Проверить, что CompleteAsync не вызывался.
+        // 10. Проверить корректное завершение фонового Lease Renewal.
+        // 11. Проверить безопасное поведение CleanupAsync с учётом подтверждённого владения.
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(213);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true); // Владение подтверждено
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(213, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        using var externalCts = new CancellationTokenSource();
+        var analyzerStartedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                // Сигнализируем тесту, что анализатор начал выполнение
+                analyzerStartedTcs.TrySetResult(true);
+
+                // Ожидаем отмены токена ct (который связан с externalCts)
+                var tcs = new TaskCompletionSource<IReadOnlyList<AnalyzerFinding>>();
+                using var reg = ct.Register(() => tcs.TrySetCanceled(ct));
+                return await tcs.Task;
+            });
+
+        var service = new AnalysisService(
+            analysisRepo.Object,
+            commitRepo.Object,
+            sourceService.Object,
+            [dbMock.Object],
+            credentialService.Object,
+            guardProviderMock.Object);
+
+        // 1-2. Запускаем выполнение анализа с активным (не отменённым) токеном
+        var executionTask = service.ExecuteAnalysisAsync(analysis.Id, token, externalCts.Token);
+
+        // 3-4. Детерминированно ожидаем подтверждения, что анализатор начал работу
+        await analyzerStartedTcs.Task;
+
+        // 5. Отменяем внешний токен во время активной работы анализатора
+        externalCts.Cancel();
+
+        // 6-7. Дожидаемся завершения и проверяем получение OperationCanceledException
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => executionTask);
+
+        // 8. Проверяем, что FailAsync не вызывался
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // 9. Проверяем, что CompleteAsync не вызывался
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // 10-11. Проверяем безопасное выполнение CleanupAsync, поскольку владение было подтверждено
+        sourceService.Verify(x => x.CleanupAsync(213, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_NormalStopAfterSuccessfulAnalysis_CompletesSuccessfullyWithoutRenewalErrors()
+    {
+        // Штатная остановка renewal после успешного завершения анализа:
+        // CompleteAsync вызывается, FailAsync не вызывается
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(212);
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new AnalyzerFinding { Rule = "CS001", Message = "Large Class", Severity = Severity.Warning }]);
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
+
+        Assert.True(success);
+        analysisRepo.Verify(x => x.CompleteAsync(analysis.Id, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        sourceService.Verify(x => x.CleanupAsync(212, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_RenewalExceptionDuringAnalyzerThatIgnoresCancellation_DoesNotCompleteSuccessfully()
+    {
+        // Тест 1: RenewalException во время работы анализатора, игнорирующего отмену:
+        // не маскируется успешным результатом анализатора, CompleteAsync не вызывается, помечается Failed
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(214);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true); // Владение подтверждено
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(214, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        var analyzerStartedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var renewalFailedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        analysisRepo.Setup(x => x.RenewLeaseAsync(214, token, It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .Returns<int, Guid, TimeSpan, CancellationToken>((_, _, _, _) =>
+            {
+                renewalFailedTcs.TrySetResult(true);
+                throw new InvalidOperationException("PostgreSQL renewal timeout during test");
+            });
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                analyzerStartedTcs.TrySetResult(true);
+                await renewalFailedTcs.Task;
+                await Task.Yield();
+                // Игнорируем отмену и возвращаем полезный результат
+                return [new AnalyzerFinding { Rule = "CS001", Message = "Some finding", Severity = Severity.Warning }];
+            });
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("аренд")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(214, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_RenewalExceptionDuringDatabaseAnalyzer_DoesNotBecomeInternalAnalyzerWarning()
+    {
+        // Тест 2: RenewalException во время работы DatabaseAnalyzer, который затем выбрасывает исключение:
+        // критическая ошибка Lease Renewal не превращается во внутреннее предупреждение анализатора
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(215);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(215, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        var dbStartedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var renewalFailedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        analysisRepo.Setup(x => x.RenewLeaseAsync(215, token, It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .Returns<int, Guid, TimeSpan, CancellationToken>((_, _, _, _) =>
+            {
+                renewalFailedTcs.TrySetResult(true);
+                throw new InvalidOperationException("Database renewal failure");
+            });
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                dbStartedTcs.TrySetResult(true);
+                await renewalFailedTcs.Task;
+                await Task.Yield();
+                throw new InvalidOperationException("Container crashed inside DatabaseAnalyzer");
+            });
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("аренд")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(215, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_RenewalExceptionDuringAnalyzerReturningEmptyResults_DoesNotBecomeNormalStop()
+    {
+        // Тест 3: RenewalException при анализаторе, возвращающем пустой список (usefulWorkCompleted остаётся false):
+        // не перезаписывается значением NormalStop, сообщение указывает на сбой аренды
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(216);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(216, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        var analyzerStartedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var renewalFailedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        analysisRepo.Setup(x => x.RenewLeaseAsync(216, token, It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .Returns<int, Guid, TimeSpan, CancellationToken>((_, _, _, _) =>
+            {
+                renewalFailedTcs.TrySetResult(true);
+                throw new InvalidOperationException("DB lease renewal error");
+            });
+
+        var dbMock = new Mock<IDatabaseAnalyzer>();
+        dbMock.SetupGet(a => a.Type).Returns(AnalyzerType.Database);
+        dbMock.SetupGet(a => a.ExecutionStatus).Returns(DatabaseAnalysisExecutionStatus.InformationSkipped);
+        dbMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                analyzerStartedTcs.TrySetResult(true);
+                await renewalFailedTcs.Task;
+                await Task.Yield();
+                return [];
+            });
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [dbMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("аренд") && !s.Contains("Все анализаторы")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(216, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_NormalStop_DoesNotOverwriteTerminalStopReason()
+    {
+        // Тест 4: Нормальная остановка (NormalStop) не перезаписывает уже установленную терминальную причину (RenewalException):
+        // наблюдаемое поведение конвейера завершается с ошибкой аренды, CompleteAsync не вызывается
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(217);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(217, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        var analyzerStartedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var renewalFailedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        analysisRepo.Setup(x => x.RenewLeaseAsync(217, token, It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .Returns<int, Guid, TimeSpan, CancellationToken>((_, _, _, _) =>
+            {
+                renewalFailedTcs.TrySetResult(true);
+                throw new InvalidOperationException("Terminal lease failure during execution");
+            });
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                analyzerStartedTcs.TrySetResult(true);
+                await renewalFailedTcs.Task;
+                await Task.Yield();
+                return [new AnalyzerFinding { Rule = "SEC001", Message = "Security check passed", Severity = Severity.Warning }];
+            });
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("аренд")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(217, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_RenewalException_WhenOwnershipCannotBeConfirmed_DoesNotCallFailCompleteOrCleanup()
+    {
+        // Тест 5: Ошибка RenewalException и неподтверждённое владение:
+        // FailAsync, CompleteAsync и CleanupAsync не вызываются, возвращается false
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(218);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        var validationCount = 0;
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                validationCount++;
+                return validationCount == 1; // 1-й вызов true, последующие false
+            });
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(218, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        analysisRepo.Setup(x => x.RenewLeaseAsync(218, token, It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("PostgreSQL renewal socket closed"));
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                var tcs = new TaskCompletionSource<IReadOnlyList<AnalyzerFinding>>();
+                using var reg = ct.Register(() => tcs.TrySetCanceled(ct));
+                return await tcs.Task;
+            });
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        sourceService.Verify(x => x.CleanupAsync(218, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD002_LeaseRenewal_RenewalException_WhenOwnershipConfirmed_MarksTaskFailedWithoutCompletion()
+    {
+        // Тест 6: Ошибка RenewalException при подтверждённом владении:
+        // FailAsync вызывается с ошибкой аренды, CompleteAsync не вызывается, CleanupAsync выполняется
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(219);
+
+        var guardMock = new Mock<IAnalysisLeaseGuard>();
+        guardMock.SetupGet(g => g.IsAcquired).Returns(true);
+        guardMock.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock.Setup(p => p.AcquireGuardAsync(219, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(guardMock.Object);
+
+        analysisRepo.Setup(x => x.RenewLeaseAsync(219, token, It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("PostgreSQL renewal timeout"));
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
+            .Returns<AnalyzerContext, CancellationToken>(async (_, ct) =>
+            {
+                var tcs = new TaskCompletionSource<IReadOnlyList<AnalyzerFinding>>();
+                using var reg = ct.Register(() => tcs.TrySetCanceled(ct));
+                return await tcs.Task;
+            });
+
+        var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [csMock.Object], credentialService.Object, guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
+
+        Assert.False(success);
+        analysisRepo.Verify(x => x.FailAsync(
+            analysis.Id,
+            token,
+            It.Is<string?>(s => s != null && s.Contains("аренд")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        sourceService.Verify(x => x.CleanupAsync(219, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    #endregion
+
+    #endregion
 }
