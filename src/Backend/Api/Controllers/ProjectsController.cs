@@ -328,6 +328,7 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status502BadGateway)]
     public async Task<ActionResult<GitHubSyncResultDto>> SyncGitHub(int projectId, CancellationToken cancellationToken)
     {
@@ -362,6 +363,15 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
             }
 
             return Ok(result);
+        }
+        catch (SyncAlreadyInProgressException exception)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт выполнения операции",
+                exception.Message,
+                ApiErrorCodes.SyncAlreadyInProgress);
         }
         catch (GitHubIntegrationException exception)
         {

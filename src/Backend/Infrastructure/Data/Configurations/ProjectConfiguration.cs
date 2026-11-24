@@ -20,6 +20,20 @@ public class ProjectConfiguration : IEntityTypeConfiguration<Project>
         builder.Property(project => project.RepoUrl)
             .IsRequired();
 
+        builder.Property(project => project.LastSyncedCommitHash)
+            .HasMaxLength(64);
+
+        builder.Property(project => project.LastSyncedBranch)
+            .HasMaxLength(255);
+
+        builder.Property(project => project.LastSyncedRepositoryId)
+            .HasMaxLength(255);
+
+        builder.Property(project => project.LastSyncedRepositoryHost)
+            .HasMaxLength(255);
+
+        builder.Property(project => project.LastSyncedAt);
+
         builder.HasOne(project => project.Owner)
             .WithMany(user => user.Projects)
             .HasForeignKey(project => project.OwnerId)

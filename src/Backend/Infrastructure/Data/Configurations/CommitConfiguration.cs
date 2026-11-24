@@ -20,6 +20,14 @@ public class CommitConfiguration : IEntityTypeConfiguration<Commit>
         builder.Property(commit => commit.CommitDate)
             .IsRequired();
 
+        builder.Property(commit => commit.ParentHashes)
+            .IsRequired()
+            .HasDefaultValue(Array.Empty<string>());
+
+        builder.Property(commit => commit.IsVerified)
+            .IsRequired()
+            .HasDefaultValue(false);
+
         builder.HasOne(commit => commit.Project)
             .WithMany(project => project.Commits)
             .HasForeignKey(commit => commit.ProjectId)

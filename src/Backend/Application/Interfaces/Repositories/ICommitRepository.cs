@@ -1,3 +1,4 @@
+using Application.DTOs;
 using Domain.Entities;
 
 namespace Application.Interfaces.Repositories;
@@ -13,6 +14,16 @@ public interface ICommitRepository
     Task AddAsync(Commit commit, CancellationToken cancellationToken = default);
 
     Task<IReadOnlySet<string>> GetExistingHashesAsync(int projectId, IReadOnlyCollection<string> commitHashes, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyDictionary<string, bool>> GetHashesVerificationStatusAsync(int projectId, IReadOnlyCollection<string> commitHashes, CancellationToken cancellationToken = default);
+
+    Task<SyncBatchResult> SaveSyncBatchAsync(
+        int projectId,
+        IReadOnlyList<Commit> newCommits,
+        IReadOnlyList<CommitUpdateDto> existingToUpdate,
+        ProjectCheckpointDto checkpoint,
+        ProjectCheckpointSnapshotDto expectedCheckpoint,
+        CancellationToken cancellationToken = default);
 
     Task<int> AddRangeAsync(IReadOnlyList<Commit> commits, CancellationToken cancellationToken = default);
 }

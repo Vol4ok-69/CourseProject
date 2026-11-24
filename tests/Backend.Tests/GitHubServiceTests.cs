@@ -6,6 +6,7 @@ using Application.Interfaces.Repositories;
 using Application.Services;
 using Domain.Entities;
 using Infrastructure.GitHub;
+using Infrastructure.GitHub.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Moq;
@@ -468,7 +469,7 @@ public sealed class GitHubServiceTests
     public async Task ProjectsController_SyncGitHub_InvalidRepoUrl_Returns400BadRequestWithProblemDetails()
     {
         var gitHubMock = new Mock<IGitHubService>();
-        gitHubMock.Setup(x => x.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(x => x.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.InvalidRepoUrl, "Некорректный URL"));
 
         var controller = CreateProjectsControllerWithGitHubMock(gitHubMock.Object);
@@ -487,7 +488,7 @@ public sealed class GitHubServiceTests
     public async Task ProjectsController_SyncGitHub_RepoNotFound_Returns404NotFoundWithProblemDetails()
     {
         var gitHubMock = new Mock<IGitHubService>();
-        gitHubMock.Setup(x => x.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(x => x.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.RepoNotFound, "Репозиторий не найден"));
 
         var controller = CreateProjectsControllerWithGitHubMock(gitHubMock.Object);
@@ -506,7 +507,7 @@ public sealed class GitHubServiceTests
     public async Task ProjectsController_SyncGitHub_RateLimited_Returns502BadGatewayWithProblemDetails()
     {
         var gitHubMock = new Mock<IGitHubService>();
-        gitHubMock.Setup(x => x.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(x => x.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.RateLimited, "Превышен лимит"));
 
         var controller = CreateProjectsControllerWithGitHubMock(gitHubMock.Object);
@@ -525,7 +526,7 @@ public sealed class GitHubServiceTests
     public async Task ProjectsController_SyncGitHub_AccessDenied_Returns502BadGatewayWithProblemDetails()
     {
         var gitHubMock = new Mock<IGitHubService>();
-        gitHubMock.Setup(x => x.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(x => x.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.AccessDenied, "Доступ запрещен"));
 
         var controller = CreateProjectsControllerWithGitHubMock(gitHubMock.Object);
@@ -544,7 +545,7 @@ public sealed class GitHubServiceTests
     public async Task ProjectsController_SyncGitHub_ServiceUnavailable_Returns502BadGatewayWithProblemDetails()
     {
         var gitHubMock = new Mock<IGitHubService>();
-        gitHubMock.Setup(x => x.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(x => x.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.ServiceUnavailable, "Сервис недоступен"));
 
         var controller = CreateProjectsControllerWithGitHubMock(gitHubMock.Object);
@@ -579,7 +580,7 @@ public sealed class GitHubServiceTests
     public async Task ProjectsController_SyncGitHub_TokenExpired_Returns400BadRequestWithProblemDetails()
     {
         var gitHubMock = new Mock<IGitHubService>();
-        gitHubMock.Setup(x => x.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(x => x.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.TokenExpired, "Токен недействителен или отозван"));
 
         var controller = CreateProjectsControllerWithGitHubMock(gitHubMock.Object);
@@ -896,5 +897,278 @@ public sealed class GitHubServiceTests
         Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
         Assert.Contains("недопустимый путь ресурса", ex.Message);
         Assert.Equal(1, requestCount);
+    }
+
+    [Fact]
+    public async Task GitHubService_GetRepositoryInfoAsync_ValidResponse_ParsesMetadataAndHeadSha()
+    {
+        var repoJson = JsonSerializer.Serialize(new
+        {
+            id = 987654321L,
+            default_branch = "develop"
+        });
+
+        var branchCommitJson = JsonSerializer.Serialize(new
+        {
+            sha = "head_commit_develop_abc123"
+        });
+
+        var httpClient = CreateHttpClient(req =>
+        {
+            if (req.RequestUri?.AbsolutePath == "/repos/owner/repo")
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(repoJson)
+                });
+            }
+
+            if (req.RequestUri?.AbsolutePath == "/repos/owner/repo/commits/develop")
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(branchCommitJson)
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        });
+
+        var service = new GitHubService(httpClient);
+        var info = await service.GetRepositoryInfoAsync("https://github.com/owner/repo", TestPat);
+
+        Assert.NotNull(info);
+        Assert.Equal("api.github.com", info.ApiHost);
+        Assert.Equal("987654321", info.RepositoryId);
+        Assert.Equal("develop", info.DefaultBranch);
+        Assert.Equal("head_commit_develop_abc123", info.DefaultBranchHeadSha);
+    }
+
+    [Fact]
+    public async Task GitHubService_GetCommitPagesAsync_WithParents_DeserializesAllParents()
+    {
+        var commitJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                sha = "merge_sha_1",
+                commit = new { author = new { date = "2026-11-20T10:00:00Z" } },
+                parents = new[]
+                {
+                    new { sha = "parent_sha_1" },
+                    new { sha = "parent_sha_2" }
+                }
+            }
+        });
+
+        var httpClient = CreateHttpClient(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(commitJson)
+        }));
+
+        var service = new GitHubService(httpClient);
+        var pages = new List<IReadOnlyList<GitHubCommitInfo>>();
+
+        await foreach (var page in service.GetCommitPagesAsync("https://github.com/owner/repo", "merge_sha_1", TestPat))
+        {
+            pages.Add(page);
+        }
+
+        Assert.Single(pages);
+        var commit = Assert.Single(pages[0]);
+        Assert.Equal("merge_sha_1", commit.Hash);
+        Assert.Equal(2, commit.ParentHashes.Count);
+        Assert.Contains("parent_sha_1", commit.ParentHashes);
+        Assert.Contains("parent_sha_2", commit.ParentHashes);
+    }
+
+    [Fact]
+    public async Task GitHubService_GetCommitPagesAsync_PreservesShaParameterInNextPageLink()
+    {
+        var page1Json = JsonSerializer.Serialize(new[]
+        {
+            new { sha = "sha-1", commit = new { author = new { date = "2026-11-01T10:00:00Z" } }, parents = Array.Empty<object>() }
+        });
+        var page2Json = JsonSerializer.Serialize(new[]
+        {
+            new { sha = "sha-2", commit = new { author = new { date = "2026-11-01T09:00:00Z" } }, parents = Array.Empty<object>() }
+        });
+
+        var capturedUrls = new List<string>();
+
+        var httpClient = CreateHttpClient(req =>
+        {
+            capturedUrls.Add(req.RequestUri!.ToString());
+
+            if (capturedUrls.Count == 1)
+            {
+                var resp = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(page1Json)
+                };
+                // GitHub returned Link without sha parameter
+                resp.Headers.Add("Link", "<https://api.github.com/repos/owner/repo/commits?page=2&per_page=100>; rel=\"next\"");
+                return Task.FromResult(resp);
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(page2Json)
+            });
+        });
+
+        var service = new GitHubService(httpClient);
+        var totalCommits = 0;
+
+        await foreach (var page in service.GetCommitPagesAsync("https://github.com/owner/repo", "fixed_head_abc", TestPat))
+        {
+            totalCommits += page.Count;
+        }
+
+        Assert.Equal(2, totalCommits);
+        Assert.Equal(2, capturedUrls.Count);
+
+        // Первый запрос должен содержать sha
+        Assert.Contains("sha=fixed_head_abc", capturedUrls[0]);
+        // Второй запрос обязан сохранить sha, даже если заголовок Link его не содержал
+        Assert.Contains("sha=fixed_head_abc", capturedUrls[1]);
+    }
+
+    [Fact]
+    public void EnsureAndValidateShaParameter_WithoutSha_AppendsShaParameter_AndPreservesOtherQueryParameters()
+    {
+        const string inputUrl = "https://api.github.com/repos/owner/repo/commits?page=2&per_page=100";
+        const string expectedSha = "commit_sha_123";
+
+        var result = GitHubService.EnsureAndValidateShaParameter(inputUrl, expectedSha);
+
+        Assert.Equal("https://api.github.com/repos/owner/repo/commits?page=2&per_page=100&sha=commit_sha_123", result);
+    }
+
+    [Fact]
+    public void EnsureAndValidateShaParameter_WithMatchingSha_ReturnsOriginalUrl()
+    {
+        const string inputUrl = "https://api.github.com/repos/owner/repo/commits?page=2&per_page=100&sha=commit_sha_123";
+        const string expectedSha = "commit_sha_123";
+
+        var result = GitHubService.EnsureAndValidateShaParameter(inputUrl, expectedSha);
+
+        Assert.Equal(inputUrl, result);
+    }
+
+    [Fact]
+    public void EnsureAndValidateShaParameter_WithDifferentSha_ThrowsGitHubIntegrationException()
+    {
+        const string inputUrl = "https://api.github.com/repos/owner/repo/commits?page=2&per_page=100&sha=other_sha_456";
+        const string expectedSha = "commit_sha_123";
+
+        var ex = Assert.Throws<GitHubIntegrationException>(() =>
+            GitHubService.EnsureAndValidateShaParameter(inputUrl, expectedSha));
+
+        Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
+        Assert.Contains("несовпадающий commit SHA", ex.Message);
+    }
+
+    [Fact]
+    public void EnsureAndValidateShaParameter_WithDuplicateSha_ThrowsGitHubIntegrationException()
+    {
+        const string inputUrl = "https://api.github.com/repos/owner/repo/commits?page=2&sha=commit_sha_123&sha=other_sha_456";
+        const string expectedSha = "commit_sha_123";
+
+        var ex = Assert.Throws<GitHubIntegrationException>(() =>
+            GitHubService.EnsureAndValidateShaParameter(inputUrl, expectedSha));
+
+        Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
+        Assert.Contains("повторяющийся параметр sha", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateNextPageUrl_WithExactValidPath_Succeeds()
+    {
+        var repo = GitHubRepositoryReference.Parse("https://github.com/owner/repo");
+        GitHubService.ValidateNextPageUrl(
+            "https://api.github.com/repos/owner/repo/commits?page=2",
+            repo,
+            "api.github.com");
+    }
+
+    [Fact]
+    public void ValidateNextPageUrl_WithValidPathContinuation_Succeeds()
+    {
+        var repo = GitHubRepositoryReference.Parse("https://github.com/owner/repo");
+        // Допустимое продолжение через слэш
+        GitHubService.ValidateNextPageUrl(
+            "https://api.github.com/repos/owner/repo/commits/?page=2",
+            repo,
+            "api.github.com");
+
+        // Формат /repositories/{id}/commits
+        GitHubService.ValidateNextPageUrl(
+            "https://api.github.com/repositories/12345678/commits?page=2",
+            repo,
+            "api.github.com");
+    }
+
+    [Fact]
+    public void ValidateNextPageUrl_WithPathExtraSuffix_ThrowsGitHubIntegrationException()
+    {
+        var repo = GitHubRepositoryReference.Parse("https://github.com/owner/repo");
+        var ex = Assert.Throws<GitHubIntegrationException>(() =>
+            GitHubService.ValidateNextPageUrl(
+                "https://api.github.com/repos/owner/repo/commits-extra?page=2",
+                repo,
+                "api.github.com"));
+
+        Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
+        Assert.Contains("недопустимый путь ресурса", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateNextPageUrl_WithDifferentRepositoryPath_ThrowsGitHubIntegrationException()
+    {
+        var repo = GitHubRepositoryReference.Parse("https://github.com/owner/repo");
+        var ex = Assert.Throws<GitHubIntegrationException>(() =>
+            GitHubService.ValidateNextPageUrl(
+                "https://api.github.com/repos/otherowner/otherrepo/commits?page=2",
+                repo,
+                "api.github.com"));
+
+        Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
+        Assert.Contains("недопустимый путь ресурса", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateNextPageUrl_WithDifferentHost_ThrowsGitHubIntegrationException()
+    {
+        var repo = GitHubRepositoryReference.Parse("https://github.com/owner/repo");
+        var ex = Assert.Throws<GitHubIntegrationException>(() =>
+            GitHubService.ValidateNextPageUrl(
+                "https://evil.com/repos/owner/repo/commits?page=2",
+                repo,
+                "api.github.com"));
+
+        Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
+        Assert.Contains("недопустимый хост", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateNextPageUrl_WithInvalidHostOrPath_ThrowsGitHubIntegrationException()
+    {
+        var repo = GitHubRepositoryReference.Parse("https://github.com/owner/repo");
+
+        // 1. Invalid Host (SSRF attempt)
+        var invalidHostEx = Assert.Throws<GitHubIntegrationException>(() =>
+            GitHubService.ValidateNextPageUrl("https://evil.com/repos/owner/repo/commits", repo, "api.github.com"));
+        Assert.Contains("недопустимый хост", invalidHostEx.Message);
+
+        // 2. Invalid Scheme (http instead of https)
+        var invalidSchemeEx = Assert.Throws<GitHubIntegrationException>(() =>
+            GitHubService.ValidateNextPageUrl("http://api.github.com/repos/owner/repo/commits", repo, "api.github.com"));
+        Assert.Contains("недопустимый хост или протокол", invalidSchemeEx.Message);
+
+        // 3. Invalid Path
+        var invalidPathEx = Assert.Throws<GitHubIntegrationException>(() =>
+            GitHubService.ValidateNextPageUrl("https://api.github.com/other/path", repo, "api.github.com"));
+        Assert.Contains("недопустимый путь ресурса", invalidPathEx.Message);
     }
 }

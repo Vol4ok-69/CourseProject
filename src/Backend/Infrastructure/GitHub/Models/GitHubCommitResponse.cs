@@ -4,6 +4,7 @@ public class GitHubCommitResponse
 {
     public string Sha { get; set; } = null!;
     public GitHubCommitDetails? Commit { get; set; }
+    public List<GitHubCommitParentResponse>? Parents { get; set; }
 }
 
 public class GitHubCommitDetails
@@ -14,4 +15,9 @@ public class GitHubCommitDetails
 public class GitHubCommitAuthor
 {
     public DateTime? Date { get; set; }
+}
+
+public class GitHubCommitParentResponse
+{
+    public string Sha { get; set; } = null!;
 }

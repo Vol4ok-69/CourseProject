@@ -10,6 +10,10 @@ public class Commit
 
     public DateTime CommitDate { get; set; }
 
+    public string[] ParentHashes { get; set; } = [];
+
+    public bool IsVerified { get; set; }
+
     public Project Project { get; set; } = null!;
 
     public ICollection<Analysis> Analyses { get; set; } = new List<Analysis>();

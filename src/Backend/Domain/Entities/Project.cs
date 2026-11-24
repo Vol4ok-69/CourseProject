@@ -10,6 +10,16 @@ public class Project
 
     public int OwnerId { get; set; }
 
+    public string? LastSyncedCommitHash { get; set; }
+
+    public string? LastSyncedBranch { get; set; }
+
+    public string? LastSyncedRepositoryId { get; set; }
+
+    public string? LastSyncedRepositoryHost { get; set; }
+
+    public DateTime? LastSyncedAt { get; set; }
+
     public User Owner { get; set; } = null!;
 
     public ICollection<Commit> Commits { get; set; } = new List<Commit>();

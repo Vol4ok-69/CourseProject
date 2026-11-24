@@ -62,6 +62,9 @@ public static class ApiErrorCodes
     /// <summary>Анализ для данного коммита уже находится в очереди или выполняется.</summary>
     public const string AnalysisAlreadyQueued = "ANALYSIS_ALREADY_QUEUED";
 
+    /// <summary>Синхронизация проекта с GitHub уже выполняется.</summary>
+    public const string SyncAlreadyInProgress = "SYNC_ALREADY_IN_PROGRESS";
+
     /// <summary>Превышен лимит запросов к GitHub API (Rate Limit).</summary>
     public const string GitHubRateLimited = "GITHUB_RATE_LIMITED";
 

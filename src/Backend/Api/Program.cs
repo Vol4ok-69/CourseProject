@@ -119,6 +119,7 @@ builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<CommitService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ProjectService>();
+builder.Services.AddSingleton<IGitHubSyncCoordinator, Infrastructure.Services.GitHubSyncCoordinator>();
 builder.Services.AddScoped<GitHubSyncService>();
 builder.Services.AddSingleton<IAnalysisRetryPolicy, AnalysisRetryPolicy>();
 builder.Services.AddScoped<AnalysisService>();

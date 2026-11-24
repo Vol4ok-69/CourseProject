@@ -1,4 +1,5 @@
 using System.Reflection;
+using Application.DTOs;
 using Application.Exceptions;
 using Application.Interfaces;
 using Application.Interfaces.Repositories;
@@ -15,6 +16,14 @@ namespace Backend.Tests;
 
 public sealed class GitHubSyncServiceTests
 {
+    private static async IAsyncEnumerable<IReadOnlyList<GitHubCommitInfo>> ToAsyncEnumerable(params IReadOnlyList<GitHubCommitInfo>[] pages)
+    {
+        foreach (var page in pages)
+        {
+            yield return page;
+        }
+        await Task.CompletedTask;
+    }
     private static (SqliteConnection Connection, DbContextOptions<AppDbContext> Options) CreateInMemoryDatabase()
     {
         var connection = new SqliteConnection("DataSource=:memory:");
@@ -60,13 +69,13 @@ public sealed class GitHubSyncServiceTests
 
         Assert.Null(result);
         credentialMock.Verify(c => c.GetUserTokenAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
-        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        commitRepoMock.Verify(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetCommitPagesAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        commitRepoMock.Verify(c => c.SaveSyncBatchAsync(It.IsAny<int>(), It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task SyncAsync_WhenGitHubReturnsNoCommits_ReturnsZeroAddedAndZeroSkipped()
+    public async Task SyncAsync_WhenRepositoryInfoIsNull_ThrowsGitHubIntegrationException()
     {
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
@@ -76,18 +85,13 @@ public sealed class GitHubSyncServiceTests
         projectRepoMock.Setup(repo => repo.GetByIdAsync(1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Project { Id = 1, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([]);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(default(GitHubRepositoryInfoDto)!);
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
-        var result = await service.SyncAsync(1);
-
-        Assert.NotNull(result);
-        Assert.Equal(0, result.Added);
-        Assert.Equal(0, result.Skipped);
-        commitRepoMock.Verify(c => c.GetExistingHashesAsync(It.IsAny<int>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()), Times.Never);
-        commitRepoMock.Verify(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()), Times.Never);
+        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.SyncAsync(1));
+        Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
     }
 
     [Fact]
@@ -102,21 +106,24 @@ public sealed class GitHubSyncServiceTests
             .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var date = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
-        var gitHubCommits = new List<GitHubCommitInfo>
+        var pageCommits = new List<GitHubCommitInfo>
         {
-            new("hash1", date),
-            new("hash2", date.AddHours(1)),
-            new("hash3", date.AddHours(2))
+            new("hash3", date.AddHours(2), ["hash2"]),
+            new("hash2", date.AddHours(1), ["hash1"]),
+            new("hash1", date, [])
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(gitHubCommits);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "10", "main", "hash3"));
 
-        commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new HashSet<string>());
+        gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/test/repo", "hash3", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .Returns(ToAsyncEnumerable(pageCommits));
 
-        commitRepoMock.Setup(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(3);
+        commitRepoMock.Setup(c => c.GetHashesVerificationStatusAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, bool>());
+
+        commitRepoMock.Setup(c => c.SaveSyncBatchAsync(10, It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SyncBatchResult(new HashSet<string> { "hash1", "hash2", "hash3" }, new HashSet<string>(), new HashSet<string>()));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
@@ -126,8 +133,7 @@ public sealed class GitHubSyncServiceTests
         Assert.Equal(3, result.Added);
         Assert.Equal(0, result.Skipped);
 
-        commitRepoMock.Verify(c => c.GetExistingHashesAsync(10, It.Is<IReadOnlyCollection<string>>(h => h.Count == 3), It.IsAny<CancellationToken>()), Times.Once);
-        commitRepoMock.Verify(c => c.AddRangeAsync(It.Is<IReadOnlyList<Commit>>(list => list.Count == 3), It.IsAny<CancellationToken>()), Times.Once);
+        commitRepoMock.Verify(c => c.SaveSyncBatchAsync(10, It.Is<IReadOnlyList<Commit>>(list => list.Count == 3), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -142,17 +148,23 @@ public sealed class GitHubSyncServiceTests
             .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var date = DateTime.UtcNow;
-        var gitHubCommits = new List<GitHubCommitInfo>
+        var pageCommits = new List<GitHubCommitInfo>
         {
-            new("hash1", date),
-            new("hash2", date)
+            new("hash2", date, ["hash1"]),
+            new("hash1", date, [])
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(gitHubCommits);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "10", "main", "hash2"));
 
-        commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new HashSet<string> { "hash1", "hash2" });
+        gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/test/repo", "hash2", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .Returns(ToAsyncEnumerable(pageCommits));
+
+        commitRepoMock.Setup(c => c.GetHashesVerificationStatusAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, bool> { ["hash2"] = true, ["hash1"] = true });
+
+        commitRepoMock.Setup(c => c.SaveSyncBatchAsync(10, It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SyncBatchResult(new HashSet<string>(), new HashSet<string>(), new HashSet<string> { "hash1", "hash2" }));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
@@ -161,7 +173,6 @@ public sealed class GitHubSyncServiceTests
         Assert.NotNull(result);
         Assert.Equal(0, result.Added);
         Assert.Equal(2, result.Skipped);
-        commitRepoMock.Verify(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -176,22 +187,31 @@ public sealed class GitHubSyncServiceTests
             .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var date = DateTime.UtcNow;
-        var gitHubCommits = new List<GitHubCommitInfo>
+        var pageCommits = new List<GitHubCommitInfo>
         {
-            new("existing1", date),
-            new("new1", date),
-            new("existing2", date),
-            new("new2", date)
+            new("new2", date, ["new1"]),
+            new("new1", date, ["existing2"]),
+            new("existing2", date, ["existing1"]),
+            new("existing1", date, [])
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(gitHubCommits);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "10", "main", "new2"));
 
-        commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new HashSet<string> { "existing1", "existing2" });
+        gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/test/repo", "new2", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .Returns(ToAsyncEnumerable(pageCommits));
 
-        commitRepoMock.Setup(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(2);
+        commitRepoMock.Setup(c => c.GetHashesVerificationStatusAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((int p, IReadOnlyCollection<string> hashes, CancellationToken ct) =>
+            {
+                var dict = new Dictionary<string, bool>();
+                if (hashes.Contains("existing1")) dict["existing1"] = true;
+                if (hashes.Contains("existing2")) dict["existing2"] = true;
+                return dict;
+            });
+
+        commitRepoMock.Setup(c => c.SaveSyncBatchAsync(10, It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SyncBatchResult(new HashSet<string> { "new1", "new2" }, new HashSet<string>(), new HashSet<string> { "existing1", "existing2" }));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
@@ -201,8 +221,12 @@ public sealed class GitHubSyncServiceTests
         Assert.Equal(2, result.Added);
         Assert.Equal(2, result.Skipped);
 
-        commitRepoMock.Verify(c => c.AddRangeAsync(
+        commitRepoMock.Verify(c => c.SaveSyncBatchAsync(
+            10,
             It.Is<IReadOnlyList<Commit>>(list => list.Count == 2 && list.All(c => c.CommitHash == "new1" || c.CommitHash == "new2")),
+            It.IsAny<IReadOnlyList<CommitUpdateDto>>(),
+            It.IsAny<ProjectCheckpointDto>(),
+            It.IsAny<ProjectCheckpointSnapshotDto>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -217,21 +241,22 @@ public sealed class GitHubSyncServiceTests
         projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
-        var gitHubCommits = new List<GitHubCommitInfo>
+        var pageCommits = new List<GitHubCommitInfo>
         {
-            new("noDate1", null),
-            new("valid1", DateTime.UtcNow),
-            new("noDate2", null)
+            new("valid1", null, [])
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(gitHubCommits);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "10", "main", "valid1"));
 
-        commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new HashSet<string>());
+        gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/test/repo", "valid1", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .Returns(ToAsyncEnumerable(pageCommits));
 
-        commitRepoMock.Setup(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(1);
+        commitRepoMock.Setup(c => c.GetHashesVerificationStatusAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, bool>());
+
+        commitRepoMock.Setup(c => c.SaveSyncBatchAsync(10, It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SyncBatchResult(new HashSet<string> { "valid1" }, new HashSet<string>(), new HashSet<string>()));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
@@ -240,7 +265,6 @@ public sealed class GitHubSyncServiceTests
         Assert.NotNull(result);
         Assert.Equal(1, result.Added);
         Assert.Equal(0, result.Skipped);
-        commitRepoMock.Verify(c => c.GetExistingHashesAsync(10, It.Is<IReadOnlyCollection<string>>(h => h.Count == 1 && h.Contains("valid1")), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -255,21 +279,24 @@ public sealed class GitHubSyncServiceTests
             .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
         var date = DateTime.UtcNow;
-        var gitHubCommits = new List<GitHubCommitInfo>
+        var pageCommits = new List<GitHubCommitInfo>
         {
-            new("hashA", date),
-            new("hashA", date),
-            new("hashB", date)
+            new("hashB", date, ["hashA"]),
+            new("hashA", date, []),
+            new("hashA", date, [])
         };
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(gitHubCommits);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "10", "main", "hashB"));
 
-        commitRepoMock.Setup(c => c.GetExistingHashesAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new HashSet<string>());
+        gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/test/repo", "hashB", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .Returns(ToAsyncEnumerable(pageCommits));
 
-        commitRepoMock.Setup(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(2);
+        commitRepoMock.Setup(c => c.GetHashesVerificationStatusAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, bool>());
+
+        commitRepoMock.Setup(c => c.SaveSyncBatchAsync(10, It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SyncBatchResult(new HashSet<string> { "hashA", "hashB" }, new HashSet<string>(), new HashSet<string>()));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
@@ -277,10 +304,7 @@ public sealed class GitHubSyncServiceTests
 
         Assert.NotNull(result);
         Assert.Equal(2, result.Added);
-        Assert.Equal(1, result.Skipped);
-
-        commitRepoMock.Verify(c => c.GetExistingHashesAsync(10, It.Is<IReadOnlyCollection<string>>(h => h.Count == 2), It.IsAny<CancellationToken>()), Times.Once);
-        commitRepoMock.Verify(c => c.AddRangeAsync(It.Is<IReadOnlyList<Commit>>(list => list.Count == 2), It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(0, result.Skipped);
     }
 
     [Fact]
@@ -305,13 +329,16 @@ public sealed class GitHubSyncServiceTests
             var date = new DateTime(2026, 2, 1, 10, 0, 0, DateTimeKind.Utc);
             var initialCommits = new List<GitHubCommitInfo>
             {
-                new("sha1", date),
-                new("sha2", date.AddMinutes(1)),
-                new("sha3", date.AddMinutes(2))
+                new("sha3", date.AddMinutes(2), ["sha2"]),
+                new("sha2", date.AddMinutes(1), ["sha1"]),
+                new("sha1", date, [])
             };
 
-            gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/sync", "ghp_sqlite_token", It.IsAny<CancellationToken>()))
-                .ReturnsAsync(initialCommits);
+            gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/sync", "ghp_sqlite_token", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "100", "main", "sha3"));
+
+            gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/test/sync", "sha3", "ghp_sqlite_token", It.IsAny<CancellationToken>()))
+                .Returns(ToAsyncEnumerable(initialCommits));
 
             var service = new GitHubSyncService(gitHubMock.Object, projectRepo, commitRepo, credentialMock.Object);
 
@@ -332,24 +359,25 @@ public sealed class GitHubSyncServiceTests
             // Повторный запуск синхронизации: те же 3 коммита + 1 новый
             var subsequentCommits = new List<GitHubCommitInfo>
             {
-                new("sha1", date),
-                new("sha2", date.AddMinutes(1)),
-                new("sha3", date.AddMinutes(2)),
-                new("sha4", date.AddMinutes(3))
+                new("sha4", date.AddMinutes(3), ["sha3"]),
+                new("sha3", date.AddMinutes(2), ["sha2"])
             };
 
-            gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/sync", "ghp_sqlite_token", It.IsAny<CancellationToken>()))
-                .ReturnsAsync(subsequentCommits);
+            gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/sync", "ghp_sqlite_token", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "100", "main", "sha4"));
+
+            gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/test/sync", "sha4", "ghp_sqlite_token", It.IsAny<CancellationToken>()))
+                .Returns(ToAsyncEnumerable(subsequentCommits));
 
             var result2 = await service.SyncAsync(100);
 
             Assert.NotNull(result2);
             Assert.Equal(1, result2.Added);
-            Assert.Equal(3, result2.Skipped);
+            Assert.Equal(1, result2.Skipped);
 
             // Итого в базе ровно 4 коммита
-            var totalCommitsInDb = await context.Commits.Where(c => c.ProjectId == 100).ToListAsync();
-            Assert.Equal(4, totalCommitsInDb.Count);
+            var totalCommits = await context.Commits.Where(c => c.ProjectId == 100).CountAsync();
+            Assert.Equal(4, totalCommits);
         }
     }
 
@@ -542,7 +570,7 @@ public sealed class GitHubSyncServiceTests
     }
 
     [Fact]
-    public async Task SyncAsync_WhenAllCommitsHaveNullDate_ReturnsZeroAddedAndZeroSkipped()
+    public async Task SyncAsync_WhenDefaultBranchHeadShaIsEmpty_ThrowsGitHubIntegrationException()
     {
         var gitHubMock = new Mock<IGitHubService>();
         var projectRepoMock = new Mock<IProjectRepository>();
@@ -552,27 +580,13 @@ public sealed class GitHubSyncServiceTests
         projectRepoMock.Setup(repo => repo.GetByIdAsync(10, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Project { Id = 10, RepoUrl = "https://github.com/test/repo", OwnerId = 1 });
 
-        var gitHubCommits = new List<GitHubCommitInfo>
-        {
-            new("nullDate1", null),
-            new("nullDate2", null),
-            new("nullDate3", null)
-        };
-
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(gitHubCommits);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", "ghp_test_token", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "10", "main", ""));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
-        var result = await service.SyncAsync(10);
-
-        Assert.NotNull(result);
-        Assert.Equal(0, result.Added);
-        Assert.Equal(0, result.Skipped);
-
-        // При отсутствии валидных коммитов запросы к репозиторию коммитов вообще не должны выполняться
-        commitRepoMock.Verify(c => c.GetExistingHashesAsync(It.IsAny<int>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()), Times.Never);
-        commitRepoMock.Verify(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()), Times.Never);
+        var ex = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.SyncAsync(10));
+        Assert.Equal(GitHubErrorKind.ServiceUnavailable, ex.Kind);
     }
 
     #region Сценарии этапа 8.4: Персональный PAT владельца проекта
@@ -594,8 +608,20 @@ public sealed class GitHubSyncServiceTests
         credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(expectedPat);
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/owner/project", expectedPat, It.IsAny<CancellationToken>()))
-            .ReturnsAsync([]);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/owner/project", expectedPat, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "10", "main", "head_1"));
+
+        gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/owner/project", "head_1", expectedPat, It.IsAny<CancellationToken>()))
+            .Returns(ToAsyncEnumerable(new List<GitHubCommitInfo>
+            {
+                new("head_1", DateTime.UtcNow, [])
+            }));
+
+        commitRepoMock.Setup(c => c.GetHashesVerificationStatusAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, bool>());
+
+        commitRepoMock.Setup(c => c.SaveSyncBatchAsync(10, It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SyncBatchResult(new HashSet<string> { "head_1" }, new HashSet<string>(), new HashSet<string>()));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
@@ -603,7 +629,8 @@ public sealed class GitHubSyncServiceTests
 
         Assert.NotNull(result);
         credentialMock.Verify(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()), Times.Once);
-        gitHubMock.Verify(g => g.GetCommitsAsync("https://github.com/owner/project", expectedPat, It.IsAny<CancellationToken>()), Times.Once);
+        gitHubMock.Verify(g => g.GetRepositoryInfoAsync("https://github.com/owner/project", expectedPat, It.IsAny<CancellationToken>()), Times.Once);
+        gitHubMock.Verify(g => g.GetCommitPagesAsync("https://github.com/owner/project", "head_1", expectedPat, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -628,8 +655,20 @@ public sealed class GitHubSyncServiceTests
         credentialMock.Setup(c => c.GetUserTokenAsync(adminId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(adminPat);
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/user2/repo", ownerPat, It.IsAny<CancellationToken>()))
-            .ReturnsAsync([]);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/user2/repo", ownerPat, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "100", "main", "head_user2"));
+
+        gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/user2/repo", "head_user2", ownerPat, It.IsAny<CancellationToken>()))
+            .Returns(ToAsyncEnumerable(new List<GitHubCommitInfo>
+            {
+                new("head_user2", DateTime.UtcNow, [])
+            }));
+
+        commitRepoMock.Setup(c => c.GetHashesVerificationStatusAsync(100, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, bool>());
+
+        commitRepoMock.Setup(c => c.SaveSyncBatchAsync(100, It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SyncBatchResult(new HashSet<string> { "head_user2" }, new HashSet<string>(), new HashSet<string>()));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
@@ -642,8 +681,8 @@ public sealed class GitHubSyncServiceTests
         credentialMock.Verify(c => c.GetUserTokenAsync(adminId, It.IsAny<CancellationToken>()), Times.Never);
 
         // В GitHubService передается строго PAT владельца
-        gitHubMock.Verify(g => g.GetCommitsAsync("https://github.com/user2/repo", ownerPat, It.IsAny<CancellationToken>()), Times.Once);
-        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), adminPat, It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetRepositoryInfoAsync("https://github.com/user2/repo", ownerPat, It.IsAny<CancellationToken>()), Times.Once);
+        gitHubMock.Verify(g => g.GetRepositoryInfoAsync(It.IsAny<string>(), adminPat, It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -670,10 +709,9 @@ public sealed class GitHubSyncServiceTests
         Assert.Contains("токена GitHub", exception.Message, StringComparison.OrdinalIgnoreCase);
 
         // GitHub API и хранилище коммитов не должны вызываться
-        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        commitRepoMock.Verify(c => c.GetExistingHashesAsync(It.IsAny<int>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()), Times.Never);
-        commitRepoMock.Verify(c => c.AddRangeAsync(It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetCommitPagesAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        commitRepoMock.Verify(c => c.SaveSyncBatchAsync(It.IsAny<int>(), It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Theory]
@@ -700,8 +738,8 @@ public sealed class GitHubSyncServiceTests
         var exception = await Assert.ThrowsAsync<GitHubIntegrationException>(() => service.SyncAsync(10));
 
         Assert.Equal(GitHubErrorKind.TokenRequired, exception.Kind);
-        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetCommitPagesAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -732,8 +770,8 @@ public sealed class GitHubSyncServiceTests
         Assert.Equal(GitHubErrorKind.TokenRequired, exception.Kind);
 
         // Никакого fallback на токен вызывающего
-        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), callerPat, It.IsAny<CancellationToken>()), Times.Never);
-        gitHubMock.Verify(g => g.GetCommitsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetRepositoryInfoAsync(It.IsAny<string>(), callerPat, It.IsAny<CancellationToken>()), Times.Never);
+        gitHubMock.Verify(g => g.GetRepositoryInfoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -753,7 +791,7 @@ public sealed class GitHubSyncServiceTests
         credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(expiredPat);
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", expiredPat, It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", expiredPat, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.TokenExpired, "Персональный токен GitHub недействителен или был отозван."));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
@@ -785,7 +823,7 @@ public sealed class GitHubSyncServiceTests
         credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(pat);
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", pat, It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", pat, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(errorKind, $"Тестовая ошибка {errorKind}"));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
@@ -812,8 +850,20 @@ public sealed class GitHubSyncServiceTests
         credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(secretPat);
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", secretPat, It.IsAny<CancellationToken>()))
-            .ReturnsAsync([]);
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", secretPat, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "10", "main", "h1"));
+
+        gitHubMock.Setup(g => g.GetCommitPagesAsync("https://github.com/test/repo", "h1", secretPat, It.IsAny<CancellationToken>()))
+            .Returns(ToAsyncEnumerable(new List<GitHubCommitInfo>
+            {
+                new("h1", DateTime.UtcNow, [])
+            }));
+
+        commitRepoMock.Setup(c => c.GetHashesVerificationStatusAsync(10, It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, bool>());
+
+        commitRepoMock.Setup(c => c.SaveSyncBatchAsync(10, It.IsAny<IReadOnlyList<Commit>>(), It.IsAny<IReadOnlyList<CommitUpdateDto>>(), It.IsAny<ProjectCheckpointDto>(), It.IsAny<ProjectCheckpointSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SyncBatchResult(new HashSet<string> { "h1" }, new HashSet<string>(), new HashSet<string>()));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);
 
@@ -849,7 +899,7 @@ public sealed class GitHubSyncServiceTests
         credentialMock.Setup(c => c.GetUserTokenAsync(ownerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(secretPat);
 
-        gitHubMock.Setup(g => g.GetCommitsAsync("https://github.com/test/repo", secretPat, It.IsAny<CancellationToken>()))
+        gitHubMock.Setup(g => g.GetRepositoryInfoAsync("https://github.com/test/repo", secretPat, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.AccessDenied, "Доступ к репозиторию запрещен."));
 
         var service = new GitHubSyncService(gitHubMock.Object, projectRepoMock.Object, commitRepoMock.Object, credentialMock.Object);

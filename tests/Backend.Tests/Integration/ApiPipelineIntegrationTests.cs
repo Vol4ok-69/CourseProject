@@ -339,17 +339,17 @@ public sealed class ApiPipelineIntegrationTests(ApiWebApplicationFactory factory
         const string sensitiveFaultPayload = "DATABASE_PASSWORD_SECRET_TOKEN_CRASH_PAYLOAD_99999";
         const string sensitiveInternalMessage = "Critical storage provider failure at line 42";
 
-        // Настраиваем MockGitHubService.GetCommitsAsync на выброс непредвиденного исключения
+        // Настраиваем MockGitHubService.GetRepositoryInfoAsync на выброс непредвиденного исключения
         _factory.MockGitHubService
-            .Setup(g => g.GetCommitsAsync(project.RepoUrl, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(g => g.GetRepositoryInfoAsync(project.RepoUrl, It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException($"{sensitiveInternalMessage}: {sensitiveFaultPayload}"));
 
         // Act: отправка HTTP-запроса через HttpClient к защищенному маршруту синхронизации
         var response = await client.PostAsync($"/api/projects/{project.Id}/github/sync", null);
 
-        // Assert: подтверждаем, что настроенный метод GetCommitsAsync действительно был вызван ровно один раз
+        // Assert: подтверждаем, что настроенный метод GetRepositoryInfoAsync действительно был вызван ровно один раз
         _factory.MockGitHubService.Verify(
-            g => g.GetCommitsAsync(
+            g => g.GetRepositoryInfoAsync(
                 project.RepoUrl,
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()),
@@ -1125,12 +1125,16 @@ public sealed class ApiPipelineIntegrationTests(ApiWebApplicationFactory factory
         var commitHash1 = "1111111111111111111111111111111111111111";
         var commitHash2 = "2222222222222222222222222222222222222222";
         _factory.MockGitHubService
-            .Setup(g => g.GetCommitsAsync(project.RepoUrl, It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<GitHubCommitInfo>
+            .Setup(g => g.GetRepositoryInfoAsync(project.RepoUrl, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GitHubRepositoryInfoDto("api.github.com", "123", "main", commitHash2));
+
+        _factory.MockGitHubService
+            .Setup(g => g.GetCommitPagesAsync(project.RepoUrl, commitHash2, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ToAsyncEnumerable(new List<GitHubCommitInfo>
             {
-                new(commitHash1, DateTime.UtcNow.AddHours(-3)),
-                new(commitHash2, DateTime.UtcNow.AddHours(-1))
-            });
+                new(commitHash2, DateTime.UtcNow.AddHours(-1), [commitHash1]),
+                new(commitHash1, DateTime.UtcNow.AddHours(-3), [])
+            }));
 
         // Act 2: успешная синхронизация с добавлением коммитов
         var syncResp1 = await client.PostAsync($"/api/projects/{project.Id}/github/sync", null);
@@ -1145,17 +1149,18 @@ public sealed class ApiPipelineIntegrationTests(ApiWebApplicationFactory factory
             await db.Commits.CountAsync(c => c.ProjectId == project.Id));
         Assert.Equal(2, countInDb);
 
-        // Act 3: повторная синхронизация тех же коммитов -> Added = 0, Skipped = 2
+        // Act 3: повторная синхронизация тех же коммитов -> быстрый путь AlreadyCurrent
         var syncResp2 = await client.PostAsync($"/api/projects/{project.Id}/github/sync", null);
         Assert.Equal(HttpStatusCode.OK, syncResp2.StatusCode);
         var syncResult2 = await syncResp2.Content.ReadFromJsonAsync<GitHubSyncResultDto>();
         Assert.NotNull(syncResult2);
         Assert.Equal(0, syncResult2.Added);
-        Assert.Equal(2, syncResult2.Skipped);
+        Assert.Equal(0, syncResult2.Skipped);
+        Assert.True(syncResult2.AlreadyCurrent);
 
         // Act 4: ошибка внешнего сервиса RateLimited при синхронизации -> 502 BadGateway
         _factory.MockGitHubService
-            .Setup(g => g.GetCommitsAsync(project.RepoUrl, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(g => g.GetRepositoryInfoAsync(project.RepoUrl, It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubIntegrationException(GitHubErrorKind.RateLimited, "Превышен лимит запросов GitHub API."));
 
         var rateLimitResp = await client.PostAsync($"/api/projects/{project.Id}/github/sync", null);
@@ -1163,6 +1168,15 @@ public sealed class ApiPipelineIntegrationTests(ApiWebApplicationFactory factory
         var rateLimitBody = await rateLimitResp.Content.ReadAsStringAsync();
         using var rateLimitDoc = JsonDocument.Parse(rateLimitBody);
         Assert.Equal(ApiErrorCodes.GitHubRateLimited, rateLimitDoc.RootElement.GetProperty("code").GetString());
+    }
+
+    private static async IAsyncEnumerable<IReadOnlyList<GitHubCommitInfo>> ToAsyncEnumerable(params IReadOnlyList<GitHubCommitInfo>[] pages)
+    {
+        foreach (var page in pages)
+        {
+            yield return page;
+        }
+        await Task.CompletedTask;
     }
 
     [Fact]

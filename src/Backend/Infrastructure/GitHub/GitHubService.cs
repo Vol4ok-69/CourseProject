@@ -1,8 +1,10 @@
+using Application.DTOs;
 using Application.Exceptions;
 using Application.Interfaces;
 using Infrastructure.GitHub.Models;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -10,7 +12,7 @@ namespace Infrastructure.GitHub;
 
 public class GitHubService(HttpClient httpClient) : IGitHubService
 {
-    public async Task<IReadOnlyList<GitHubCommitInfo>> GetCommitsAsync(
+    public async Task<GitHubRepositoryInfoDto> GetRepositoryInfoAsync(
         string repositoryUrl,
         string personalAccessToken,
         CancellationToken cancellationToken = default)
@@ -20,10 +22,123 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
 
         var repository = GitHubRepositoryReference.Parse(repositoryUrl);
 
-        var allCommits = new List<GitHubCommitInfo>();
+        // 1. Получаем метаданные репозитория (ID, default_branch)
+        using var repoRequest = new HttpRequestMessage(HttpMethod.Get, $"repos/{repository.Owner}/{repository.Name}");
+        repoRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personalAccessToken);
+
+        HttpResponseMessage repoResponse;
+        try
+        {
+            repoResponse = await httpClient.SendAsync(repoRequest, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.ServiceUnavailable,
+                "Сервис GitHub недоступен или превышено время ожидания ответа.",
+                ex);
+        }
+
+        string defaultBranch;
+        string repositoryId;
+        var apiHost = httpClient.BaseAddress?.Host ?? "api.github.com";
+
+        using (repoResponse)
+        {
+            if (!repoResponse.IsSuccessStatusCode)
+            {
+                await HandleErrorResponseAsync(repoResponse, cancellationToken);
+            }
+
+            var json = await repoResponse.Content.ReadAsStringAsync(cancellationToken);
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                repositoryId = root.GetProperty("id").GetInt64().ToString();
+                defaultBranch = root.TryGetProperty("default_branch", out var branchProp)
+                    ? branchProp.GetString() ?? "main"
+                    : "main";
+            }
+            catch (Exception ex)
+            {
+                throw new GitHubIntegrationException(
+                    GitHubErrorKind.ServiceUnavailable,
+                    "Ошибка обработки ответа GitHub API при получении информации о репозитории.",
+                    ex);
+            }
+        }
+
+        // 2. Получаем актуальный HEAD-коммит ветки по умолчанию
+        using var branchRequest = new HttpRequestMessage(HttpMethod.Get, $"repos/{repository.Owner}/{repository.Name}/commits/{Uri.EscapeDataString(defaultBranch)}");
+        branchRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personalAccessToken);
+
+        HttpResponseMessage branchResponse;
+        try
+        {
+            branchResponse = await httpClient.SendAsync(branchRequest, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.ServiceUnavailable,
+                "Сервис GitHub недоступен или превышено время ожидания ответа.",
+                ex);
+        }
+
+        string headSha;
+        using (branchResponse)
+        {
+            if (!branchResponse.IsSuccessStatusCode)
+            {
+                await HandleErrorResponseAsync(branchResponse, cancellationToken);
+            }
+
+            var json = await branchResponse.Content.ReadAsStringAsync(cancellationToken);
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                headSha = doc.RootElement.GetProperty("sha").GetString()!;
+                if (string.IsNullOrWhiteSpace(headSha))
+                {
+                    throw new InvalidOperationException("HEAD SHA репозитория пуст.");
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new GitHubIntegrationException(
+                    GitHubErrorKind.ServiceUnavailable,
+                    "Ошибка обработки ответа GitHub API при получении HEAD коммита ветки.",
+                    ex);
+            }
+        }
+
+        return new GitHubRepositoryInfoDto(apiHost, repositoryId, defaultBranch, headSha);
+    }
+
+    public async IAsyncEnumerable<IReadOnlyList<GitHubCommitInfo>> GetCommitPagesAsync(
+        string repositoryUrl,
+        string? sha,
+        string personalAccessToken,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(personalAccessToken))
+            throw new ArgumentException("Не указан персональный токен доступа GitHub (PAT).", nameof(personalAccessToken));
+
+        var repository = GitHubRepositoryReference.Parse(repositoryUrl);
         var visitedUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        var currentUrl = $"repos/{repository.Owner}/{repository.Name}/commits?per_page=100";
+        var currentUrl = string.IsNullOrWhiteSpace(sha)
+            ? $"repos/{repository.Owner}/{repository.Name}/commits?per_page=100"
+            : $"repos/{repository.Owner}/{repository.Name}/commits?sha={Uri.EscapeDataString(sha)}&per_page=100";
 
         while (!string.IsNullOrEmpty(currentUrl))
         {
@@ -48,6 +163,9 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
                     "Сервис GitHub недоступен или превышено время ожидания ответа.",
                     ex);
             }
+
+            List<GitHubCommitInfo> pageCommitsList;
+            string? nextUrl;
 
             using (response)
             {
@@ -76,32 +194,61 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
                         ex);
                 }
 
+                pageCommitsList = new List<GitHubCommitInfo>();
                 if (pageCommits is not null && pageCommits.Count > 0)
                 {
                     foreach (var commit in pageCommits)
                     {
-                        allCommits.Add(new GitHubCommitInfo(
+                        var parentHashes = commit.Parents?
+                            .Select(p => p.Sha)
+                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList() ?? (IReadOnlyList<string>)Array.Empty<string>();
+
+                        pageCommitsList.Add(new GitHubCommitInfo(
                             commit.Sha,
-                            commit.Commit?.Author?.Date
+                            commit.Commit?.Author?.Date,
+                            parentHashes
                         ));
                     }
                 }
 
-                var nextUrl = GetNextPageUrl(response.Headers);
-                if (string.IsNullOrEmpty(nextUrl))
-                {
-                    break;
-                }
-
-                ValidateNextPageUrl(nextUrl, repository);
-
-                if (!visitedUrls.Add(nextUrl))
-                {
-                    break;
-                }
-
-                currentUrl = nextUrl;
+                nextUrl = GetNextPageUrl(response.Headers);
             }
+
+            yield return pageCommitsList;
+
+            if (string.IsNullOrEmpty(nextUrl))
+            {
+                break;
+            }
+
+            if (!string.IsNullOrWhiteSpace(sha))
+            {
+                nextUrl = EnsureAndValidateShaParameter(nextUrl, sha);
+            }
+
+            ValidateNextPageUrl(nextUrl, repository);
+
+            if (!visitedUrls.Add(nextUrl))
+            {
+                break;
+            }
+
+            currentUrl = nextUrl;
+        }
+    }
+
+    public async Task<IReadOnlyList<GitHubCommitInfo>> GetCommitsAsync(
+        string repositoryUrl,
+        string personalAccessToken,
+        CancellationToken cancellationToken = default)
+    {
+        var allCommits = new List<GitHubCommitInfo>();
+
+        await foreach (var page in GetCommitPagesAsync(repositoryUrl, null, personalAccessToken, cancellationToken))
+        {
+            allCommits.AddRange(page);
         }
 
         return allCommits;
@@ -300,8 +447,76 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
         return null;
     }
 
-    private static void ValidateNextPageUrl(string nextUrl, GitHubRepositoryReference repository)
+    internal static string EnsureAndValidateShaParameter(string url, string expectedSha)
     {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            throw new ArgumentException("URL не может быть пустым.", nameof(url));
+        }
+
+        if (string.IsNullOrWhiteSpace(expectedSha))
+        {
+            throw new ArgumentException("Ожидаемый SHA не может быть пустым.", nameof(expectedSha));
+        }
+
+        var qIndex = url.IndexOf('?');
+        if (qIndex < 0)
+        {
+            return $"{url}?sha={Uri.EscapeDataString(expectedSha)}";
+        }
+
+        var baseUrl = url[..qIndex];
+        var queryString = url[(qIndex + 1)..];
+
+        var queryParts = queryString.Split('&', StringSplitOptions.RemoveEmptyEntries);
+        var shaValues = new List<string>();
+
+        foreach (var part in queryParts)
+        {
+            var kv = part.Split('=', 2);
+            var key = Uri.UnescapeDataString(kv[0]);
+            if (string.Equals(key, "sha", StringComparison.OrdinalIgnoreCase))
+            {
+                var val = kv.Length > 1 ? Uri.UnescapeDataString(kv[1]) : string.Empty;
+                shaValues.Add(val);
+            }
+        }
+
+        if (shaValues.Count > 1)
+        {
+            throw new GitHubIntegrationException(
+                GitHubErrorKind.ServiceUnavailable,
+                "URL следующей страницы содержит повторяющийся параметр sha.");
+        }
+
+        if (shaValues.Count == 1)
+        {
+            if (!string.Equals(shaValues[0], expectedSha, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new GitHubIntegrationException(
+                    GitHubErrorKind.ServiceUnavailable,
+                    $"URL следующей страницы ссылается на несовпадающий commit SHA: ожидался '{expectedSha}', получен '{shaValues[0]}'.");
+            }
+
+            return url;
+        }
+
+        return $"{url}&sha={Uri.EscapeDataString(expectedSha)}";
+    }
+
+    private void ValidateNextPageUrl(string nextUrl, GitHubRepositoryReference repository)
+    {
+        var expectedHost = httpClient.BaseAddress?.Host ?? "api.github.com";
+        ValidateNextPageUrl(nextUrl, repository, expectedHost);
+    }
+
+    internal static void ValidateNextPageUrl(string nextUrl, GitHubRepositoryReference repository, string expectedHost)
+    {
+        if (string.IsNullOrWhiteSpace(expectedHost))
+        {
+            expectedHost = "api.github.com";
+        }
+
         if (!Uri.TryCreate(nextUrl, UriKind.Absolute, out var nextUri))
         {
             throw new GitHubIntegrationException(
@@ -310,7 +525,7 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
         }
 
         if (!string.Equals(nextUri.Scheme, "https", StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(nextUri.Host, "api.github.com", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(nextUri.Host, expectedHost, StringComparison.OrdinalIgnoreCase))
         {
             throw new GitHubIntegrationException(
                 GitHubErrorKind.ServiceUnavailable,
@@ -318,8 +533,9 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
         }
 
         var expectedRepoPath = $"/repos/{repository.Owner}/{repository.Name}/commits";
-        var isStandardPath = nextUri.AbsolutePath.StartsWith(expectedRepoPath, StringComparison.OrdinalIgnoreCase);
-        var isRepositoriesIdPath = Regex.IsMatch(nextUri.AbsolutePath, @"^/repositories/\d+/commits(?:/)?$", RegexOptions.IgnoreCase);
+        var isStandardPath = string.Equals(nextUri.AbsolutePath, expectedRepoPath, StringComparison.OrdinalIgnoreCase)
+            || nextUri.AbsolutePath.StartsWith(expectedRepoPath + "/", StringComparison.OrdinalIgnoreCase);
+        var isRepositoriesIdPath = Regex.IsMatch(nextUri.AbsolutePath, @"^/repositories/\d+/commits(?:/.*)?$", RegexOptions.IgnoreCase);
 
         if (!isStandardPath && !isRepositoriesIdPath)
         {
