@@ -30,6 +30,11 @@ namespace Infrastructure.Data.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<int>("AttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
                     b.Property<int>("CommitId")
                         .HasColumnType("integer");
 
@@ -50,6 +55,14 @@ namespace Infrastructure.Data.Migrations
                     b.Property<DateTime?>("LeaseExpiration")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int>("MaxAttempts")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(3);
+
+                    b.Property<DateTime?>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime?>("StartedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -64,7 +77,15 @@ namespace Infrastructure.Data.Migrations
                     b.HasIndex("Status", "CreatedAt")
                         .HasDatabaseName("IX_Analyses_Status_CreatedAt");
 
-                    b.ToTable("Analyses");
+                    b.HasIndex("Status", "NextAttemptAt", "CreatedAt")
+                        .HasDatabaseName("IX_Analyses_Status_NextAttemptAt_CreatedAt");
+
+                    b.ToTable("Analyses", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Analyses_AttemptCount", "\"AttemptCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_Analyses_MaxAttempts", "\"MaxAttempts\" > 0");
+                        });
                 });
 
             modelBuilder.Entity("Domain.Entities.AnalysisResult", b =>

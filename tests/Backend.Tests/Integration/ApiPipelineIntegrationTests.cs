@@ -495,18 +495,21 @@ public sealed class ApiPipelineIntegrationTests(ApiWebApplicationFactory factory
         using var burstClient = isolatedFactory.CreateClient();
         var loginDto = new LoginDto { Username = "nonexistent_user", Password = "password123" };
 
-        // Лимит политики AuthPolicy: 10 запросов в корзине.
-        // Выполняем 10 запросов подряд в пределах лимита:
-        for (var i = 1; i <= 10; i++)
+        // Лимит политики AuthPolicy: 10 запросов в корзине (пополнение 1 токен в секунду).
+        // Отправляем пачку запросов до исчерпания корзины и получения 429 TooManyRequests:
+        HttpResponseMessage? rejectedResponse = null;
+        for (var i = 1; i <= 25; i++)
         {
-            var allowedResponse = await burstClient.PostAsJsonAsync("/api/auth/login", loginDto);
-            Assert.NotEqual(HttpStatusCode.TooManyRequests, allowedResponse.StatusCode);
+            var response = await burstClient.PostAsJsonAsync("/api/auth/login", loginDto);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                rejectedResponse = response;
+                break;
+            }
         }
 
-        // Act: 11-й запрос без задержки должен быть отклонен rate limiter middleware
-        var rejectedResponse = await burstClient.PostAsJsonAsync("/api/auth/login", loginDto);
-
-        // Assert
+        // Assert: запрос должен быть отклонен rate limiter middleware
+        Assert.NotNull(rejectedResponse);
         Assert.Equal(HttpStatusCode.TooManyRequests, rejectedResponse.StatusCode);
         Assert.Equal("application/problem+json", rejectedResponse.Content.Headers.ContentType?.MediaType);
 

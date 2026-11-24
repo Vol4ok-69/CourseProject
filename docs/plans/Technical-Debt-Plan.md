@@ -37,7 +37,7 @@
 | **`TD-004`** | Учет первичных/альтернативных ключей и порядка столбцов в DB04 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Закрыто: маппинг PK/AK в `Indexes`, `AlternateKeys`, 15 тестов (7 тестов маппера + 8 тестов DB04/DB05) в `DatabaseAnalyzer.Tests` |
 | **`TD-005`** | Поддержка частичных/фильтрованных индексов в правиле DB05 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Закрыто в целевом конвейере Roslyn + Runner (SqlFilterComparer, DB05 filter normalization); legacy-класс EfCoreMetadataMapper устарел и не используется в production |
 | **`TD-006`** | Инкрементальная синхронизация коммитов репозитория GitHub | `Backend.Infrastructure` | **P2** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
-| **`TD-007`** | Управление жизненным циклом очереди: retry, backoff, Poison Pill | `Backend.Queue` | **P2** | `NEEDS_DESIGN` | `OPEN` | `UNVERIFIED` | **ДА** | — |
+| **`TD-007`** | Управление жизненным циклом очереди: retry, backoff, Poison Pill | `Backend.Queue` | **P2** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `PENDING_VERIFICATION` | **ДА** | [TD-007 Plan](TD-007-Implementation-Plan.md) |
 | **`TD-008`** | Поддержка хешей SHA-256 (64 hex) и валидация в CreateCommitDto | `Backend.Application` | **P2** | `ACCEPTED` | `VERIFIED` | `VERIFIED` | **Нет** | Закрыто в коммите 57da9b8: StringLength(64, 7), Regex hex-валидации, unit и сквозные интеграционные тесты |
 | **`TD-009`** | Детектирование паттерна `WithOrigins("*")` в правиле SEC003 | `SecurityAnalyzer` | **P3** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
 | **`TD-010`** | Детектирование `ServicePointManager` в правиле SEC005 | `SecurityAnalyzer` | **P3** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
@@ -311,22 +311,24 @@
 
 ### TD-007: Управление жизненным циклом очереди: retry, backoff и Poison Pill
 - **Связанный дефект:** [NEW-002 и NEW-003](../audits/2026-11-06-technical-audit.md#new-002-и-new-003-управление-жизненным-циклом-очереди-retry-политика-и-защита-от-poison-pill)
-- **Компонент:** `Backend.Queue` (`Analysis.cs`, `AnalysisService.cs`, `AnalysisBackgroundService.cs`)
-- **Статус архитектурного решения:** `NEEDS_DESIGN` (требует утверждения ADR перед началом реализации)
-- **Статус реализации:** `OPEN`
-- **Статус проверки:** `UNVERIFIED`
+- **Компонент:** `Backend.Queue` (`Analysis.cs`, `AnalysisService.cs`, `AnalysisRepository.cs`, `AnalysisRetryPolicy.cs`, `GitHubRateLimitParser.cs`)
+- **Статус архитектурного решения:** `ACCEPTED`
+- **Статус реализации:** `IMPLEMENTATION_COMPLETE` (Устранены замечания ревью Fix5.2: F52-01..F52-04, ожидает независимой верификации)
+- **Статус проверки:** `PENDING_VERIFICATION`
 - **Приоритет:** `P2`
-- **Миграция БД:** **ДА**
-- **Зависимости:** Нет
-- **Описание:** Внедрить отказоустойчивую обработку временных сбоев очереди и нейтрализацию аварийных задач.
-- **Критерии приёмки:**
-  1. В сущность `Analysis` добавлены поля `AttemptCount` (int, default 0), `MaxAttempts` (int, default 3) и `NextAttemptAt` (DateTime?).
-  2. Создана и верифицирована миграция EF Core в `Infrastructure`.
-  3. При временных ошибках (сетевые таймауты, 503 от GitHub) задача переводится в `Pending` с отложенным `NextAttemptAt` (экспоненциальный backoff).
-  4. При достижении `AttemptCount >= MaxAttempts` задача окончательно переводится в `Failed` с фиксацией причины в `ErrorMessage`.
-- **Необходимые тесты:**
-  - Тест повторной попытки задачи при временном исключении.
-  - Тест терминального перевода в `Failed` после 3 неудачных попыток.
+- **Миграция БД:** **ДА** (`20261122150614_AddAnalysisRetryAndPoisonPillQueue`)
+- **Зависимости:** TD-002
+- **Описание:** Внедрена долговечная очередь задач с экспоненциальным backoff, обработкой HTTP rate limit (RFC 9110), строгим контролем владения задачей при завершении (Q-03, Q-03-A), восстановлением после потери подтверждения фиксации коммита в СУБД (Q-04, Q-04-A, Q-04-B, Fix5.1, Fix5.2) и защитой от Poison Pill.
+- **Критерии приёмки и результаты реализации:**
+  1. В сущность `Analysis` добавлены поля `AttemptCount` (int, default 0), `MaxAttempts` (int, default 3) и `NextAttemptAt` (DateTime?). В конфигурации `AnalysisConfiguration` настроены check constraints `CK_Analyses_AttemptCount` (`"AttemptCount" >= 0`) и `CK_Analyses_MaxAttempts` (`"MaxAttempts" > 0`), а также составной индекс `IX_Analyses_Status_NextAttemptAt_CreatedAt`.
+  2. Создана и верифицирована миграция `20261122150614_AddAnalysisRetryAndPoisonPillQueue` и снимок модели `AppDbContextModelSnapshot`.
+  3. Публичный контракт `AnalysisDto` сохранён в неизменном виде без утечки внутренних полей очереди.
+  4. Реализован парсер `GitHubRateLimitParser` в соответствии со стандартом RFC 9110 (IMF-fixdate, RFC 850, asctime, delta-seconds, дельта серверных часов `Date`, безопасный allow-list `HeaderDiagnostics` без утечки токенов).
+  5. Реализована политика `AnalysisRetryPolicy` (`IAnalysisRetryPolicy`) с экспоненциальной задержкой, джиттером, классификацией временных/постоянных ошибок, обработкой SQLSTATE (`08000`, `08003`, `08006`, `57P01`, `40001`, `40P01`) и ограничением ожидания (cap 15 мин).
+  6. В `AnalysisRepository` внедрён пропуск заблокированных кандидатов (`skippedCandidateIds` через строго типизированный массив `NpgsqlDbType.Array | NpgsqlDbType.Integer`), серверное время `clock_timestamp()`, обработка `NextAttemptAt`, метод `ScheduleRetryAsync` и атомарный перевод зависших задач в `Failed` (Poison Pill).
+  7. **Q-03 и Q-03-A (Строгий контроль владения при завершении и недопустимость NULL lease):** Все перегрузки без guard в `IAnalysisRepository` устранены; `IAnalysisLeaseGuard guard` является строго обязательным параметром для `CompleteAsync`, `FailAsync`, `ScheduleRetryAsync`. В PostgreSQL защищённые операции записи выполняются непосредственно через физическое соединение guard (`guard.Connection`), удерживающее session-level advisory lock (`pid = pg_backend_pid()`), что математически исключает race condition TOCTOU при потере владения. Все предикаты операций записи отклоняют как истёкшие, так и `NULL` значения `LeaseExpiration` (`"LeaseExpiration" >= clock_timestamp()`). Контракт `GetAnalysisWithProcessIdAsync` в `IAnalysisRepository` сделан обязательным методом интерфейса (F51-04), а XML-документация уточнена для Npgsql (чтение сущности и PID на одном физическом соединении для диагностики PostgreSQL backend; F52-02).
+  8. **Q-04, Q-04-A, Q-04-B (Ambiguous COMMIT ACK Loss Recovery, Wire Protocol Parser, Fix5.1, Fix5.2):** `AnalysisService` проверяет фактическое состояние задачи в базе данных через `GetAnalysisWithProcessIdAsync` (гарантия чтения PID и состояния из одного физического соединения, независимого от guard) при сбоях сети во время `CompleteAsync`. Вызов проверки изолирован в блоке `try/catch (checkEx)`: при откате транзакции (`Status == Running`) исходное исключение `commitEx` ретранслируется во внешний обработчик retry/fail (F51-02). Выполняется строгая проверка согласованности результатов `AreResultsConsistent` (совпадение количества находок, полей `Rule`, `Message`, `Severity`, `Recommendation`, `FilePath`, `LineNumber`, типа анализатора, устойчивость к порядку и проверка мультимножества; F51-05). Чужой `ExecutionToken` отклоняется. При неоднозначном коммите (`isAmbiguousCommit = true`) или сбое проверки статуса (`checkEx`) автоматические изменения состояния (`FailAsync`, `ScheduleRetryAsync`) и очистка каталога (`CleanupAsync`) строго блокируются, исключение логируется через `AggregateException` (F51-03). Протокольный парсер `PostgreSqlProtocolParser` валидирует структуру сообщений `Query`, `Parse` и `CommandComplete`, предотвращает переполнение длины и относит к выполнению коммита исключительно команду `COMMIT` в протоколе простых запросов `'Q'` (Option A, F51-01), так как `'P'` лишь подготавливает оператор без его выполнения. Реализованы сценарии: A (реальный сетевой RST после коммита), B (обрыв до коммита), C (сбой проверки БД при recovery), D (повреждённые/неполные результаты), E (чужой execution token), F (идемпотентность повторного восстановления), G (программное исключение в post-commit callback EF Core), H (сквозной жизненный цикл: завершённый коммит не захватывается повторно в следующем цикле воркера; F52-01), I (безопасный повторный захват незавершённой задачи после истечения срока аренды; F52-01) и штатный режим.
+  9. Полный набор тестов решения: **907 тестов `Backend.Tests` пройдено успешно (0 сбоев)**, включая 40 тестов `PostgreSqlProtocolParserTests`, 10 тестов `PostgreSqlCommitAckLossIntegrationTests` (включая сценарии H и I), 21 тест `PostgreSqlQueueOperationsTests`, 7 тестов `AnalysisServiceRetryQueueTests`, 4 теста `AnalysisBackgroundServiceTests`, 19 тестов `AnalysisResultsConsistencyTests`, 13 тестов `GitHubRateLimitParserTests`, 7 тестов `AnalysisRetryPolicyTests`. Всего по активным тестовым проектам решения выполнено **1302 теста (0 сбоев)**: `Backend.Tests` (907), `DatabaseAnalyzer.Runner.Tests` (105), `DatabaseAnalyzer.Tests` (190), `SqlAnalyzer.Tests` (44), `SecurityAnalyzer.Tests` (56). Тесты `CSharpAnalyzer.Tests` (8 тестов) не затрагивались в соответствии со статусом `DEFERRED` задачи TD-003.
 
 ---
 

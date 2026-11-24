@@ -28,6 +28,21 @@ public class Analysis
     /// </summary>
     public string? ErrorMessage { get; set; }
 
+    /// <summary>
+    /// Число попыток захвата задачи очередью.
+    /// </summary>
+    public int AttemptCount { get; set; }
+
+    /// <summary>
+    /// Максимально допустимое число попыток захвата задачи перед переходом в статус Failed.
+    /// </summary>
+    public int MaxAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// Время, раньше которого задача не может быть повторно захвачена из очереди (для backoff/retry).
+    /// </summary>
+    public DateTime? NextAttemptAt { get; set; }
+
     public Commit Commit { get; set; } = null!;
 
     public ICollection<AnalysisResult> Results { get; set; } = new List<AnalysisResult>();

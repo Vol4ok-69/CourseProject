@@ -4,6 +4,7 @@ using Application.Interfaces;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Domain.Enums;
+using Microsoft.Extensions.Logging;
 using System.Text.RegularExpressions;
 
 namespace Application.Services;
@@ -14,10 +15,16 @@ public class AnalysisService(
     IRepositorySourceService repositorySourceService,
     IEnumerable<IAnalyzer> analyzers,
     IGitHubCredentialService gitHubCredentialService,
-    IAnalysisLeaseGuardProvider leaseGuardProvider)
+    IAnalysisLeaseGuardProvider leaseGuardProvider,
+    IAnalysisRetryPolicy? retryPolicy = null,
+    IAnalysisCommitRecoveryObserver? recoveryObserver = null,
+    ILogger<AnalysisService>? logger = null)
 {
     private readonly IGitHubCredentialService _gitHubCredentialService = gitHubCredentialService ?? throw new ArgumentNullException(nameof(gitHubCredentialService));
     private readonly IAnalysisLeaseGuardProvider _leaseGuardProvider = leaseGuardProvider ?? throw new ArgumentNullException(nameof(leaseGuardProvider));
+    private readonly IAnalysisRetryPolicy? _retryPolicy = retryPolicy;
+    private readonly IAnalysisCommitRecoveryObserver? _recoveryObserver = recoveryObserver;
+    private readonly ILogger<AnalysisService>? _logger = logger;
     /// <summary>
     /// Создаёт задачу анализа коммита со статусом Pending и сохраняет её в очередь задач.
     /// Не выполняет запуск анализаторов и не скачивает исходный код.
@@ -118,6 +125,7 @@ public class AnalysisService(
             var leaseRenewalTask = StartLeaseRenewalAsync(analysisId, executionToken, effectiveLeaseDuration, guard, linkedCts, renewalState);
 
             var ownershipConfirmed = true;
+            bool isAmbiguousCommit = false;
 
             try
             {
@@ -369,7 +377,7 @@ public class AnalysisService(
                     if (isStillOwnerOnFail)
                     {
                         var failMessage = "Все анализаторы завершились ошибкой или не смогли предоставить результаты.";
-                        var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, failMessage, CancellationToken.None);
+                        var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, failMessage, guard, CancellationToken.None);
                         if (!failed)
                         {
                             ownershipConfirmed = false;
@@ -408,7 +416,118 @@ public class AnalysisService(
                     return false;
                 }
 
-                var completed = await analysisRepository.CompleteAsync(analysis.Id, executionToken, results, CancellationToken.None);
+                int? guardProcessId = guard.ConnectionProcessId;
+                bool completed = false;
+                _recoveryObserver?.OnCommitStarted(analysis.Id, executionToken);
+                try
+                {
+                    completed = await analysisRepository.CompleteAsync(analysis.Id, executionToken, results, guard, CancellationToken.None);
+                }
+                catch (Exception commitEx) when (commitEx is not OperationCanceledException)
+                {
+                    _recoveryObserver?.OnCommitFailed(analysis.Id, executionToken, commitEx);
+                    _recoveryObserver?.OnRecoveryStarted(analysis.Id, executionToken);
+
+                    // Q-04: Ambiguous COMMIT ACK Loss recovery
+                    // Если произошёл сбой сети/TCP при фиксации транзакции коммита в СУБД,
+                    // исход коммита считается неопределённым (ambiguous) до явного подтверждения.
+                    isAmbiguousCommit = true;
+
+                    int? recoveryProcessId = null;
+                    Analysis? current = null;
+                    Exception? checkException = null;
+
+                    try
+                    {
+                        var recoveryData = await analysisRepository.GetAnalysisWithProcessIdAsync(analysis.Id, CancellationToken.None);
+                        current = recoveryData.Analysis;
+                        recoveryProcessId = recoveryData.ProcessId;
+                    }
+                    catch (Exception checkEx) when (checkEx is not OperationCanceledException)
+                    {
+                        checkException = checkEx;
+                    }
+
+                    if (checkException != null)
+                    {
+                        ownershipConfirmed = false;
+                        isAmbiguousCommit = true;
+                        _recoveryObserver?.OnRecoveryCompleted(analysis.Id, executionToken, false);
+
+                        var aggEx = new AggregateException(
+                            $"Сбой фиксации коммита анализа {analysis.Id} с последующей невозможностью проверить состояние в БД. Статус коммита неоднозначен (ambiguous).",
+                            commitEx,
+                            checkException);
+
+                        _logger?.LogError(aggEx,
+                            "Неоднозначный коммит для анализа {AnalysisId}: CompleteAsync завершился ошибкой, и проверка состояния в БД также завершилась ошибкой. Автоматический Fail/Retry отменен во избежание повреждения данных.",
+                            analysis.Id);
+
+                        return false;
+                    }
+
+                    _recoveryObserver?.OnRecoveryStateInspected(
+                        analysis.Id,
+                        executionToken,
+                        current?.Status,
+                        current?.ExecutionToken,
+                        guardProcessId,
+                        recoveryProcessId);
+
+                    if (current != null &&
+                        current.Status == AnalysisStatus.Completed &&
+                        current.ExecutionToken == executionToken &&
+                        AreResultsConsistent(current.Results, results))
+                    {
+                        completed = true;
+                        ownershipConfirmed = true;
+                        isAmbiguousCommit = false;
+                        _recoveryObserver?.OnRecoveryCompleted(analysis.Id, executionToken, true);
+                    }
+                    else if (current != null &&
+                             current.Status == AnalysisStatus.Running &&
+                             current.ExecutionToken == executionToken)
+                    {
+                        isAmbiguousCommit = false;
+                        _recoveryObserver?.OnRecoveryCompleted(analysis.Id, executionToken, false);
+                        throw;
+                    }
+                    else if (current != null &&
+                             current.Status == AnalysisStatus.Completed &&
+                             current.ExecutionToken != executionToken)
+                    {
+                        ownershipConfirmed = false;
+                        isAmbiguousCommit = false;
+                        _recoveryObserver?.OnRecoveryCompleted(analysis.Id, executionToken, false);
+                        _logger?.LogWarning(
+                            "Восстановление коммита анализа {AnalysisId} отклонено: обнаружен сторонний execution token {CurrentToken} (ожидался {ExpectedToken}).",
+                            analysis.Id, current.ExecutionToken, executionToken);
+                        return false;
+                    }
+                    else if (current != null &&
+                             current.Status == AnalysisStatus.Completed &&
+                             !AreResultsConsistent(current.Results, results))
+                    {
+                        ownershipConfirmed = false;
+                        isAmbiguousCommit = true;
+                        _recoveryObserver?.OnRecoveryCompleted(analysis.Id, executionToken, false);
+                        _logger?.LogError(
+                            "Восстановление коммита анализа {AnalysisId} отклонено: результаты в БД не согласованы с ожидаемыми (БД: {ActualCount}, Ожидалось: {ExpectedCount}). Коммит помечен как неоднозначный.",
+                            analysis.Id, current.Results?.Count ?? 0, results.Count);
+                        return false;
+                    }
+                    else
+                    {
+                        ownershipConfirmed = false;
+                        isAmbiguousCommit = true;
+                        _recoveryObserver?.OnRecoveryCompleted(analysis.Id, executionToken, false);
+                        _logger?.LogError(
+                            "Восстановление коммита анализа {AnalysisId} завершилось в непредвиденном состоянии (Статус: {Status}, Токен: {Token}). Коммит помечен как неоднозначный.",
+                            analysis.Id, current?.Status, current?.ExecutionToken);
+                        return false;
+                    }
+                }
+
                 if (!completed)
                 {
                     ownershipConfirmed = false;
@@ -511,7 +630,7 @@ public class AnalysisService(
                     errorMessage = $"Операция анализа была отменена: {SanitizeErrorMessage(ex)}";
                 }
 
-                var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, errorMessage, CancellationToken.None);
+                var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, errorMessage, guard, CancellationToken.None);
                 if (!failed)
                 {
                     ownershipConfirmed = false;
@@ -523,6 +642,13 @@ public class AnalysisService(
             {
                 linkedCts.Cancel();
                 try { await leaseRenewalTask; } catch { }
+
+                if (isAmbiguousCommit)
+                {
+                    ownershipConfirmed = false;
+                    _logger?.LogWarning(ex, "Анализ {AnalysisId} находится в состоянии неоднозначного коммита. Вызов FailAsync/ScheduleRetryAsync отменен.", analysis.Id);
+                    return false;
+                }
 
                 if (cancellationToken.IsCancellationRequested || renewalState.StopReason == LeaseRenewalStopReason.ExternalCancellation)
                 {
@@ -575,10 +701,47 @@ public class AnalysisService(
                         errorMessage = SanitizeErrorMessage(ex);
                     }
 
-                    var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, errorMessage, CancellationToken.None);
-                    if (!failed)
+                    if (_retryPolicy != null)
                     {
-                        ownershipConfirmed = false;
+                        var decision = _retryPolicy.Evaluate(ex, analysis.AttemptCount, analysis.MaxAttempts, DateTime.UtcNow);
+
+                        if (decision.ShouldRetry)
+                        {
+                            var nextAttemptAt = DateTime.UtcNow + (decision.Delay ?? TimeSpan.FromSeconds(10));
+                            var retryMessage = $"{errorMessage} [Повтор запланирован на {nextAttemptAt:u} UTC: {decision.Reason}]";
+                            var scheduled = await analysisRepository.ScheduleRetryAsync(
+                                analysis.Id,
+                                executionToken,
+                                nextAttemptAt,
+                                retryMessage,
+                                guard,
+                                CancellationToken.None);
+
+                            if (!scheduled)
+                            {
+                                ownershipConfirmed = false;
+                            }
+                        }
+                        else
+                        {
+                            var failMessage = decision.IsPoisonPill
+                                ? $"{errorMessage} [{decision.Reason}]"
+                                : errorMessage;
+
+                            var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, failMessage, guard, CancellationToken.None);
+                            if (!failed)
+                            {
+                                ownershipConfirmed = false;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var failed = await analysisRepository.FailAsync(analysis.Id, executionToken, errorMessage, guard, CancellationToken.None);
+                        if (!failed)
+                        {
+                            ownershipConfirmed = false;
+                        }
                     }
                 }
                 else
@@ -1096,5 +1259,41 @@ public class AnalysisService(
         }
 
         return false;
+    }
+
+    internal static bool AreResultsConsistent(ICollection<AnalysisResult>? actualResults, IReadOnlyList<AnalysisResult>? expectedResults)
+    {
+        if (actualResults == null || expectedResults == null)
+        {
+            return false;
+        }
+
+        if (actualResults.Count != expectedResults.Count)
+        {
+            return false;
+        }
+
+        var remainingActual = new List<AnalysisResult>(actualResults);
+
+        foreach (var expected in expectedResults)
+        {
+            var matchIndex = remainingActual.FindIndex(a =>
+                string.Equals(a.FilePath, expected.FilePath, StringComparison.Ordinal) &&
+                a.LineNumber == expected.LineNumber &&
+                string.Equals(a.Rule, expected.Rule, StringComparison.Ordinal) &&
+                string.Equals(a.Message, expected.Message, StringComparison.Ordinal) &&
+                a.Severity == expected.Severity &&
+                string.Equals(a.Recommendation, expected.Recommendation, StringComparison.Ordinal) &&
+                a.AnalyzerType == expected.AnalyzerType);
+
+            if (matchIndex < 0)
+            {
+                return false;
+            }
+
+            remainingActual.RemoveAt(matchIndex);
+        }
+
+        return remainingActual.Count == 0;
     }
 }

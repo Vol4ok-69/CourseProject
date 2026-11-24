@@ -108,7 +108,7 @@ public sealed class AnalysisServiceQueueTests
             .ReturnsAsync("ghp_test_token");
 
         analysisRepo.Setup(x => x.GetByIdAsync(50, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.CompleteAsync(50, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.CompleteAsync(50, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         sourceService.Setup(x => x.DownloadAndExtractAsync("https://github.com/test/repo", "hash123", 50, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
@@ -134,7 +134,7 @@ public sealed class AnalysisServiceQueueTests
 
         Assert.True(success);
 
-        analysisRepo.Verify(x => x.CompleteAsync(50, token, It.Is<IReadOnlyList<AnalysisResult>>(r => r.Count == 1), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(50, token, It.Is<IReadOnlyList<AnalysisResult>>(r => r.Count == 1), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.CleanupAsync(50, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -168,7 +168,7 @@ public sealed class AnalysisServiceQueueTests
             .ReturnsAsync("ghp_test_token");
 
         analysisRepo.Setup(x => x.GetByIdAsync(51, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(51, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.FailAsync(51, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 51, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\TempRepo");
@@ -181,7 +181,7 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(51, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(51, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(51, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.CleanupAsync(51, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -215,7 +215,7 @@ public sealed class AnalysisServiceQueueTests
             .ReturnsAsync("ghp_test_token");
 
         analysisRepo.Setup(x => x.GetByIdAsync(52, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.CompleteAsync(52, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.CompleteAsync(52, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 52, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
@@ -231,7 +231,7 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(52, token);
 
         Assert.True(success);
-        analysisRepo.Verify(x => x.CompleteAsync(52, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(52, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -273,7 +273,7 @@ public sealed class AnalysisServiceQueueTests
         enqueuedAnalysis.Commit = commit;
 
         analysisRepo.Setup(x => x.GetByIdAsync(77, It.IsAny<CancellationToken>())).ReturnsAsync(enqueuedAnalysis);
-        analysisRepo.Setup(x => x.CompleteAsync(77, executionToken, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.CompleteAsync(77, executionToken, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
         sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 77, executionToken, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\Temp");
@@ -283,7 +283,7 @@ public sealed class AnalysisServiceQueueTests
         var executionSuccess = await service.ExecuteAnalysisAsync(77, executionToken, backgroundServiceCts.Token);
 
         Assert.True(executionSuccess);
-        analysisRepo.Verify(x => x.CompleteAsync(77, executionToken, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.CompleteAsync(77, executionToken, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -410,7 +410,7 @@ public sealed class AnalysisServiceQueueTests
             service.ExecuteAnalysisAsync(88, token, shutdownCts.Token));
 
         // Гарантируем, что задача НЕ помечена как сбойная (Failed)
-        analysisRepo.Verify(x => x.FailAsync(88, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(88, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
 
         // Гарантируем, что временные файлы всё равно очищены
         sourceService.Verify(x => x.CleanupAsync(88, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -481,14 +481,14 @@ public sealed class AnalysisServiceQueueTests
 
         analysisRepo.Setup(x => x.GetByIdAsync(91, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
         commitRepo.Setup(x => x.GetByIdAsync(999, It.IsAny<CancellationToken>())).ReturnsAsync((Commit?)null);
-        analysisRepo.Setup(x => x.FailAsync(91, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.FailAsync(91, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(91, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(91, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(91, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(91, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -518,14 +518,14 @@ public sealed class AnalysisServiceQueueTests
 
         analysisRepo.Setup(x => x.GetByIdAsync(92, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
         commitRepo.Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(new Commit { Id = 1, CommitHash = "hash92", Project = null! });
-        analysisRepo.Setup(x => x.FailAsync(92, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.FailAsync(92, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(92, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(92, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(92, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(92, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -550,14 +550,14 @@ public sealed class AnalysisServiceQueueTests
 
         analysisRepo.Setup(x => x.GetByIdAsync(93, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
         commitRepo.Setup(x => x.GetByIdAsync(1, It.IsAny<CancellationToken>())).ThrowsAsync(new InvalidOperationException("DB unavailable"));
-        analysisRepo.Setup(x => x.FailAsync(93, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.FailAsync(93, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], Mock.Of<IGitHubCredentialService>(), new InMemoryAnalysisLeaseGuardProvider());
 
         var success = await service.ExecuteAnalysisAsync(93, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(93, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(93, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(93, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -614,7 +614,7 @@ public sealed class AnalysisServiceQueueTests
 
         Assert.False(success);
         // Не изменяем задачу чужого воркера
-        analysisRepo.Verify(x => x.FailAsync(94, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(94, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         // Не удаляем временные файлы, так как ими может пользоваться новый воркер
         sourceService.Verify(x => x.CleanupAsync(94, It.IsAny<Guid>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -648,7 +648,7 @@ public sealed class AnalysisServiceQueueTests
 
         analysisRepo.Setup(x => x.GetByIdAsync(95, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
         // Задача была перехвачена в БД, поэтому CompleteAsync возвращает false
-        analysisRepo.Setup(x => x.CompleteAsync(95, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.CompleteAsync(95, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), 95, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
@@ -663,7 +663,7 @@ public sealed class AnalysisServiceQueueTests
         Assert.False(success);
         // Не удаляем временные файлы, так как ими уже владеет другой воркер
         sourceService.Verify(x => x.CleanupAsync(95, It.IsAny<Guid>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.FailAsync(95, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(95, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -700,7 +700,7 @@ public sealed class AnalysisServiceQueueTests
             .ThrowsAsync(new InvalidOperationException("Analysis error"));
 
         // Задача перехвачена в БД другим воркером, поэтому FailAsync возвращает false
-        analysisRepo.Setup(x => x.FailAsync(96, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(96, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         var service = new AnalysisService(analysisRepo.Object, commitRepo.Object, sourceService.Object, [analyzer.Object], credentialService.Object, new InMemoryAnalysisLeaseGuardProvider());
@@ -745,7 +745,7 @@ public sealed class AnalysisServiceQueueTests
         analyzer.Setup(x => x.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Fatal analysis error"));
 
-        analysisRepo.Setup(x => x.FailAsync(97, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(97, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         // Исключение при очистке
@@ -757,7 +757,7 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(97, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(97, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(97, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.CleanupAsync(97, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -786,7 +786,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(301, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.CompleteAsync(301, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.CompleteAsync(301, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(15, It.IsAny<CancellationToken>()))
@@ -849,7 +849,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(302, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.CompleteAsync(302, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.CompleteAsync(302, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(projectOwnerId, It.IsAny<CancellationToken>()))
@@ -918,7 +918,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(303, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(303, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(303, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         // Владелец не имеет PAT
@@ -936,6 +936,7 @@ public sealed class AnalysisServiceQueueTests
             303,
             token,
             It.Is<string>(msg => msg.Contains("токена GitHub", StringComparison.OrdinalIgnoreCase)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         // Скачивание никогда не должно вызываться
@@ -978,7 +979,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(304, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(304, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(304, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(88, It.IsAny<CancellationToken>()))
@@ -994,6 +995,7 @@ public sealed class AnalysisServiceQueueTests
             304,
             token,
             It.Is<string>(msg => msg.Contains("токена GitHub", StringComparison.OrdinalIgnoreCase)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         sourceService.Verify(x => x.DownloadAndExtractAsync(
@@ -1031,7 +1033,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(305, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(305, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(305, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(99, It.IsAny<CancellationToken>()))
@@ -1057,6 +1059,7 @@ public sealed class AnalysisServiceQueueTests
             305,
             token,
             It.Is<string>(msg => msg.Contains("недействителен или отозван", StringComparison.OrdinalIgnoreCase)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         sourceService.Verify(x => x.CleanupAsync(305, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -1087,7 +1090,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(306, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(306, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(306, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(100, It.IsAny<CancellationToken>()))
@@ -1113,6 +1116,7 @@ public sealed class AnalysisServiceQueueTests
             306,
             token,
             It.Is<string>(msg => msg.Contains("лимит запросов", StringComparison.OrdinalIgnoreCase)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         sourceService.Verify(x => x.CleanupAsync(306, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -1143,7 +1147,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(307, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(307, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(307, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(101, It.IsAny<CancellationToken>()))
@@ -1169,6 +1173,7 @@ public sealed class AnalysisServiceQueueTests
             307,
             token,
             It.Is<string>(msg => msg.Contains("запрещен", StringComparison.OrdinalIgnoreCase)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         sourceService.Verify(x => x.CleanupAsync(307, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -1199,7 +1204,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(308, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(308, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(308, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(102, It.IsAny<CancellationToken>()))
@@ -1225,6 +1230,7 @@ public sealed class AnalysisServiceQueueTests
             308,
             token,
             It.Is<string>(msg => msg.Contains("не найден", StringComparison.OrdinalIgnoreCase)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         sourceService.Verify(x => x.CleanupAsync(308, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -1255,7 +1261,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(309, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(309, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.FailAsync(309, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(103, It.IsAny<CancellationToken>()))
@@ -1281,6 +1287,7 @@ public sealed class AnalysisServiceQueueTests
             309,
             token,
             It.Is<string>(msg => msg.Contains("временно недоступен", StringComparison.OrdinalIgnoreCase)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         sourceService.Verify(x => x.CleanupAsync(309, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -1313,7 +1320,7 @@ public sealed class AnalysisServiceQueueTests
         var analyzer = new Mock<IAnalyzer>();
 
         analysisRepo.Setup(x => x.GetByIdAsync(310, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.CompleteAsync(310, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()))
+        analysisRepo.Setup(x => x.CompleteAsync(310, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(104, It.IsAny<CancellationToken>()))
@@ -1378,8 +1385,8 @@ public sealed class AnalysisServiceQueueTests
         analysisRepo.Setup(x => x.GetByIdAsync(311, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
 
         string? recordedErrorMessage = null;
-        analysisRepo.Setup(x => x.FailAsync(311, token, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-            .Callback<int, Guid, string?, CancellationToken>((_, _, msg, _) => recordedErrorMessage = msg)
+        analysisRepo.Setup(x => x.FailAsync(311, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
+            .Callback<int, Guid, string?, IAnalysisLeaseGuard, CancellationToken>((_, _, msg, _, _) => recordedErrorMessage = msg)
             .ReturnsAsync(true);
 
         credentialService.Setup(x => x.GetUserTokenAsync(105, It.IsAny<CancellationToken>()))
@@ -1548,8 +1555,8 @@ public sealed class AnalysisServiceQueueTests
             .ReturnsAsync("ghp_test_token");
 
         analysisRepo.Setup(x => x.GetByIdAsync(analysisId, It.IsAny<CancellationToken>())).ReturnsAsync(analysis);
-        analysisRepo.Setup(x => x.FailAsync(analysisId, token, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
-        analysisRepo.Setup(x => x.CompleteAsync(analysisId, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.FailAsync(analysisId, token, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        analysisRepo.Setup(x => x.CompleteAsync(analysisId, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         sourceService.Setup(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), analysisId, token, "ghp_test_token", It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("C:\\TempRepo");
@@ -1589,8 +1596,9 @@ public sealed class AnalysisServiceQueueTests
                 r.Count == 2 &&
                 r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
                 r.Any(x => x.Rule == DatabaseAnalyzerRules.MissingDbContext && x.Severity == Severity.Info && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1623,8 +1631,9 @@ public sealed class AnalysisServiceQueueTests
                            x.Severity == Severity.Warning &&
                            x.Message.Contains("Fatal database engine crash") &&
                            x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1660,8 +1669,9 @@ public sealed class AnalysisServiceQueueTests
                 r.Count == 2 &&
                 r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
                 r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerError && x.Severity == Severity.Warning && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1697,8 +1707,9 @@ public sealed class AnalysisServiceQueueTests
                 r.Count == 2 &&
                 r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
                 r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerTimeout && x.Severity == Severity.Warning && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1732,8 +1743,9 @@ public sealed class AnalysisServiceQueueTests
                 r.Any(x => x.Rule == "CS001") &&
                 r.Any(x => x.Rule == "DB01") &&
                 r.Any(x => x.Rule == DatabaseAnalyzerRules.RoslynWarning && x.Severity == Severity.Warning)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1755,8 +1767,9 @@ public sealed class AnalysisServiceQueueTests
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1776,8 +1789,8 @@ public sealed class AnalysisServiceQueueTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ExecuteAnalysisAsync(analysis.Id, token, cts.Token));
 
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1810,8 +1823,9 @@ public sealed class AnalysisServiceQueueTests
                 !r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerTimeout ||
                             x.Rule == DatabaseAnalyzerRules.ContainerError ||
                             x.Rule == DatabaseAnalyzerRules.InternalAnalyzerError)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1836,8 +1850,9 @@ public sealed class AnalysisServiceQueueTests
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1871,8 +1886,9 @@ public sealed class AnalysisServiceQueueTests
                 r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
                 r.Any(x => x.Rule == "DB01" && x.AnalyzerType == AnalyzerType.Database) &&
                 r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerError && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1901,8 +1917,9 @@ public sealed class AnalysisServiceQueueTests
                 r.Count == 2 &&
                 r.Any(x => x.Rule == "DB01") &&
                 r.Any(x => x.Rule == DatabaseAnalyzerRules.RoslynWarning)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1928,8 +1945,9 @@ public sealed class AnalysisServiceQueueTests
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -1968,6 +1986,7 @@ public sealed class AnalysisServiceQueueTests
             analysis.Id,
             token,
             It.Is<IReadOnlyList<AnalysisResult>>(r => r.Count == 1 && r[0].Rule == "CS001"),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -1996,8 +2015,9 @@ public sealed class AnalysisServiceQueueTests
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2032,8 +2052,8 @@ public sealed class AnalysisServiceQueueTests
 
         Assert.False(success);
         // Не перезаписываем чужую задачу при потере аренды
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2084,8 +2104,9 @@ public sealed class AnalysisServiceQueueTests
                     r.Count == 2 &&
                     r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
                     r.Any(x => x.Rule == DatabaseAnalyzerRules.MissingDbContext && x.Severity == Severity.Info && x.AnalyzerType == AnalyzerType.Database)),
+                It.IsAny<IAnalysisLeaseGuard>(),
                 It.IsAny<CancellationToken>()), Times.Once);
-            analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
 
             // Повторный запуск того же экземпляра realAnalyzer при ошибке извлечения:
             // статус должен сброситься и установиться в ExtractionError
@@ -2109,8 +2130,8 @@ public sealed class AnalysisServiceQueueTests
 
             Assert.False(success2);
             Assert.Equal(DatabaseAnalysisExecutionStatus.ExtractionError, realAnalyzer.ExecutionStatus);
-            analysisRepo2.Verify(x => x.FailAsync(analysis2.Id, token2, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
-            analysisRepo2.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+            analysisRepo2.Verify(x => x.FailAsync(analysis2.Id, token2, It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+            analysisRepo2.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         }
         finally
         {
@@ -2150,8 +2171,9 @@ public sealed class AnalysisServiceQueueTests
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("Все анализаторы завершились ошибкой")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2189,8 +2211,9 @@ public sealed class AnalysisServiceQueueTests
                 r.Count == 2 &&
                 r.Any(x => x.Rule == "CS001" && x.AnalyzerType == AnalyzerType.CSharp) &&
                 r.Any(x => x.Rule == DatabaseAnalyzerRules.MissingDbContext && x.Severity == Severity.Info && x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2232,8 +2255,9 @@ public sealed class AnalysisServiceQueueTests
                            x.Severity == Severity.Warning &&
                            x.Message.Contains(containerErrorMessage) &&
                            x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2273,8 +2297,9 @@ public sealed class AnalysisServiceQueueTests
                 r.Any(x => x.Rule == DatabaseAnalyzerRules.ContainerTimeout &&
                            x.Severity == Severity.Warning &&
                            x.AnalyzerType == AnalyzerType.Database)),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2298,8 +2323,9 @@ public sealed class AnalysisServiceQueueTests
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("Операция анализа была отменена")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2316,8 +2342,8 @@ public sealed class AnalysisServiceQueueTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ExecuteAnalysisAsync(analysis.Id, token, callerCts.Token));
 
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2352,8 +2378,8 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     #endregion
@@ -2400,8 +2426,9 @@ public sealed class AnalysisServiceQueueTests
             analysis.Id,
             token,
             It.Is<string?>(msg => msg != null && msg.Contains("аренд")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2440,8 +2467,8 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(60));
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(209, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -2486,8 +2513,8 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(60));
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(210, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -2506,8 +2533,8 @@ public sealed class AnalysisServiceQueueTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             service.ExecuteAnalysisAsync(analysis.Id, token, callerCts.Token));
 
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -2574,10 +2601,10 @@ public sealed class AnalysisServiceQueueTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => executionTask);
 
         // 8. Проверяем, что FailAsync не вызывался
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
 
         // 9. Проверяем, что CompleteAsync не вызывался
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
 
         // 10-11. Проверяем безопасное выполнение CleanupAsync, поскольку владение было подтверждено
         sourceService.Verify(x => x.CleanupAsync(213, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -2600,8 +2627,8 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(analysis.Id, token);
 
         Assert.True(success);
-        analysisRepo.Verify(x => x.CompleteAsync(analysis.Id, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(analysis.Id, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(212, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -2648,11 +2675,12 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         analysisRepo.Verify(x => x.FailAsync(
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("аренд")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.CleanupAsync(214, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -2699,11 +2727,12 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         analysisRepo.Verify(x => x.FailAsync(
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("аренд")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.CleanupAsync(215, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -2751,11 +2780,12 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         analysisRepo.Verify(x => x.FailAsync(
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("аренд") && !s.Contains("Все анализаторы")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.CleanupAsync(216, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -2802,11 +2832,12 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         analysisRepo.Verify(x => x.FailAsync(
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("аренд")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
         sourceService.Verify(x => x.CleanupAsync(217, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -2850,8 +2881,8 @@ public sealed class AnalysisServiceQueueTests
         var success = await service.ExecuteAnalysisAsync(analysis.Id, token, default, TimeSpan.FromMilliseconds(20));
 
         Assert.False(success);
-        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.FailAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(218, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -2893,8 +2924,9 @@ public sealed class AnalysisServiceQueueTests
             analysis.Id,
             token,
             It.Is<string?>(s => s != null && s.Contains("аренд")),
+            It.IsAny<IAnalysisLeaseGuard>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+        analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(219, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 

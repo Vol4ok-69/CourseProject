@@ -197,11 +197,18 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
         }
 
         // 429: Too Many Requests (Rate limit)
+        string body = string.Empty;
+        try
+        {
+            body = await response.Content.ReadAsStringAsync(cancellationToken);
+        }
+        catch
+        {
+        }
+
         if ((int)statusCode == 429)
         {
-            throw new GitHubIntegrationException(
-                GitHubErrorKind.RateLimited,
-                "Превышен лимит запросов к GitHub API (Rate Limit).");
+            throw Application.Services.GitHubRateLimitParser.ParseRateLimitException(response, body, DateTimeOffset.UtcNow);
         }
 
         // 403: Forbidden (может быть Rate Limit, а может быть Access Denied / SSO)
@@ -216,32 +223,25 @@ public class GitHubService(HttpClient httpClient) : IGitHubService
                 isRateLimited = true;
             }
 
-            string body = string.Empty;
-            try
-            {
-                body = await response.Content.ReadAsStringAsync(cancellationToken);
-            }
-            catch
-            {
-            }
-
             if (!isRateLimited && !string.IsNullOrEmpty(body) &&
                 (body.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
-                 body.Contains("API rate limit exceeded", StringComparison.OrdinalIgnoreCase)))
+                 body.Contains("API rate limit exceeded", StringComparison.OrdinalIgnoreCase) ||
+                 body.Contains("secondary rate limit", StringComparison.OrdinalIgnoreCase)))
             {
                 isRateLimited = true;
             }
 
             if (isRateLimited)
             {
-                throw new GitHubIntegrationException(
-                    GitHubErrorKind.RateLimited,
-                    "Превышен лимит запросов к GitHub API (Rate Limit).");
+                throw Application.Services.GitHubRateLimitParser.ParseRateLimitException(response, body, DateTimeOffset.UtcNow);
             }
 
             throw new GitHubIntegrationException(
                 GitHubErrorKind.AccessDenied,
-                "Доступ к ресурсу GitHub запрещен (недостаточно прав или ограничения организации).");
+                "Доступ к ресурсу GitHub запрещен (недостаточно прав или ограничения организации).")
+            {
+                StatusCode = statusCode
+            };
         }
 
         // 5xx: Ошибки самого GitHub

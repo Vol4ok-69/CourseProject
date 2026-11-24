@@ -1,12 +1,13 @@
 # Архитектурная верификация TD-007: Управление жизненным циклом очереди, Retry-политика и защита от Poison Pill
 
-**Дата фиксации:** 22 ноября 2026 г.  
-**Компонент:** `Backend.Queue` (`Backend.Domain`, `Backend.Application`, `Backend.Infrastructure`)  
-**Текущий архитектурный статус TD-007:** `NEEDS INVESTIGATION`  
-**Статус реализации TD-007:** `OPEN`  
+**Дата фиксации:** 22 ноября 2026 г.
+**Компонент:** `Backend.Queue` (`Backend.Domain`, `Backend.Application`, `Backend.Infrastructure`)
+**Текущий архитектурный статус TD-007:** `ACCEPTED`
+**Статус реализации TD-007:** `IMPLEMENTATION_COMPLETE`
+**Статус проверки TD-007:** `PENDING_VERIFICATION`
 **Связанные задачи:**
 - `TD-002` (Отказоустойчивость конвейера анализа, Lease Renewal): **`VERIFIED`**
-- `TD-003` (Изоляция каталогов и безопасная фоновая очистка): **`DEFERRED`**
+- `TD-003` (Изоляция каталогов и безопасная фоновая очистка): **`DEFERRED`** (`OPEN` / `UNVERIFIED`)
 - `DEF-005` / `NEW-002` / `NEW-003` ([2026-11-06-technical-audit.md](../audits/2026-11-06-technical-audit.md))
 
 ---
@@ -363,3 +364,30 @@ CREATE INDEX "IX_Analyses_Status_NextAttemptAt_CreatedAt"
 7. **Спроектирован контракт проброса заголовков (Q-07):** Сформирован протокол передачи метаданных задержки из `GitHubService` в сервис управления очередью без потери данных;
 8. **Валидирована временная модель (Q-09):** Подготовлены спецификации SQL-запросов на базе `clock_timestamp()` для всех пяти операций очереди;
 9. **Утверждены продуктовые параметры (Q-10, Q-11):** Согласованы значения `MaxAttempts` и максимальное допустимое время ожидания `MaxRateLimitWaitMinutes`.
+
+---
+
+### 9.3. Фактическое выполнение требований верификации и статус реализации (TD-007 Fix 1 / Fix 2 / Fix 3)
+
+Все вышеперечисленные условия перехода и требования верификации были последовательно реализованы и технически подтверждены:
+1. **Q-01..Q-03 (Управление очередью, пропуск кандидатов, Poison Pill и строгий контроль владения):**
+   - Реализована выборка с `!= ALL(@skippedCandidateIds)` с типизацией `NpgsqlDbType.Array | NpgsqlDbType.Integer`.
+   - Атомарная нейтрализация Poison Pill при `AttemptCount >= MaxAttempts` с переводом в `Failed`.
+   - Строгий контроль владения: устранены все guard-less перегрузки. Защищённые операции записи в PostgreSQL выполняются через физическое соединение guard, удерживающее session advisory lock (`pg_locks.pid = pg_backend_pid()`), что исключает TOCTOU race conditions.
+   - Запрет `NULL` lease: `"LeaseExpiration" >= clock_timestamp()`.
+2. **Q-04 / Q-04-A / Q-04-B / Q-04-C (Ambiguous COMMIT ACK Loss Recovery):**
+   - Разработан потоковый парсер PostgreSQL wire protocol 3.0 (`PostgreSqlProtocolParser`) с юнит-тестами (26/26).
+   - Внедрён in-process proxy `PostgreSqlLoopbackFaultProxy` с перехватом пакета `CommandComplete('COMMIT')` и аварийным обрывом сокета через TCP RST (`LingerState = 0`).
+   - Реализована ветка восстановления в `AnalysisService`: независимое чтение состояния задачи через `GetByIdAsync`, проверка токена, безопасная очистка рабочего каталога (`CleanupAsync`) и предотвращение дублирования `AnalysisResult`.
+   - Полное покрытие интеграционными тестами `PostgreSqlCommitAckLossIntegrationTests` (5/5).
+3. **Q-05..Q-07 (Парсинг Rate Limit и безопасность метаданных):**
+   - `GitHubRateLimitParser` реализован по RFC 9110 (IMF-fixdate, RFC 850, asctime, delta-seconds, дельта серверных часов `Date`).
+   - Исключена утечка токенов и чувствительных данных (диагностический allow-list заголовков).
+   - `AnalysisRetryPolicy` с экспоненциальной задержкой, джиттером и ограничением 15 мин (cap).
+4. **Q-09 (Временная модель):**
+   - Серверное время `clock_timestamp()` используется во всех SQL-запросах очереди.
+5. **Текущий статус TD-007:**
+   - **Архитектурный статус:** `ACCEPTED`
+   - **Статус реализации:** `IMPLEMENTATION_COMPLETE`
+   - **Статус проверки:** `PENDING_VERIFICATION` (Ожидает независимой приёмочной верификации)
+   - **Статус TD-003:** Строго **`DEFERRED`** (`OPEN` / `UNVERIFIED`)

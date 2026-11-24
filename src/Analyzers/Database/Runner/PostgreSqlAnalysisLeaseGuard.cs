@@ -12,6 +12,7 @@ public sealed class PostgreSqlAnalysisLeaseGuard : IAnalysisLeaseGuard
 {
     private readonly NpgsqlConnection? _connection;
     private readonly FileStream? _workspaceFileLock;
+    private readonly int? _connectionProcessId;
     private int _disposed;
 
     public PostgreSqlAnalysisLeaseGuard(
@@ -26,6 +27,15 @@ public sealed class PostgreSqlAnalysisLeaseGuard : IAnalysisLeaseGuard
         IsAcquired = isAcquired;
         _connection = connection;
         _workspaceFileLock = workspaceFileLock;
+
+        try
+        {
+            _connectionProcessId = connection?.ProcessID;
+        }
+        catch
+        {
+            _connectionProcessId = null;
+        }
     }
 
     /// <inheritdoc />
@@ -37,10 +47,30 @@ public sealed class PostgreSqlAnalysisLeaseGuard : IAnalysisLeaseGuard
     /// <inheritdoc />
     public bool IsAcquired { get; }
 
+    /// <inheritdoc />
+    public bool RequiresSessionAdvisoryLock => true;
+
+    /// <summary>
+    /// Физическое соединение NpgsqlConnection, удерживающее shared session-level advisory lock.
+    /// </summary>
+    public System.Data.Common.DbConnection? Connection =>
+        _disposed == 0 && _connection?.State == ConnectionState.Open ? _connection : null;
+
     /// <summary>
     /// Идентификатор серверного процесса PostgreSQL (backend PID) удерживаемого соединения.
     /// </summary>
-    public int? ConnectionProcessId => _connection?.ProcessID;
+    public int? ConnectionProcessId
+    {
+        get
+        {
+            if (_disposed != 0 || _connection == null)
+            {
+                return null;
+            }
+
+            return _connectionProcessId > 0 ? _connectionProcessId : null;
+        }
+    }
 
     /// <inheritdoc />
     public Task<bool> ValidateOwnershipAsync(CancellationToken cancellationToken = default)

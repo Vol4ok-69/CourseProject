@@ -355,7 +355,7 @@ public sealed class DtoValidationAndAnalysisErrorTests
         };
         await repository.AddAsync(analysis);
 
-        var failed = await repository.FailAsync(1, token, "Тестовая ошибка компиляции проекта.");
+        var failed = await repository.FailAsync(1, token, "Тестовая ошибка компиляции проекта.", new FakeAnalysisLeaseGuard(1, token));
 
         Assert.True(failed);
 
@@ -397,7 +397,7 @@ public sealed class DtoValidationAndAnalysisErrorTests
         };
         await repository.AddAsync(analysis);
 
-        var completed = await repository.CompleteAsync(2, token, []);
+        var completed = await repository.CompleteAsync(2, token, [], new FakeAnalysisLeaseGuard(2, token));
 
         Assert.True(completed);
 

@@ -22,6 +22,21 @@ public interface IAnalysisLeaseGuard : IAsyncDisposable
     bool IsAcquired { get; }
 
     /// <summary>
+    /// Физическое соединение с базой данных, удерживающее блокировку сессии, если применимо.
+    /// </summary>
+    System.Data.Common.DbConnection? Connection => null;
+
+    /// <summary>
+    /// Идентификатор серверного процесса PostgreSQL (backend PID) удерживаемого соединения, если применимо.
+    /// </summary>
+    int? ConnectionProcessId => null;
+
+    /// <summary>
+    /// Указывает, привязан ли guard к физической сессии PostgreSQL и требует ли проверки pg_locks (TD-003, TD-007).
+    /// </summary>
+    bool RequiresSessionAdvisoryLock => false;
+
+    /// <summary>
     /// Проверяет, что физическое соединение с PostgreSQL активно, сессия не разорвана,
     /// блокировка по-прежнему принадлежит текущей сессии и ExecutionToken соответствует текущему в базе данных.
     /// Выполняет реальный запрос к PostgreSQL через физическое соединение.

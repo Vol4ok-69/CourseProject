@@ -36,6 +36,23 @@ public class AnalysisConfiguration : IEntityTypeConfiguration<Analysis>
         builder.Property(analysis => analysis.ErrorMessage)
             .IsRequired(false);
 
+        builder.Property(analysis => analysis.AttemptCount)
+            .IsRequired()
+            .HasDefaultValue(0);
+
+        builder.Property(analysis => analysis.MaxAttempts)
+            .IsRequired()
+            .HasDefaultValue(3);
+
+        builder.Property(analysis => analysis.NextAttemptAt)
+            .IsRequired(false);
+
+        builder.ToTable("Analyses", table =>
+        {
+            table.HasCheckConstraint("CK_Analyses_AttemptCount", "\"AttemptCount\" >= 0");
+            table.HasCheckConstraint("CK_Analyses_MaxAttempts", "\"MaxAttempts\" > 0");
+        });
+
         builder.HasOne(analysis => analysis.Commit)
             .WithMany(commit => commit.Analyses)
             .HasForeignKey(analysis => analysis.CommitId)
@@ -51,5 +68,8 @@ public class AnalysisConfiguration : IEntityTypeConfiguration<Analysis>
 
         builder.HasIndex(analysis => new { analysis.Status, analysis.CreatedAt })
             .HasDatabaseName("IX_Analyses_Status_CreatedAt");
+
+        builder.HasIndex(analysis => new { analysis.Status, analysis.NextAttemptAt, analysis.CreatedAt })
+            .HasDatabaseName("IX_Analyses_Status_NextAttemptAt_CreatedAt");
     }
 }

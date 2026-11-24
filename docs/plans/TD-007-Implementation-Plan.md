@@ -38,12 +38,12 @@
 - Modify: `src/Backend/Infrastructure/Data/Migrations/AppDbContextModelSnapshot.cs`
 - Test: `tests/Backend.Tests/Integration/PostgreSqlAnalysisMigrationTests.cs`
 
-- [ ] Add `AttemptCount` (int, default 0), `MaxAttempts` (int, default 3), and `NextAttemptAt` (DateTime?, null) to `Analysis.cs`.
-- [ ] Configure EF Core mappings in `AnalysisConfiguration.cs` with default values, check constraints (`CK_Analyses_AttemptCount`, `CK_Analyses_MaxAttempts`), and index `IX_Analyses_Status_NextAttemptAt_CreatedAt`.
-- [ ] Generate EF Core migration via `dotnet ef migrations add AddAnalysisRetryAndPoisonPillQueue`.
-- [ ] Verify migration `Up` and `Down` methods adhere strictly to 3NF and PascalCase quoting rules.
-- [ ] Write integration test verifying migration application, rollback, default values, and check constraints against PostgreSQL 17 Testcontainers.
-- [ ] Run migration test and verify it passes.
+- [x] Add `AttemptCount` (int, default 0), `MaxAttempts` (int, default 3), and `NextAttemptAt` (DateTime?, null) to `Analysis.cs`.
+- [x] Configure EF Core mappings in `AnalysisConfiguration.cs` with default values, check constraints (`CK_Analyses_AttemptCount`, `CK_Analyses_MaxAttempts`), and index `IX_Analyses_Status_NextAttemptAt_CreatedAt`.
+- [x] Generate EF Core migration via `dotnet ef migrations add AddAnalysisRetryAndPoisonPillQueue`.
+- [x] Verify migration `Up` and `Down` methods adhere strictly to 3NF and PascalCase quoting rules.
+- [x] Write integration test verifying migration application, rollback, default values, and check constraints against PostgreSQL 17 Testcontainers.
+- [x] Run migration test and verify it passes.
 
 ---
 
@@ -56,12 +56,12 @@
 - Modify: `src/Backend/Infrastructure/GitHub/RepositorySourceService.cs`
 - Test: `tests/Backend.Tests/Unit/GitHubRateLimitParserTests.cs`
 
-- [ ] Update `GitHubIntegrationException` with `StatusCode`, `RateLimitCategory`, `RetryAfterDelay`, `ResetTimeUtc`, `ServerDateUtc`, `HasInvalidHeaders`, and `HeaderDiagnostics` (allow-list only).
-- [ ] Implement `GitHubRateLimitParser` implementing RFC 9110 (delta-seconds from reception time, IMF-fixdate, RFC 850, asctime) and GitHub API rules (Primary limit via `x-ratelimit-reset`, Secondary limit via `retry-after` / 60s backoff).
-- [ ] Implement strict allow-list filtering for `HeaderDiagnostics` excluding `Authorization`, cookies, and tokens.
-- [ ] Update `GitHubService` and `RepositorySourceService` to parse response headers before `using (response)` disposes them.
-- [ ] Write unit tests for `GitHubRateLimitParserTests` covering TS-01 through TS-13.
-- [ ] Run unit tests and verify they pass.
+- [x] Update `GitHubIntegrationException` with `StatusCode`, `RateLimitCategory`, `RetryAfterDelay`, `ResetTimeUtc`, `ServerDateUtc`, `HasInvalidHeaders`, and `HeaderDiagnostics` (allow-list only).
+- [x] Implement `GitHubRateLimitParser` implementing RFC 9110 (delta-seconds from reception time, IMF-fixdate, RFC 850, asctime) and GitHub API rules (Primary limit via `x-ratelimit-reset`, Secondary limit via `retry-after` / 60s backoff).
+- [x] Implement strict allow-list filtering for `HeaderDiagnostics` excluding `Authorization`, cookies, and tokens.
+- [x] Update `GitHubService` and `RepositorySourceService` to parse response headers before `using (response)` disposes them.
+- [x] Write unit tests for `GitHubRateLimitParserTests` covering TS-01 through TS-13.
+- [x] Run unit tests and verify they pass.
 
 ---
 
@@ -72,11 +72,11 @@
 - Create: `src/Backend/Application/Interfaces/IAnalysisRetryPolicy.cs`
 - Test: `tests/Backend.Tests/Unit/AnalysisRetryPolicyTests.cs`
 
-- [ ] Define retry classification: transient network/GitHub 5xx/rate-limited errors are retryable; permanent errors (token missing, 404, bad repo url, archive limit exceeded, fatal crashes) are non-retryable.
-- [ ] Implement exponential backoff formula $T = \text{BaseDelay} \times 2^{\text{attempt}-1} + \text{jitter}$ with cap `MaxRetryDelay` and pluggable deterministic jitter provider.
-- [ ] Implement ceiling check: if required delay > `MaxRateLimitWait` (15 min) or `AttemptCount >= MaxAttempts`, transition to `Failed`.
-- [ ] Write unit tests verifying transient vs permanent error classification, backoff calculation, ceiling enforcement, and deterministic jitter.
-- [ ] Run unit tests and verify they pass.
+- [x] Define retry classification: transient network/GitHub 5xx/rate-limited errors are retryable; permanent errors (token missing, 404, bad repo url, archive limit exceeded, fatal crashes) are non-retryable.
+- [x] Implement exponential backoff formula $T = \text{BaseDelay} \times 2^{\text{attempt}-1} + \text{jitter}$ with cap `MaxRetryDelay` and pluggable deterministic jitter provider.
+- [x] Implement ceiling check: if required delay > `MaxRateLimitWait` (15 min) or `AttemptCount >= MaxAttempts`, transition to `Failed`.
+- [x] Write unit tests verifying transient vs permanent error classification, backoff calculation, ceiling enforcement, and deterministic jitter.
+- [x] Run unit tests and verify they pass.
 
 ---
 
@@ -87,22 +87,28 @@
 - Modify: `src/Backend/Infrastructure/Repository/AnalysisRepository.cs`
 - Test: `tests/Backend.Tests/Integration/PostgreSqlQueueOperationsTests.cs`
 
-- [ ] Add `ScheduleRetryAsync` to `IAnalysisRepository` and update signatures of `CompleteAsync`, `FailAsync`, `ScheduleRetryAsync` to accept optional `IAnalysisLeaseGuard? guard = null`.
-- [ ] Update `TryAcquireNextPendingOrStaleAsync` in `AnalysisRepository`:
+- [x] Add `ScheduleRetryAsync` to `IAnalysisRepository` and update signatures of `CompleteAsync`, `FailAsync`, `ScheduleRetryAsync`: eliminate all guard-less overloads; `IAnalysisLeaseGuard guard` is non-nullable and strictly required.
+- [x] Eliminate all SQL branches on PostgreSQL without advisory lock checks.
+- [x] Execute protected write operations (`CompleteAsync`, `FailAsync`, `ScheduleRetryAsync`) directly through `guard.Connection` (`NpgsqlConnection`) using a dedicated `AppDbContext` instance (`UseNpgsql(guardConnection)`), locking atomically with `pid = pg_backend_pid()` and eliminating any TOCTOU window.
+- [x] Update `TryAcquireNextPendingOrStaleAsync` in `AnalysisRepository`:
   - Filter `NextAttemptAt <= clock_timestamp()`.
   - Atomically increment `AttemptCount = AttemptCount + 1` in acquire update.
   - Neutralize poison pills: stale task with `AttemptCount >= MaxAttempts` is atomically set to `Failed` and skipped.
   - Support `skippedCandidateIds` using strongly typed `NpgsqlParameter` (`NpgsqlDbType.Array | NpgsqlDbType.Integer`).
-- [ ] Update `RenewLeaseAsync`, `CompleteAsync`, `FailAsync`, and implement `ScheduleRetryAsync`:
+- [x] Update `RenewLeaseAsync`, `CompleteAsync`, `FailAsync`, and implement `ScheduleRetryAsync`:
   - Use `clock_timestamp()` for timestamps.
-  - Include condition: `"LeaseExpiration" >= clock_timestamp()`.
-  - When `guard` is provided, include advisory lock verification:
-    `AND (@guardPid IS NULL OR EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = hashtext('netscope_analysis_workspace') AND objid = @id AND objsubid = 2 AND pid = @guardPid AND granted = true))`.
-- [ ] Write integration tests verifying:
+  - Include strict lease expiration condition: `"LeaseExpiration" >= clock_timestamp()` (rejecting `NULL` lease for write operations as required by Q-03-A).
+  - Mandatory advisory lock verification on the guard connection:
+    `AND EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = hashtext('netscope_analysis_workspace') AND objid = @id AND objsubid = 2 AND pid = pg_backend_pid() AND mode = 'ShareLock' AND granted = true)`.
+- [x] Write integration tests verifying:
   - Atomic increment of `AttemptCount`.
   - Poison pill transition to `Failed` without worker pick-up.
-  - Write rejection (`CompleteAsync`/`FailAsync`/`ScheduleRetryAsync`) when lease expired or guard connection closed.
-- [ ] Run integration tests and verify they pass.
+  - Write rejection (`CompleteAsync`/`FailAsync`/`ScheduleRetryAsync`/`RenewLeaseAsync`) when lease expired, lease is `NULL`, or guard connection severed before write.
+  - Cleaner acquiring exclusive lock after severed connection, confirming stale worker cannot write.
+  - Mismatched `ExecutionToken` rejected.
+  - Null or unacquired guard rejected.
+  - Database state remains untouched on ownership loss.
+- [x] Run integration tests (`PostgreSqlQueueOperationsTests`) and verify all 21 pass.
 
 ---
 
@@ -113,32 +119,64 @@
 - Modify: `src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs`
 - Test: `tests/Backend.Tests/Unit/AnalysisServiceRetryQueueTests.cs`
 
-- [ ] In `ExecuteAnalysisAsync`, pass `guard` into `CompleteAsync`, `FailAsync`, and `ScheduleRetryAsync`.
-- [ ] In `ExecuteAnalysisAsync`, catch exceptions during `CompleteAsync` and check `GetByIdAsync`: if `Status == Completed` and `ExecutionToken == executionToken`, recognize completion as successful and preserve `ownershipConfirmed = true`.
-- [ ] Integrate `IAnalysisRetryPolicy` in error handling: upon retryable error and within attempt limits, call `ScheduleRetryAsync` with calculated delay and mark `ownershipConfirmed = true` so workspace is cleaned for current token.
-- [ ] If error is non-retryable or attempts exhausted, call `FailAsync`.
-- [ ] Update `AnalysisBackgroundService` to log retry scheduling.
-- [ ] Write unit tests for `AnalysisServiceRetryQueueTests` verifying retry scheduling, poison pill failure, and ambiguous commit recovery.
-- [ ] Run unit tests and verify they pass.
+- [x] In `ExecuteAnalysisAsync`, pass `guard` directly into `CompleteAsync`, `FailAsync`, and `ScheduleRetryAsync` without conditional guard-less fallbacks.
+- [x] In `ExecuteAnalysisAsync`, catch exceptions during `CompleteAsync` and inspect state via `GetAnalysisWithProcessIdAsync` (distinct physical connection from guard):
+  - Strict consistency check `AreResultsConsistent(actualResults, expectedResults)`: count, rule, message, severity, filepath, linenumber, analyzer type, non-null, and deduplication.
+  - Foreign token rejection: if `current.ExecutionToken != executionToken`, reject completion and retain state.
+  - Incomplete results rejection: if `Status == Completed` but results inconsistent, mark as ambiguous commit (`isAmbiguousCommit = true`) and retain workspace.
+  - Ambiguous COMMIT protection: if state check fails (`checkEx`) or results inconsistent, suppress automatic `FailAsync`, `ScheduleRetryAsync`, and `CleanupAsync`; log `AggregateException(commitEx, checkEx)`; retain workspace directory for manual inspection.
+- [x] Separate PID semantics: capture `guardProcessId` (from guard connection) and `recoveryProcessId` (from independent inspection connection).
+- [x] Integrate `IAnalysisRetryPolicy` in error handling: upon retryable error and within attempt limits, call `ScheduleRetryAsync` with calculated delay and mark `ownershipConfirmed = true` so workspace is cleaned for current token.
+- [x] If error is non-retryable or attempts exhausted, call `FailAsync`.
+- [x] Update `AnalysisBackgroundService` to log retry scheduling.
+- [x] Write unit tests for `AnalysisServiceRetryQueueTests` verifying retry scheduling, poison pill failure, and ambiguous commit recovery.
+- [x] Run unit tests and verify they pass.
 
 ---
 
-### Task 6: Commit ACK Loss Fault-Injection Integration Test (Q-04)
+### Task 6: Commit ACK Loss Fault-Injection Integration Test and Wire Protocol Parser (Q-04)
 
 **Files:**
-- Create: `tests/Backend.Tests/Integration/CommitAckLossInterceptor.cs`
+- Create: `tests/Backend.Tests/Integration/PostgreSqlLoopbackFaultProxy.cs`
+- Create: `tests/Backend.Tests/Integration/PostgreSqlProtocolParser.cs`
 - Create: `tests/Backend.Tests/Integration/PostgreSqlCommitAckLossIntegrationTests.cs`
+- Create: `tests/Backend.Tests/Unit/PostgreSqlProtocolParserTests.cs`
 
-- [ ] Create `CommitAckLossInterceptor` inheriting `DbTransactionInterceptor` that intercepts `TransactionCommittedAsync`: after PostgreSQL has committed the transaction, simulates connection drop / throws `NpgsqlException` / `IOException`.
-- [ ] Write `PostgreSqlCommitAckLossIntegrationTests` against real Testcontainers PostgreSQL 17:
-  - Worker executes `ExecuteAnalysisAsync` with interceptor active.
-  - Commit succeeds in PostgreSQL, but interceptor throws network error during ACK reception.
-  - `AnalysisService` verifies actual database state via `GetByIdAsync`.
-  - Confirm `ExecuteAnalysisAsync` returns `true`.
-  - Confirm task status is `Completed` with results present in database.
-  - Confirm repeated `CompleteAsync` does NOT duplicate results.
-  - Confirm workspace cleanup executed safely.
-- [ ] Run fault-injection test and verify it passes.
+- [x] Implement `PostgreSqlProtocolParser` with strict framing and format validation:
+  - Unified `TryReadNullTerminatedString` helper with `scoped ref int offset`.
+  - Structural validation for Query (`'Q'`), Parse (`'P'`), and CommandComplete (`'C'`) messages.
+  - Strict length checking: reject malformed messages with extra trailing bytes or missing NUL terminators.
+  - Integer overflow protection in framing calculation (`1L + msgLen <= int.MaxValue`).
+  - Unit tests in `PostgreSqlProtocolParserTests`: 40 tests covering Query, Parse, CommandComplete, and framing (100% pass; Parse is validated structurally but not treated as commit command execution per Option A).
+- [x] Fix5.1 targeted corrections:
+  - F51-01: Parse semantics corrected to Option A (Simple Query Protocol `'Q'` only executes COMMIT).
+  - F51-02: Isolated DB recovery check in `AnalysisService.ExecuteAnalysisAsync`, ensuring `commitEx` is properly re-thrown on `Running` status to outer retry/fail handler.
+  - F51-04: Explicit `GetAnalysisWithProcessIdAsync` in `IAnalysisRepository` without default fallback.
+  - F51-05: `AreResultsConsistent` includes `Recommendation`, bag/multiset matching, 19 unit tests in `AnalysisResultsConsistencyTests`.
+  - F51-03: Ambiguous commit lifecycle verification tests in `AnalysisServiceRetryQueueTests`.
+- [x] Fix5.2 final acceptance corrections:
+  - F52-01: Added Scenario H (ambiguous commit does not allow next worker cycle to re-acquire completed task) and Scenario I (unexecuted commit allows safe re-acquisition after lease expiry) to `PostgreSqlCommitAckLossIntegrationTests` (10/10 scenarios pass).
+  - F52-01: Added `AnalysisBackgroundService_WhenExecutionReturnsFalse_DoesNotMutateAnalysisState` to `AnalysisBackgroundServiceTests` (4/4 pass).
+  - F52-02: Refined XML doc comment for `GetAnalysisWithProcessIdAsync` in `IAnalysisRepository.cs` for Npgsql single-connection backend PID reading.
+  - F52-03: Corrected documentation unit test count to match actual 103/103 tests in `fix51_targeted_unit.trx`.
+  - F52-04: Formed complete source archive in `dumps/td007_fix5_2_review_package/`.
+- [x] Implement `PostgreSqlLoopbackFaultProxy` as an in-process TCP forwarder/proxy using robust binary parsing of PostgreSQL wire protocol 3.0:
+  - Detects `COMMIT` command in client-to-server stream (`CommitDetected`).
+  - Identifies `CommandComplete` (`'C'`) message with tag `COMMIT` in server-to-client stream (`CommitAckIntercepted`).
+  - Drops the ACK packet without forwarding to client and aborts client TCP socket via `LingerState(true, 0); Close()` (`ClientSocketAborted`).
+  - Implements `RejectNewConnectionsAfterDrop` to simulate database unreachability during recovery check.
+- [x] Write `PostgreSqlCommitAckLossIntegrationTests` against real Testcontainers PostgreSQL 17 covering Scenarios A-I:
+  - Scenario A: Real network/socket-level drop of COMMIT ACK via wire protocol proxy (recovers to Completed, validates distinct guard PID vs recovery PID, verifies results consistency, cleans workspace).
+  - Scenario B: Network drop BEFORE commit processed by PostgreSQL (`DropOnClientCommit = true`, does NOT mark completed, NO blind cleanup, workspace retained).
+  - Scenario C: Recovery state check failure due to database unreachability (`RejectNewConnectionsAfterDrop = true`, recognizes ambiguous commit, suppresses `FailAsync`/`ScheduleRetryAsync`, retains workspace).
+  - Scenario D: Inconsistent/corrupted results on recovery (rejects completion, marks commit ambiguous, retains workspace).
+  - Scenario E: Foreign `ExecutionToken` on recovery (rejects completion, does not touch other worker's task, retains workspace).
+  - Scenario F: Idempotent repeated recovery on already completed analysis (no duplicate results inserted).
+  - Scenario G: Post-commit callback exception via `CommitAckFaultInjectionInterceptor` (programmatic callback exception, distinct from real TCP RST).
+  - Scenario H: End-to-end ambiguous commit lifecycle where PG committed, next worker cycle does not re-acquire completed task.
+  - Scenario I: Safe re-acquisition of uncommitted task after lease expiry.
+  - Normal execution through proxy without faults succeeds seamlessly.
+- [x] Run fault-injection tests and verify all 10 pass.
 
 ---
 
@@ -147,9 +185,9 @@
 **Files:**
 - Test: All tests in `tests/Backend.Tests`
 
-- [ ] Run `dotnet test tests/Backend.Tests/Backend.Tests.csproj` (excluding known deferred TD-003 CSharpAnalyzer tests).
-- [ ] Verify 100% pass rate across all unit and PostgreSQL integration tests.
-- [ ] Verify `dotnet ef migrations has-pending-model-changes`.
+- [x] Run `dotnet test tests/Backend.Tests/Backend.Tests.csproj` (excluding known deferred TD-003 CSharpAnalyzer tests).
+- [x] Verify 100% pass rate across all unit and PostgreSQL integration tests.
+- [x] Verify `dotnet ef migrations has-pending-model-changes`.
 
 ---
 
@@ -160,6 +198,7 @@
 - Modify: `docs/plans/TD-007-Technical-Investigation-Review.md`
 - Modify: `docs/plans/Technical-Debt-Plan.md`
 
-- [ ] Synchronize `TD-007-Architecture-Verification.md` and `TD-007-Technical-Investigation-Review.md` with implemented solutions for Q-01..Q-11.
-- [ ] Update `Technical-Debt-Plan.md`: update TD-007 status to `VERIFIED` with test metrics and summary of implemented components.
-- [ ] Verify TD-002 remains `VERIFIED` and TD-003 remains `DEFERRED`.
+- [x] Synchronize `TD-007-Architecture-Verification.md` and `TD-007-Technical-Investigation-Review.md` with implemented solutions for Q-01..Q-11.
+- [x] Update `Technical-Debt-Plan.md`: update TD-007 status to `IMPLEMENTATION_COMPLETE` and `PENDING_VERIFICATION` with test metrics and summary of implemented components.
+- [x] Verify TD-002 remains `VERIFIED` and TD-003 remains `DEFERRED`.
+- [ ] Final independent verification (`PENDING_VERIFICATION`).

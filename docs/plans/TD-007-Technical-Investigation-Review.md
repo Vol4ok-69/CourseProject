@@ -1,12 +1,12 @@
 # Архитектурно-техническое ревью комплексного исследования TD-007 (Pass 4: Final Consistency Review)
 
-**Дата ревью:** 22 ноября 2026 г.  
-**Документ:** `docs/plans/TD-007-Technical-Investigation-Review.md`  
-**Базовый документ верификации:** [`docs/plans/TD-007-Architecture-Verification.md`](TD-007-Architecture-Verification.md)  
-**Режим работы:** строго `READ-ONLY` в отношении кодовой базы (`src/`, `tests/`), схемы БД, конфигураций и публичных API/DTO.  
-**Статус TD-007:** `NEEDS INVESTIGATION` (переход к проектированию заблокирован)  
-**Статус TD-002:** `VERIFIED` (гарантии действуют, зафиксировано архитектурное расхождение по TOCTOU)  
-**Статус TD-003:** `DEFERRED` (зависимость исключена, границы зафиксированы)  
+**Дата ревью:** 22 ноября 2026 г.
+**Документ:** `docs/plans/TD-007-Technical-Investigation-Review.md`
+**Базовый документ верификации:** [`docs/plans/TD-007-Architecture-Verification.md`](TD-007-Architecture-Verification.md)
+**Режим работы:** строго `READ-ONLY` в отношении кодовой базы (`src/`, `tests/`), схемы БД, конфигураций и публичных API/DTO.
+**Статус TD-007:** Архитектурное решение `ACCEPTED`, Реализация `IMPLEMENTATION_COMPLETE`, Проверка `PENDING_VERIFICATION`
+**Статус TD-002:** `VERIFIED`
+**Статус TD-003:** `DEFERRED` (`OPEN` / `UNVERIFIED`)
 **Статус Q-08:** `ГРАНИЦЫ ЗАФИКСИРОВАНЫ` (уникальность путей попыток не подменяет полную файловую изоляцию)
 
 ---
@@ -368,8 +368,45 @@ FOR UPDATE SKIP LOCKED;
 
 ---
 
-## 11. Итоговый архитектурный вердикт
+## 11. Итоговый архитектурный вердикт и статус реализации
 
-$$\mathbf{NEEDS\ INVESTIGATION}$$
+### 11.1. Исторический статус исследования (Pass 4)
+На момент завершения четвёртого аналитического прохода задача находилась в статусе `NEEDS INVESTIGATION` из-за двух технических блокеров (Q-03 и Q-04).
 
-Задача **TD-007 остаётся в статусе `NEEDS INVESTIGATION`** и не может быть переведена в статус `READY FOR DESIGN` до устранения блокеров **Q-03** и **Q-04** и согласования продуктовых решений.
+### 11.2. Текущее состояние реализации (TD-007 Fix 1 – Fix 5.2)
+В итерациях Fix 1 – Fix 5.2 блокеры Q-03 и Q-04 были полностью технически устранены и верифицированы:
+1. **Разрешение Q-03 / Q-03-A (Strict Ownership & Guard-enforced Writes):**
+   - Устранены все перегрузки без guard в `IAnalysisRepository`. `IAnalysisLeaseGuard guard` является строго обязательным параметром в `CompleteAsync`, `FailAsync`, `ScheduleRetryAsync`.
+   - В PostgreSQL защищённые терминальные операции выполняются непосредственно через физическое соединение guard (`guard.Connection`), удерживающее session-level advisory lock (`pid = pg_backend_pid()`), что математически исключает race condition TOCTOU при потере владения.
+   - Предикаты операций записи отклоняют как истёкшие, так и `NULL` значения `LeaseExpiration` (`"LeaseExpiration" >= clock_timestamp()`).
+   - Метод `GetAnalysisWithProcessIdAsync` сделан обязательным методом интерфейса `IAnalysisRepository` без дефолтной заглушки (F51-04), а XML-документация уточнена для Npgsql (чтение сущности и PID на одном физическом соединении для диагностики PostgreSQL backend, с допущением null для других провайдеров; F52-02).
+2. **Разрешение Q-04 (Q-04-A, Q-04-B, Q-04-C – Ambiguous COMMIT ACK Recovery & Wire Protocol Parser Fix5.1, Fix5.2):**
+   - Протокольный парсер бинарного PostgreSQL wire protocol 3.0 (`PostgreSqlProtocolParser`) усилен структурной валидацией: единая функция `TryReadNullTerminatedString` со `scoped ref int offset`, валидация сообщений `Query` (`'Q'`), `Parse` (`'P'`) и `CommandComplete` (`'C'`), строгая проверка завершающих NUL-байтов, защита от целочисленного переполнения в расчёте длины фрейма (`1L + msgLen <= int.MaxValue`).
+   - Семантика протокола (F51-01): парсер относит к выполнению команды коммита исключительно команду `COMMIT` в протоколе простых запросов `'Q'` (Option A), так как сообщение `'P'` (Parse) выполняет лишь предварительную подготовку запроса (prepare) без его исполнения в транзакции. Покрытие unit-тестами `PostgreSqlProtocolParserTests`: **40 тестов (100% успешно)**.
+   - Устранение перехвата re-throw во внутреннем блоке recovery (F51-02): операция получения состояния из БД (`GetAnalysisWithProcessIdAsync`) изолирована в собственном блоке `try/catch (checkEx)`. При подтверждении статуса `Running` исключение `commitEx` корректно ретранслируется во внешний обработчик для штатной маршрутизации в retry или poison pill.
+   - Семантика PID: строго разделены `guardProcessId` (соединение guard, удерживающее session advisory lock) и `recoveryProcessId` (независимое соединение recovery). В интеграционном тесте подтверждено, что `guardProcessId != recoveryProcessId`.
+   - Усилена проверка согласованности в `AnalysisService` (F51-05): метод `AreResultsConsistent` верифицирует точное совпадение количества находок, полей `Rule`, `Message`, `Severity`, `Recommendation`, `FilePath`, `LineNumber`, типа анализатора, устойчив к порядку элементов и проверяет эквивалентность мультимножеств. Покрыт набором из 19 unit-тестов в `AnalysisResultsConsistencyTests`.
+   - Защита от чужого токена: при обнаружении чужого `ExecutionToken` задача не признается своей, автоматическая очистка рабочего каталога блокируется.
+   - Защита от амбивалентного (неоднозначного) коммита (F51-03, F52-01): введён флаг `isAmbiguousCommit`. При сбое проверки БД (`checkEx`) или неполных результатах запрещён вызов `FailAsync` и `ScheduleRetryAsync`, запрещена очистка рабочего каталога (`CleanupAsync` блокируется), каталог сохраняется на диске для инцидентного анализа, логируется `AggregateException(commitEx, checkEx)`. Фоновый сервис `AnalysisBackgroundService` при неоднозначном исходе не мутирует задачу и переходит к следующему циклу (`AnalysisBackgroundService_WhenExecutionReturnsFalse_DoesNotMutateAnalysisState`).
+   - В `PostgreSqlCommitAckLossIntegrationTests` реализованы и верифицированы 10 сценариев:
+     * **Scenario A:** реальный сетевой обрыв TCP RST при доставке `CommandComplete('COMMIT')` через `PostgreSqlLoopbackFaultProxy` (восстановление в `Completed`, проверка `guardProcessId != recoveryProcessId`, сохранение результатов, штатная очистка).
+     * **Scenario B:** обрыв TCP ДО фиксации транзакции сервером (`DropOnClientCommit = true`, сервер откатывает транзакцию, задача остаётся в `Running`, слепая очистка каталога запрещена).
+     * **Scenario C:** сбой проверки БД при recovery (`RejectNewConnectionsAfterDrop = true`, коммит признаётся неоднозначным, `FailAsync`/`ScheduleRetryAsync`/`CleanupAsync` заблокированы, каталог сохранён на диске).
+     * **Scenario D:** повреждённые/неполные результаты в БД (восстановление отклонено, коммит неоднозначен, каталог сохранён).
+     * **Scenario E:** чужой `ExecutionToken` при recovery (восстановление отклонено, чужая задача не затронута, каталог сохранён).
+     * **Scenario F:** идемпотентность повторного восстановления (повторный вызов не приводит к дублированию находок).
+     * **Scenario G:** программное исключение в post-commit callback EF Core via `CommitAckFaultInjectionInterceptor` (чётко разграничено с сетевым сбоем сокета).
+     * **Scenario H:** сквозная проверка жизненного цикла ambiguous commit: когда сервер зафиксировал коммит, но recovery временно недоступен, следующий цикл воркера (`TryAcquireNextPendingOrStaleAsync`) не подбирает завершённую задачу повторно, её статус остаётся `Completed`, токен и результаты не перезаписываются (F52-01).
+     * **Scenario I:** когда коммит не был выполнен и транзакция откатилась, задача остаётся в `Running`, а после истечения срока аренды безопасно захватывается следующим циклом воркера с новым `ExecutionToken` и инкрементированным `AttemptCount` (F52-01).
+     * **Normal Execution:** прозрачное прохождение трафика через прокси без сбоев.
+   - Все 10 сценариев интеграционного набора `PostgreSqlCommitAckLossIntegrationTests` пройдены успешно (10/10).
+   - Общий тестовый прогон `Backend.Tests`: **907 тестов пройдено успешно (0 сбоев)**. Всего по решению: **1302 теста пройдено успешно (0 сбоев)**. Тесты `CSharpAnalyzer.Tests` (8 тестов) не запускались в силу статуса `DEFERRED` задачи TD-003.
+
+### 11.3. Итоговый статус задачи
+
+$$\mathbf{ACCEPTED\ /\ IMPLEMENTATION\_COMPLETE\ /\ PENDING\_VERIFICATION}$$
+
+- **Архитектурный статус TD-007:** `ACCEPTED`
+- **Статус реализации TD-007:** `IMPLEMENTATION_COMPLETE`
+- **Статус проверки TD-007:** `PENDING_VERIFICATION` (Ожидает независимой приёмочной верификации; статус `VERIFIED` не выставляется до завершения приёмки)
+- **Статус TD-003:** Строго **`DEFERRED`** (`OPEN` / `UNVERIFIED`)

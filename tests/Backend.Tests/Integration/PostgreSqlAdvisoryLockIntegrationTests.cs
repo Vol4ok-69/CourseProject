@@ -705,6 +705,7 @@ public sealed class PostgreSqlAdvisoryLockIntegrationTests : IClassFixture<Postg
         await using (var ctxImpostor = new AppDbContext(options))
         {
             var repoImpostor = new AnalysisRepository(ctxImpostor);
+            var impostorGuard = new FakeAnalysisLeaseGuard(analysis.Id, Guid.NewGuid());
             var completedWithWrongToken = await repoImpostor.CompleteAsync(
                 analysis.Id,
                 Guid.NewGuid(), // Чужой токен
@@ -716,15 +717,13 @@ public sealed class PostgreSqlAdvisoryLockIntegrationTests : IClassFixture<Postg
                     Severity = Severity.Warning,
                     Message = "Fake",
                     AnalyzerType = AnalyzerType.Database
-                }]);
+                }],
+                impostorGuard);
 
             Assert.False(completedWithWrongToken);
         }
 
-        // Worker A завершает работу контейнера и освобождает guard
-        await guardA.DisposeAsync();
-
-        // Worker A штатно сохраняет результаты через CompleteAsync
+        // Worker A штатно сохраняет результаты через CompleteAsync под защитой guardA
         var findings = new List<AnalysisResult>
         {
             new()
@@ -741,9 +740,12 @@ public sealed class PostgreSqlAdvisoryLockIntegrationTests : IClassFixture<Postg
         await using (var ctxA = new AppDbContext(options))
         {
             var repoA = new AnalysisRepository(ctxA);
-            var completed = await repoA.CompleteAsync(analysis.Id, tokenA, findings);
+            var completed = await repoA.CompleteAsync(analysis.Id, tokenA, findings, guardA);
             Assert.True(completed);
         }
+
+        // Worker A завершает работу и освобождает guard
+        await guardA.DisposeAsync();
 
         // Проверяем, что результаты сохранены в БД, а статус перешёл в Completed
         await using (var verifyCtx = new AppDbContext(options))

@@ -96,7 +96,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
             CreatedAt = DateTime.UtcNow,
             StartedAt = status == AnalysisStatus.Running ? DateTime.UtcNow : null,
             ExecutionToken = token,
-            LeaseExpiration = leaseExpiration
+            LeaseExpiration = leaseExpiration ?? (status == AnalysisStatus.Running ? DateTime.UtcNow.AddMinutes(5) : null)
         };
 
         context.Analyses.Add(analysis);
@@ -2003,7 +2003,9 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
             }
         };
 
-        var completed = await repo.CompleteAsync(analysis.Id, token, findings);
+        var provider = new PostgreSqlAnalysisLeaseGuardProvider(fixture.ConnectionString, _fileLockProvider);
+        await using var guard = await provider.AcquireGuardAsync(analysis.Id, token);
+        var completed = await repo.CompleteAsync(analysis.Id, token, findings, guard);
         Assert.True(completed);
 
         // Проверяем состояние в БД
@@ -2036,7 +2038,9 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         await using var context = new AppDbContext(options);
         var repo = new AnalysisRepository(context);
 
-        var completed = await repo.CompleteAsync(analysis.Id, wrongToken, []);
+        var provider = new PostgreSqlAnalysisLeaseGuardProvider(fixture.ConnectionString, _fileLockProvider);
+        await using var guard = await provider.AcquireGuardAsync(analysis.Id, token);
+        var completed = await repo.CompleteAsync(analysis.Id, wrongToken, [], guard);
         Assert.False(completed);
 
         await using var verifyContext = new AppDbContext(options);
@@ -2060,7 +2064,9 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         await using var context = new AppDbContext(options);
         var repo = new AnalysisRepository(context);
 
-        var completed = await repo.CompleteAsync(analysis.Id, token, []);
+        var provider = new PostgreSqlAnalysisLeaseGuardProvider(fixture.ConnectionString, _fileLockProvider);
+        await using var guard = await provider.AcquireGuardAsync(analysis.Id, token);
+        var completed = await repo.CompleteAsync(analysis.Id, token, [], guard);
         Assert.False(completed);
     }
 

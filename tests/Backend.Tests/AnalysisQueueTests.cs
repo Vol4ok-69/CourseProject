@@ -204,7 +204,7 @@ public sealed class AnalysisQueueTests : IDisposable
             }
         };
 
-        var completed = await _repository.CompleteAsync(16, token, results);
+        var completed = await _repository.CompleteAsync(16, token, results, new FakeAnalysisLeaseGuard(16, token));
 
         Assert.True(completed);
         var updated = await _repository.GetByIdAsync(16);
@@ -232,7 +232,7 @@ public sealed class AnalysisQueueTests : IDisposable
         };
         await _repository.AddAsync(task);
 
-        var completed = await _repository.CompleteAsync(17, staleWorkerToken, []);
+        var completed = await _repository.CompleteAsync(17, staleWorkerToken, [], new FakeAnalysisLeaseGuard(17, staleWorkerToken));
 
         Assert.False(completed);
         var check = await _repository.GetByIdAsync(17);
@@ -257,7 +257,7 @@ public sealed class AnalysisQueueTests : IDisposable
         };
         await _repository.AddAsync(task);
 
-        var failed = await _repository.FailAsync(18, token);
+        var failed = await _repository.FailAsync(18, token, null, new FakeAnalysisLeaseGuard(18, token));
 
         Assert.True(failed);
         var updated = await _repository.GetByIdAsync(18);
@@ -284,7 +284,7 @@ public sealed class AnalysisQueueTests : IDisposable
         };
         await _repository.AddAsync(task);
 
-        var failed = await _repository.FailAsync(19, wrongToken);
+        var failed = await _repository.FailAsync(19, wrongToken, null, new FakeAnalysisLeaseGuard(19, wrongToken));
 
         Assert.False(failed);
         var check = await _repository.GetByIdAsync(19);
@@ -367,7 +367,7 @@ public sealed class AnalysisQueueTests : IDisposable
         };
 
         // Устаревший воркер пытается завершить задачу
-        var completed = await _repository.CompleteAsync(21, token1, staleResults);
+        var completed = await _repository.CompleteAsync(21, token1, staleResults, new FakeAnalysisLeaseGuard(21, token1));
 
         Assert.False(completed);
 
@@ -402,7 +402,7 @@ public sealed class AnalysisQueueTests : IDisposable
         await _context.SaveChangesAsync();
 
         // Устаревший воркер пытается пометить задачу как сбойную
-        var failed = await _repository.FailAsync(22, token1);
+        var failed = await _repository.FailAsync(22, token1, null, new FakeAnalysisLeaseGuard(22, token1));
 
         Assert.False(failed);
 
