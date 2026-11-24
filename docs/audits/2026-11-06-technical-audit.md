@@ -1,12 +1,12 @@
 # Технический аудит проекта CourseProject
 
 **Дата первоначального аудита:** 06 ноября 2026 г.<br/>
-**Дата последней актуализации:** 21 ноября 2026 г. (актуализация включает закрытие дефекта DEF-004 / задачи TD-004 в анализаторе БД; первоначальный аудит от 06.11.2026 сохранён без повторного прогона всего решения)<br/>
+**Дата последней актуализации:** 24 ноября 2026 г. (актуализация включает закрытие задач TD-006, TD-007, TD-004, TD-008, TD-015; первоначальный аудит от 06.11.2026 сохранён как историческая база)<br/>
 **Базовая ветка:** `main`
-**Базовый коммит:** `2068c51` (*feat(github): enforce owner-scoped PATs for sync and analysis*)
-**Состояние рабочего дерева:** Clean строго на дату первоначального аудита (06.11.2026, режим аудита: READ-ONLY, исходный код и тесты не изменялись; последующие обновления документа отражают результаты реализации задач техдолга, включая незакоммиченные изменения реализации и тестов TD-004 в текущем рабочем дереве)
-**Верификация тестовой базы (`dotnet test`):** 1095 тестов успешно пройдено, 8 известных воспроизводимых сбоев TD-003 в `CSharpAnalyzer.Tests` (6 сборок: `Backend.Tests` — 710, `DatabaseAnalyzer.Tests` — 173, `DatabaseAnalyzer.Runner.Tests` — 103, `SecurityAnalyzer.Tests` — 56, `SqlAnalyzer.Tests` — 44, `CSharpAnalyzer.Tests` — 17 [9 успешно / 8 сбоев TD-003]). *Последняя известная статистика тестового набора, полученная в предыдущем подтверждённом цикле тестирования (16.11.2026). Не является результатом нового запуска на дату актуализации документа.*
-**Состояние модели EF Core:** `dotnet ef migrations has-pending-model-changes` подтверждает полное соответствие снимка `AppDbContextModelSnapshot.cs` сущностям предметной области (`No changes have been made to the model since the last migration`).
+**Базовый коммит:** `7d5bfbb` (*feat(github-sync): implement reliable incremental commit synchronization*)
+**Состояние рабочего дерева:** Clean строго на дату первоначального аудита (06.11.2026); последующие обновления документа отражают результаты реализации и верификации задач техдолга.
+**Верификация тестовой базы (`dotnet test`):** 1363 теста всего: 1355 успешно пройдено, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests`, 0 пропущено (6 сборок: `Backend.Tests` — 951 успешно, `DatabaseAnalyzer.Tests` — 190 успешно, `DatabaseAnalyzer.Runner.Tests` — 105 успешно при доступном Docker на хосте [при отсутствии Docker демона 1 тест с атрибутом `[DockerFact]` динамически пропускается], `SecurityAnalyzer.Tests` — 56 успешно, `SqlAnalyzer.Tests` — 44 успешно, `CSharpAnalyzer.Tests` — 9 успешно / 8 сбоев TD-003; код возврата 1).
+**Состояние модели EF Core:** `dotnet ef migrations has-pending-model-changes` подтверждает полное соответствие снимка `AppDbContextModelSnapshot.cs` сущностям предметной области (`No changes have been made to the model since the last migration`). Обе миграции `20261122150614_AddAnalysisRetryAndPoisonPillQueue` (TD-007) и `20261124090814_AddCommitProvenanceAndProjectSyncCheckpoint` (TD-006) применены и согласованы.
 
 ---
 
@@ -256,9 +256,9 @@
 ---
 
 ### DEF-009 и NEW-001: Инкрементальная синхронизация коммитов репозитория GitHub
-- **Статус:** `CONFIRMED` (объединены в одну задачу)
+- **Статус:** `RESOLVED` (Устранён в рамках задачи [TD-006](../plans/Technical-Debt-Plan.md#td-006-инкрементальная-синхронизация-коммитов-репозитория-github): утверждённая архитектура Rev 4, коммит `7d5bfbb`, миграция `20261124090814_AddCommitProvenanceAndProjectSyncCheckpoint`, потоковый DAG-обход, композитный чекпоинт, 27 тестовых методов в `GitHubSyncDagTraversalTests` [полностью покрывающих 25 архитектурных сценариев TR-01 – TR-25] и 4 интеграционных теста PostgreSQL)
 - **Приоритет:** `P2 (High)`
-- **Компонент:** `Backend.Infrastructure` (`src/Backend/Infrastructure/Services/`)
+- **Компонент:** `Backend.Infrastructure` (`src/Backend/Infrastructure/Services/`, `GitHubService.cs`, `GitHubSyncService.cs`, `GitHubSyncCoordinator.cs`)
 - **Ссылки на код:**
   - [`GitHubService.cs#L26-L105`](../../src/Backend/Infrastructure/GitHub/GitHubService.cs#L26-L105) (пагинация коммитов)
   - [`GitHubSyncService.cs#L45-L75`](../../src/Backend/Application/Services/GitHubSyncService.cs#L45-L75) (оркестрация синхронизации)
@@ -289,7 +289,7 @@
 ## 4. Новые обнаруженные архитектурные вопросы (NEW-002, NEW-003, NEW-004)
 
 ### NEW-002 и NEW-003: Управление жизненным циклом очереди, retry-политика и защита от Poison Pill
-- **Статус:** `NEEDS_DESIGN` (архитектурное улучшение)
+- **Статус:** `RESOLVED` (Устранён в рамках задачи [TD-007](../plans/Technical-Debt-Plan.md#td-007-управление-жизненным-циклом-очереди-retry-backoff-и-poison-pill): коммит `852f82e`, миграция `20261122150614_AddAnalysisRetryAndPoisonPillQueue`, внедрение экспоненциального backoff, строгий контроль владения задачей через `IAnalysisLeaseGuard`, протокольный парсер wire protocol PostgreSQL, восстановление при потере COMMIT ACK, защита от Poison Pill, 1302 теста решения)
 - **Приоритет:** `P2 (High)`
 - **Компонент:** `Backend.Domain` / `Backend.Application` / `Backend.Infrastructure`
 - **Ссылки на код:**
