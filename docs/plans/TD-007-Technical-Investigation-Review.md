@@ -4,7 +4,7 @@
 **Документ:** `docs/plans/TD-007-Technical-Investigation-Review.md`
 **Базовый документ верификации:** [`docs/plans/TD-007-Architecture-Verification.md`](TD-007-Architecture-Verification.md)
 **Режим работы:** строго `READ-ONLY` в отношении кодовой базы (`src/`, `tests/`), схемы БД, конфигураций и публичных API/DTO.
-**Статус TD-007:** Архитектурное решение `ACCEPTED`, Реализация `IMPLEMENTATION_COMPLETE`, Проверка `PENDING_VERIFICATION`
+**Статус TD-007:** Архитектурное решение `ACCEPTED`, Реализация `IMPLEMENTATION_COMPLETE`, Проверка `VERIFIED`
 **Статус TD-002:** `VERIFIED`
 **Статус TD-003:** `DEFERRED` (`OPEN` / `UNVERIFIED`)
 **Статус Q-08:** `ГРАНИЦЫ ЗАФИКСИРОВАНЫ` (уникальность путей попыток не подменяет полную файловую изоляцию)
@@ -373,21 +373,21 @@ FOR UPDATE SKIP LOCKED;
 ### 11.1. Исторический статус исследования (Pass 4)
 На момент завершения четвёртого аналитического прохода задача находилась в статусе `NEEDS INVESTIGATION` из-за двух технических блокеров (Q-03 и Q-04).
 
-### 11.2. Текущее состояние реализации (TD-007 Fix 1 – Fix 5.2)
-В итерациях Fix 1 – Fix 5.2 блокеры Q-03 и Q-04 были полностью технически устранены и верифицированы:
+### 11.2. Выполнение и верификация реализации (TD-007 Fix 1 – Fix 5.3)
+В итерациях Fix 1 – Fix 5.3 блокеры Q-03 и Q-04 были полностью технически устранены, верифицированы и приняты по результатам независимого технического аудита:
 1. **Разрешение Q-03 / Q-03-A (Strict Ownership & Guard-enforced Writes):**
    - Устранены все перегрузки без guard в `IAnalysisRepository`. `IAnalysisLeaseGuard guard` является строго обязательным параметром в `CompleteAsync`, `FailAsync`, `ScheduleRetryAsync`.
    - В PostgreSQL защищённые терминальные операции выполняются непосредственно через физическое соединение guard (`guard.Connection`), удерживающее session-level advisory lock (`pid = pg_backend_pid()`), что математически исключает race condition TOCTOU при потере владения.
    - Предикаты операций записи отклоняют как истёкшие, так и `NULL` значения `LeaseExpiration` (`"LeaseExpiration" >= clock_timestamp()`).
    - Метод `GetAnalysisWithProcessIdAsync` сделан обязательным методом интерфейса `IAnalysisRepository` без дефолтной заглушки (F51-04), а XML-документация уточнена для Npgsql (чтение сущности и PID на одном физическом соединении для диагностики PostgreSQL backend, с допущением null для других провайдеров; F52-02).
-2. **Разрешение Q-04 (Q-04-A, Q-04-B, Q-04-C – Ambiguous COMMIT ACK Recovery & Wire Protocol Parser Fix5.1, Fix5.2):**
+2. **Разрешение Q-04 (Q-04-A, Q-04-B, Q-04-C – Ambiguous COMMIT ACK Recovery & Wire Protocol Parser Fix5.1, Fix5.2, Fix5.3):**
    - Протокольный парсер бинарного PostgreSQL wire protocol 3.0 (`PostgreSqlProtocolParser`) усилен структурной валидацией: единая функция `TryReadNullTerminatedString` со `scoped ref int offset`, валидация сообщений `Query` (`'Q'`), `Parse` (`'P'`) и `CommandComplete` (`'C'`), строгая проверка завершающих NUL-байтов, защита от целочисленного переполнения в расчёте длины фрейма (`1L + msgLen <= int.MaxValue`).
    - Семантика протокола (F51-01): парсер относит к выполнению команды коммита исключительно команду `COMMIT` в протоколе простых запросов `'Q'` (Option A), так как сообщение `'P'` (Parse) выполняет лишь предварительную подготовку запроса (prepare) без его исполнения в транзакции. Покрытие unit-тестами `PostgreSqlProtocolParserTests`: **40 тестов (100% успешно)**.
    - Устранение перехвата re-throw во внутреннем блоке recovery (F51-02): операция получения состояния из БД (`GetAnalysisWithProcessIdAsync`) изолирована в собственном блоке `try/catch (checkEx)`. При подтверждении статуса `Running` исключение `commitEx` корректно ретранслируется во внешний обработчик для штатной маршрутизации в retry или poison pill.
    - Семантика PID: строго разделены `guardProcessId` (соединение guard, удерживающее session advisory lock) и `recoveryProcessId` (независимое соединение recovery). В интеграционном тесте подтверждено, что `guardProcessId != recoveryProcessId`.
    - Усилена проверка согласованности в `AnalysisService` (F51-05): метод `AreResultsConsistent` верифицирует точное совпадение количества находок, полей `Rule`, `Message`, `Severity`, `Recommendation`, `FilePath`, `LineNumber`, типа анализатора, устойчив к порядку элементов и проверяет эквивалентность мультимножеств. Покрыт набором из 19 unit-тестов в `AnalysisResultsConsistencyTests`.
    - Защита от чужого токена: при обнаружении чужого `ExecutionToken` задача не признается своей, автоматическая очистка рабочего каталога блокируется.
-   - Защита от амбивалентного (неоднозначного) коммита (F51-03, F52-01): введён флаг `isAmbiguousCommit`. При сбое проверки БД (`checkEx`) или неполных результатах запрещён вызов `FailAsync` и `ScheduleRetryAsync`, запрещена очистка рабочего каталога (`CleanupAsync` блокируется), каталог сохраняется на диске для инцидентного анализа, логируется `AggregateException(commitEx, checkEx)`. Фоновый сервис `AnalysisBackgroundService` при неоднозначном исходе не мутирует задачу и переходит к следующему циклу (`AnalysisBackgroundService_WhenExecutionReturnsFalse_DoesNotMutateAnalysisState`).
+   - Защита от амбивалентного (неоднозначного) коммита (F51-03, F52-01, F53-01): введён флаг `isAmbiguousCommit`. При сбое проверки БД (`checkEx`) или неполных результатах запрещён вызов `FailAsync` и `ScheduleRetryAsync`, запрещена очистка рабочего каталога (`CleanupAsync` блокируется), каталог сохраняется на диске для инцидентного анализа, логируется `AggregateException(commitEx, checkEx)`. Фоновый сервис `AnalysisBackgroundService` при неоднозначном исходе не мутирует задачу и переходит к следующему циклу (`AnalysisBackgroundService_WhenExecutionReturnsFalse_DoesNotMutateAnalysisState`).
    - В `PostgreSqlCommitAckLossIntegrationTests` реализованы и верифицированы 10 сценариев:
      * **Scenario A:** реальный сетевой обрыв TCP RST при доставке `CommandComplete('COMMIT')` через `PostgreSqlLoopbackFaultProxy` (восстановление в `Completed`, проверка `guardProcessId != recoveryProcessId`, сохранение результатов, штатная очистка).
      * **Scenario B:** обрыв TCP ДО фиксации транзакции сервером (`DropOnClientCommit = true`, сервер откатывает транзакцию, задача остаётся в `Running`, слепая очистка каталога запрещена).
@@ -397,16 +397,23 @@ FOR UPDATE SKIP LOCKED;
      * **Scenario F:** идемпотентность повторного восстановления (повторный вызов не приводит к дублированию находок).
      * **Scenario G:** программное исключение в post-commit callback EF Core via `CommitAckFaultInjectionInterceptor` (чётко разграничено с сетевым сбоем сокета).
      * **Scenario H:** сквозная проверка жизненного цикла ambiguous commit: когда сервер зафиксировал коммит, но recovery временно недоступен, следующий цикл воркера (`TryAcquireNextPendingOrStaleAsync`) не подбирает завершённую задачу повторно, её статус остаётся `Completed`, токен и результаты не перезаписываются (F52-01).
-     * **Scenario I:** когда коммит не был выполнен и транзакция откатилась, задача остаётся в `Running`, а после истечения срока аренды безопасно захватывается следующим циклом воркера с новым `ExecutionToken` и инкрементированным `AttemptCount` (F52-01).
+     * **Scenario I (усилен в Fix5.3):** полноценный сетевой обрыв сокета ДО передачи команды `COMMIT` серверу PostgreSQL (`proxy.DropOnClientCommit = true`), откат серверной транзакции СУБД, сохранение задачи в статусе `Running` без мутации токена, запрет удаления каталога, безопасный повторный захват следующим циклом воркера после истечения срока аренды (`clock_timestamp()`) с получением нового `ExecutionToken` и инкрементом `AttemptCount` с 1 до 2 (F53-01).
      * **Normal Execution:** прозрачное прохождение трафика через прокси без сбоев.
    - Все 10 сценариев интеграционного набора `PostgreSqlCommitAckLossIntegrationTests` пройдены успешно (10/10).
    - Общий тестовый прогон `Backend.Tests`: **907 тестов пройдено успешно (0 сбоев)**. Всего по решению: **1302 теста пройдено успешно (0 сбоев)**. Тесты `CSharpAnalyzer.Tests` (8 тестов) не запускались в силу статуса `DEFERRED` задачи TD-003.
 
-### 11.3. Итоговый статус задачи
+### 11.3. Результаты заключительной итерации Fix5.3
+В итерации Fix5.3 устранены два финальных замечания независимого аудита:
+1. **F53-01:** Интеграционный сценарий `ScenarioI` заменён на полноценный end-to-end тест с реальным перехватом команды коммита клиентским TCP-прокси до передачи серверу (`proxy.CommitDetected == true`, `proxy.CommitAckIntercepted == false`, `proxy.ClientSocketAborted == true`), подтверждением отката транзакции на стороне PostgreSQL (`Status == Running`, `ExecutionToken == token`, `AttemptCount == 1`), сохранением каталога на диске, симуляцией истечения лиза серверным временем `clock_timestamp()` и безопасным повторным захватом задачи очередью с новым `ExecutionToken` и увеличением `AttemptCount` до 2. Тест детерминирован и автономен.
+2. **F53-02:** Кодировка Git-патча `td007_fix5_2.patch` преобразована из UTF-16 LE с BOM в чистый UTF-8 без BOM (425 329 байт), а обратное применение к рабочей директории успешно подтверждено командой `git apply --reverse --check --exclude="tests/Backend.Tests/Integration/PostgreSqlCommitAckLossIntegrationTests.cs"`.
 
-$$\mathbf{ACCEPTED\ /\ IMPLEMENTATION\_COMPLETE\ /\ PENDING\_VERIFICATION}$$
+### 11.4. Итоговый статус задачи
+
+$$\mathbf{ACCEPTED\ /\ IMPLEMENTATION\_COMPLETE\ /\ VERIFIED}$$
 
 - **Архитектурный статус TD-007:** `ACCEPTED`
 - **Статус реализации TD-007:** `IMPLEMENTATION_COMPLETE`
-- **Статус проверки TD-007:** `PENDING_VERIFICATION` (Ожидает независимой приёмочной верификации; статус `VERIFIED` не выставляется до завершения приёмки)
-- **Статус TD-003:** Строго **`DEFERRED`** (`OPEN` / `UNVERIFIED`)
+- **Статус проверки TD-007:** `VERIFIED` (Все критерии приёмки полностью подтверждены автоматическими тестами и независимым техническим аудитом)
+- **Коммит фиксации:** `852f82e2e95230c8f1fe231f4b0bdbc2c12b7656` (`fix: finalize retry queue and commit recovery`)
+- **Статус TD-002:** `VERIFIED` (без изменений)
+- **Статус TD-003:** Строго **`DEFERRED`** (`OPEN` / `UNVERIFIED`, без изменений)

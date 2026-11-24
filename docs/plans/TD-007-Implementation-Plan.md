@@ -160,6 +160,10 @@
   - F52-02: Refined XML doc comment for `GetAnalysisWithProcessIdAsync` in `IAnalysisRepository.cs` for Npgsql single-connection backend PID reading.
   - F52-03: Corrected documentation unit test count to match actual 103/103 tests in `fix51_targeted_unit.trx`.
   - F52-04: Formed complete source archive in `dumps/td007_fix5_2_review_package/`.
+- [x] Fix5.3 final evidence corrections:
+  - F53-01: Enhanced Scenario I in `PostgreSqlCommitAckLossIntegrationTests` to verify real socket abort before COMMIT (`DropOnClientCommit = true`), PostgreSQL transaction rollback, status retention, workspace preservation, and safe reacquisition after lease expiry with new `ExecutionToken` and incremented `AttemptCount` (1 to 2).
+  - F53-02: Converted patch `td007_fix5_2.patch` from UTF-16 LE BOM to UTF-8 without BOM; verified reverse check with `git apply --reverse --check --exclude="tests/Backend.Tests/Integration/PostgreSqlCommitAckLossIntegrationTests.cs"`.
+  - Verified all target test suites: 10/10 `PostgreSqlCommitAckLossIntegrationTests`, 21/21 `PostgreSqlQueueOperationsTests`, 11/11 `AnalysisServiceRetryQueueTests` + `AnalysisBackgroundServiceTests` (1302/1302 active tests in solution pass).
 - [x] Implement `PostgreSqlLoopbackFaultProxy` as an in-process TCP forwarder/proxy using robust binary parsing of PostgreSQL wire protocol 3.0:
   - Detects `COMMIT` command in client-to-server stream (`CommitDetected`).
   - Identifies `CommandComplete` (`'C'`) message with tag `COMMIT` in server-to-client stream (`CommitAckIntercepted`).
@@ -199,6 +203,6 @@
 - Modify: `docs/plans/Technical-Debt-Plan.md`
 
 - [x] Synchronize `TD-007-Architecture-Verification.md` and `TD-007-Technical-Investigation-Review.md` with implemented solutions for Q-01..Q-11.
-- [x] Update `Technical-Debt-Plan.md`: update TD-007 status to `IMPLEMENTATION_COMPLETE` and `PENDING_VERIFICATION` with test metrics and summary of implemented components.
+- [x] Update `Technical-Debt-Plan.md`: update TD-007 status to `IMPLEMENTATION_COMPLETE` and `VERIFIED` with test metrics, Fix 1 – Fix 5.3 summary, and commit reference.
 - [x] Verify TD-002 remains `VERIFIED` and TD-003 remains `DEFERRED`.
-- [ ] Final independent verification (`PENDING_VERIFICATION`).
+- [x] Final independent verification completed and accepted: Architecture `ACCEPTED`, Implementation `IMPLEMENTATION_COMPLETE`, Verification `VERIFIED` (Committed in `852f82e2e95230c8f1fe231f4b0bdbc2c12b7656`).
