@@ -356,8 +356,7 @@ public class AnalysisService(
                 if (!usefulWorkCompleted && totalAnalyzersCount > 0)
                 {
                     renewalState.RequestNormalStop();
-                    linkedCts.Cancel();
-                    try { await leaseRenewalTask; } catch { }
+                    await StopLeaseRenewalAsync(linkedCts, leaseRenewalTask);
 
                     if (renewalState.IsTerminal)
                     {
@@ -392,8 +391,7 @@ public class AnalysisService(
                 }
 
                 renewalState.RequestNormalStop();
-                linkedCts.Cancel();
-                try { await leaseRenewalTask; } catch { }
+                await StopLeaseRenewalAsync(linkedCts, leaseRenewalTask);
 
                 if (renewalState.IsTerminal)
                 {
@@ -539,8 +537,7 @@ public class AnalysisService(
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 renewalState.TrySetTerminalReason(LeaseRenewalStopReason.ExternalCancellation);
-                linkedCts.Cancel();
-                try { await leaseRenewalTask; } catch { }
+                await StopLeaseRenewalAsync(linkedCts, leaseRenewalTask);
 
                 bool isStillOwner = false;
                 try
@@ -563,8 +560,7 @@ public class AnalysisService(
             }
             catch (OperationCanceledException ex)
             {
-                linkedCts.Cancel();
-                try { await leaseRenewalTask; } catch { }
+                await StopLeaseRenewalAsync(linkedCts, leaseRenewalTask);
 
                 if (cancellationToken.IsCancellationRequested || renewalState.StopReason == LeaseRenewalStopReason.ExternalCancellation)
                 {
@@ -640,8 +636,7 @@ public class AnalysisService(
             }
             catch (Exception ex)
             {
-                linkedCts.Cancel();
-                try { await leaseRenewalTask; } catch { }
+                await StopLeaseRenewalAsync(linkedCts, leaseRenewalTask);
 
                 if (isAmbiguousCommit)
                 {
@@ -753,6 +748,10 @@ public class AnalysisService(
             }
             finally
             {
+                // Гарантируем остановку и завершение фоновой задачи продления аренды
+                // на всех путях выхода до очистки рабочего пространства и освобождения guard.
+                await StopLeaseRenewalAsync(linkedCts, leaseRenewalTask);
+
                 // Очищаем временные файлы только если владение подтверждено
                 // (при потере владения или при невозможности подтвердить владение очистка запрещена)
                 if (ownershipConfirmed)
@@ -864,6 +863,35 @@ public class AnalysisService(
                 _stopReason = LeaseRenewalStopReason.NormalStop;
                 return true;
             }
+        }
+    }
+
+    private async Task StopLeaseRenewalAsync(
+        CancellationTokenSource linkedCts,
+        Task leaseRenewalTask)
+    {
+        try
+        {
+            linkedCts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Ошибка при отмене токена фоновой задачи продления аренды анализа.");
+        }
+
+        try
+        {
+            await leaseRenewalTask;
+        }
+        catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Фоновая задача продления аренды анализа завершилась с исключением.");
         }
     }
 
