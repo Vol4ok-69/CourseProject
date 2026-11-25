@@ -409,7 +409,7 @@ public sealed class GitHubSyncServiceTests
                 parallelContext.Commits.Add(new Commit
                 {
                     ProjectId = 200,
-                    CommitHash = "conflictingHash",
+                    CommitHash = "conflictinghash",
                     CommitDate = DateTime.UtcNow
                 });
                 parallelContext.SaveChanges();

@@ -145,12 +145,13 @@ public class GitHubSyncService
                 parentsByHash[commit.Hash] = parents;
                 vExpanded.Add(commit.Hash);
 
+                var normalizedHash = commit.Hash.ToLowerInvariant();
                 if (!pageDbStatuses.ContainsKey(commit.Hash))
                 {
-                    newCandidates[commit.Hash] = new Commit
+                    newCandidates[normalizedHash] = new Commit
                     {
                         ProjectId = projectId,
-                        CommitHash = commit.Hash,
+                        CommitHash = normalizedHash,
                         CommitDate = commit.Date ?? DateTime.UtcNow,
                         ParentHashes = parents.ToArray(),
                         IsVerified = true
@@ -158,7 +159,7 @@ public class GitHubSyncService
                 }
                 else
                 {
-                    existingUnverifiedUpdates[commit.Hash] = new CommitUpdateDto(commit.Hash, parents);
+                    existingUnverifiedUpdates[normalizedHash] = new CommitUpdateDto(normalizedHash, parents);
                 }
             }
 

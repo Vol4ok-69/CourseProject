@@ -58,6 +58,7 @@ public class CommitRepository(AppDbContext context) : ICommitRepository
     {
         ArgumentNullException.ThrowIfNull(commit);
 
+        commit.CommitHash = NormalizeHash(commit.CommitHash);
         await context.Commits.AddAsync(commit, cancellationToken);
         await context.SaveChangesAsync(cancellationToken);
     }
@@ -157,11 +158,16 @@ public class CommitRepository(AppDbContext context) : ICommitRepository
             var hashesToLookup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var c in newCommits)
             {
+                c.CommitHash = NormalizeHash(c.CommitHash);
                 hashesToLookup.Add(c.CommitHash);
             }
+
+            var normalizedUpdates = new List<CommitUpdateDto>(existingToUpdate.Count);
             foreach (var u in existingToUpdate)
             {
-                hashesToLookup.Add(u.CommitHash);
+                var normalizedUpdate = u with { CommitHash = NormalizeHash(u.CommitHash) };
+                normalizedUpdates.Add(normalizedUpdate);
+                hashesToLookup.Add(normalizedUpdate.CommitHash);
             }
 
             var existingRows = await context.Commits
@@ -200,7 +206,7 @@ public class CommitRepository(AppDbContext context) : ICommitRepository
             }
 
             // Обрабатываем существующие коммиты, требовавшие обновления
-            foreach (var update in existingToUpdate)
+            foreach (var update in normalizedUpdates)
             {
                 if (insertedHashes.Contains(update.CommitHash) || updatedHashes.Contains(update.CommitHash) || unchangedHashes.Contains(update.CommitHash))
                 {
@@ -225,7 +231,7 @@ public class CommitRepository(AppDbContext context) : ICommitRepository
                     var newCommit = new Commit
                     {
                         ProjectId = projectId,
-                        CommitHash = update.CommitHash,
+                        CommitHash = NormalizeHash(update.CommitHash),
                         ParentHashes = update.ParentHashes.ToArray(),
                         IsVerified = true,
                         CommitDate = DateTime.UtcNow
@@ -302,7 +308,7 @@ public class CommitRepository(AppDbContext context) : ICommitRepository
                     }
                 }
 
-                foreach (var update in existingToUpdate)
+                foreach (var update in normalizedUpdates)
                 {
                     if (insertedHashes.Contains(update.CommitHash) || updatedHashes.Contains(update.CommitHash) || unchangedHashes.Contains(update.CommitHash))
                     {
@@ -327,7 +333,7 @@ public class CommitRepository(AppDbContext context) : ICommitRepository
                         var newCommit = new Commit
                         {
                             ProjectId = projectId,
-                            CommitHash = update.CommitHash,
+                            CommitHash = NormalizeHash(update.CommitHash),
                             ParentHashes = update.ParentHashes.ToArray(),
                             IsVerified = true,
                             CommitDate = DateTime.UtcNow
@@ -396,6 +402,11 @@ public class CommitRepository(AppDbContext context) : ICommitRepository
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        foreach (var commit in commits)
+        {
+            commit.CommitHash = NormalizeHash(commit.CommitHash);
+        }
+
         try
         {
             await context.Commits.AddRangeAsync(commits, cancellationToken);
@@ -459,4 +470,6 @@ public class CommitRepository(AppDbContext context) : ICommitRepository
 
         return false;
     }
+
+    private static string NormalizeHash(string hash) => hash.ToLowerInvariant();
 }

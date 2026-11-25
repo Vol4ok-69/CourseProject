@@ -35,9 +35,24 @@ public class CommitService(ICommitRepository commitRepository, IProjectRepositor
             return null;
         }
 
+        if (dto.CommitDate is null)
+        {
+            throw new ArgumentException("Дата коммита обязательна для заполнения.", nameof(dto));
+        }
+
+        if (dto.CommitDate.Value.Kind == DateTimeKind.Unspecified)
+        {
+            throw new ArgumentException(
+                "Дата коммита должна содержать часовой пояс (например, суффикс 'Z' или смещение '+00:00').",
+                nameof(dto));
+        }
+
+        var normalizedCommitHash = dto.CommitHash.ToLowerInvariant();
+        var normalizedCommitDate = dto.CommitDate.Value.ToUniversalTime();
+
         var existingCommit = await commitRepository.GetByHashAsync(
             projectId,
-            dto.CommitHash,
+            normalizedCommitHash,
             cancellationToken);
 
         if (existingCommit is not null)
@@ -48,8 +63,8 @@ public class CommitService(ICommitRepository commitRepository, IProjectRepositor
         var commit = new Commit
         {
             ProjectId = projectId,
-            CommitHash = dto.CommitHash,
-            CommitDate = dto.CommitDate
+            CommitHash = normalizedCommitHash,
+            CommitDate = normalizedCommitDate
         };
 
         await commitRepository.AddAsync(commit, cancellationToken);
