@@ -50,6 +50,8 @@ source*.md
 review*.md
 *review.md
 dumps/
+1.ps1
+1.txt
 !TD-007-Technical-Investigation-Review.md
 swagger.json
 *test*.ps1

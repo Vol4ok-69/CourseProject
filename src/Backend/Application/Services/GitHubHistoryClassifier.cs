@@ -1,4 +1,5 @@
 using Application.DTOs;
+using Domain.Entities;
 using Application.Enums;
 using Application.Interfaces.Repositories;
 
@@ -6,6 +7,8 @@ namespace Application.Services;
 
 public static class GitHubHistoryClassifier
 {
+    public const int DefaultMaxTraversalNodes = 10_000;
+
     private enum AncestorResult
     {
         IsAncestor,
@@ -28,8 +31,10 @@ public static class GitHubHistoryClassifier
         IReadOnlySet<string> fetchedHashes,
         IReadOnlySet<string> verifiedBoundaries,
         ICommitRepository commitRepository,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int maxTraversalNodes = DefaultMaxTraversalNodes)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxTraversalNodes, 1);
         var prevHead = projectSnapshot.LastSyncedCommitHash;
 
         // 1. InitialSync: чекпоинт отсутствует
@@ -64,74 +69,113 @@ public static class GitHubHistoryClassifier
             return HistoryClassification.FastForward;
         }
 
-        // 6. Проверяем, является ли prevHead предком хотя бы одной достигнутой проверенной границы
-        var isAncestorOfBoundary = await IsAncestorAsync(projectId, prevHead, verifiedBoundaries, commitRepository, cancellationToken);
-        if (isAncestorOfBoundary == AncestorResult.IsAncestor)
-        {
-            return HistoryClassification.FastForward;
-        }
-        if (isAncestorOfBoundary == AncestorResult.IncompleteGraph)
-        {
-            return HistoryClassification.InsufficientEvidence;
-        }
-
-        // 7. Если prevHead не предок, ищем общее проверенное пересечение
+        // 6–7. Единый ограниченный обход предков verifiedBoundaries с кэшированием узлов:
+        // одновременно проверяем, является ли prevHead предком (FastForward),
+        // и собираем достижимых предков в currentAncestry (разделяя known и processed).
+        var commitCache = new Dictionary<string, Commit?>(StringComparer.OrdinalIgnoreCase);
         var currentAncestry = new HashSet<string>(fetchedHashes, StringComparer.OrdinalIgnoreCase);
+        var processedBoundaries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var boundaryQueue = new Queue<string>();
+        var boundaryGraphIncomplete = false;
+
         foreach (var b in verifiedBoundaries)
         {
             currentAncestry.Add(b);
+            if (!processedBoundaries.Contains(b))
+            {
+                boundaryQueue.Enqueue(b);
+            }
         }
 
-        var commonResult = await FindCommonAncestorAsync(projectId, prevHead, currentAncestry, commitRepository, cancellationToken);
-        return commonResult switch
-        {
-            CommonAncestorResult.FoundCommon => HistoryClassification.NonFastForwardHistory,
-            CommonAncestorResult.NoCommonRootReached => HistoryClassification.IndependentHistory,
-            _ => HistoryClassification.InsufficientEvidence
-        };
-    }
-
-    private static async Task<AncestorResult> IsAncestorAsync(
-        int projectId,
-        string targetAncestor,
-        IReadOnlyCollection<string> startNodes,
-        ICommitRepository commitRepository,
-        CancellationToken cancellationToken)
-    {
-        if (startNodes.Count == 0)
-        {
-            return AncestorResult.NotAncestor;
-        }
-
-        var queue = new Queue<string>(startNodes);
-        var visited = new HashSet<string>(startNodes, StringComparer.OrdinalIgnoreCase);
-
-        while (queue.Count > 0)
+        while (boundaryQueue.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var current = queue.Dequeue();
+            var current = boundaryQueue.Dequeue();
 
-            if (string.Equals(current, targetAncestor, StringComparison.OrdinalIgnoreCase))
+            if (!processedBoundaries.Add(current))
             {
-                return AncestorResult.IsAncestor;
+                continue;
             }
 
-            var commit = await commitRepository.GetByHashAsync(projectId, current, cancellationToken);
+            if (string.Equals(current, prevHead, StringComparison.OrdinalIgnoreCase))
+            {
+                return HistoryClassification.FastForward;
+            }
+
+            var (limitExceeded, commit) = await TryGetCommitCachedAsync(
+                projectId,
+                current,
+                commitRepository,
+                commitCache,
+                maxTraversalNodes,
+                cancellationToken);
+
+            if (limitExceeded)
+            {
+                if (boundaryQueue.Any(queued => string.Equals(queued, prevHead, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return HistoryClassification.FastForward;
+                }
+
+                boundaryGraphIncomplete = true;
+                break;
+            }
+
             if (commit is null || !commit.IsVerified)
             {
-                return AncestorResult.IncompleteGraph;
+                boundaryGraphIncomplete = true;
+                continue;
             }
+
+            currentAncestry.Add(current);
 
             foreach (var parent in commit.ParentHashes)
             {
-                if (visited.Add(parent))
+                if (!processedBoundaries.Contains(parent))
                 {
-                    queue.Enqueue(parent);
+                    boundaryQueue.Enqueue(parent);
                 }
             }
         }
 
-        return AncestorResult.NotAncestor;
+        var commonResult = await FindCommonAncestorAsync(
+            projectId,
+            prevHead,
+            currentAncestry,
+            commitRepository,
+            commitCache,
+            maxTraversalNodes,
+            cancellationToken);
+
+        return commonResult switch
+        {
+            CommonAncestorResult.FoundCommon => HistoryClassification.NonFastForwardHistory,
+            CommonAncestorResult.NoCommonRootReached when !boundaryGraphIncomplete => HistoryClassification.IndependentHistory,
+            _ => HistoryClassification.InsufficientEvidence
+        };
+    }
+
+    private static async Task<(bool LimitExceeded, Commit? Commit)> TryGetCommitCachedAsync(
+        int projectId,
+        string hash,
+        ICommitRepository commitRepository,
+        Dictionary<string, Commit?> cache,
+        int maxTraversalNodes,
+        CancellationToken cancellationToken)
+    {
+        if (cache.TryGetValue(hash, out var cached))
+        {
+            return (false, cached);
+        }
+
+        if (cache.Count >= maxTraversalNodes)
+        {
+            return (true, null);
+        }
+
+        var commit = await commitRepository.GetByHashAsync(projectId, hash, cancellationToken);
+        cache[hash] = commit;
+        return (false, commit);
     }
 
     private static async Task<CommonAncestorResult> FindCommonAncestorAsync(
@@ -139,6 +183,8 @@ public static class GitHubHistoryClassifier
         string prevHead,
         IReadOnlySet<string> currentAncestry,
         ICommitRepository commitRepository,
+        Dictionary<string, Commit?> commitCache,
+        int maxTraversalNodes,
         CancellationToken cancellationToken)
     {
         var queue = new Queue<string>();
@@ -157,8 +203,15 @@ public static class GitHubHistoryClassifier
                 return CommonAncestorResult.FoundCommon;
             }
 
-            var commit = await commitRepository.GetByHashAsync(projectId, current, cancellationToken);
-            if (commit is null || !commit.IsVerified)
+            var (limitExceeded, commit) = await TryGetCommitCachedAsync(
+                projectId,
+                current,
+                commitRepository,
+                commitCache,
+                maxTraversalNodes,
+                cancellationToken);
+
+            if (limitExceeded || commit is null || !commit.IsVerified)
             {
                 return CommonAncestorResult.IncompleteGraph;
             }
