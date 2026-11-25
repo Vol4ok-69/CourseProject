@@ -373,6 +373,24 @@ public class ProjectsController(ProjectService projectService, GitHubSyncService
                 exception.Message,
                 ApiErrorCodes.SyncAlreadyInProgress);
         }
+        catch (SyncCheckpointChangedException)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status409Conflict,
+                "Конфликт выполнения операции",
+                SyncCheckpointChangedException.DefaultMessage,
+                ApiErrorCodes.SyncCheckpointChanged);
+        }
+        catch (IncompleteHistoryException)
+        {
+            return ApiProblemDetails.Create(
+                this,
+                StatusCodes.Status502BadGateway,
+                "Ошибка внешнего сервиса",
+                "Не удалось получить полную историю коммитов из GitHub. Повторите синхронизацию позже.",
+                ApiErrorCodes.GitHubIncompleteHistory);
+        }
         catch (GitHubIntegrationException exception)
         {
             return exception.Kind switch

@@ -65,6 +65,12 @@ public static class ApiErrorCodes
     /// <summary>Синхронизация проекта с GitHub уже выполняется.</summary>
     public const string SyncAlreadyInProgress = "SYNC_ALREADY_IN_PROGRESS";
 
+    /// <summary>Контрольная точка синхронизации проекта была изменена другим процессом.</summary>
+    public const string SyncCheckpointChanged = "SYNC_CHECKPOINT_CHANGED";
+
+    /// <summary>GitHub API вернул неполную историю коммитов.</summary>
+    public const string GitHubIncompleteHistory = "GITHUB_INCOMPLETE_HISTORY";
+
     /// <summary>Превышен лимит запросов к GitHub API (Rate Limit).</summary>
     public const string GitHubRateLimited = "GITHUB_RATE_LIMITED";
 
