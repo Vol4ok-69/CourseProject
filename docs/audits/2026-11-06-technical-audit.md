@@ -1,11 +1,11 @@
 # Технический аудит проекта CourseProject
 
 **Дата первоначального аудита:** 06 ноября 2026 г.<br/>
-**Дата последней актуализации:** 24 ноября 2026 г. (актуализация включает закрытие задач TD-006, TD-007, TD-004, TD-008, TD-015; первоначальный аудит от 06.11.2026 сохранён как историческая база)<br/>
+**Дата последней актуализации:** 25 ноября 2026 г. (актуализация включает исправления от 25.11.2026: коммиты 10c82f0, 185379b, dcda0ff, d0fa163, а также отклонение DEF-007 / TD-009 как ложноположительного срабатывания; первоначальный аудит от 06.11.2026 сохранён как историческая база)<br/>
 **Базовая ветка:** `main`
-**Базовый коммит:** `7d5bfbb` (*feat(github-sync): implement reliable incremental commit synchronization*)
+**Базовый коммит:** `d0fa163` (*fix(github-sync): classify history using verified ancestors*; базовый коммит первоначального аудита: `7d5bfbb` / ревизия `2068c51`)
 **Состояние рабочего дерева:** Clean строго на дату первоначального аудита (06.11.2026); последующие обновления документа отражают результаты реализации и верификации задач техдолга.
-**Верификация тестовой базы (`dotnet test`):** 1363 теста всего: 1355 успешно пройдено, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests`, 0 пропущено (6 сборок: `Backend.Tests` — 951 успешно, `DatabaseAnalyzer.Tests` — 190 успешно, `DatabaseAnalyzer.Runner.Tests` — 105 успешно при доступном Docker на хосте [при отсутствии Docker демона 1 тест с атрибутом `[DockerFact]` динамически пропускается], `SecurityAnalyzer.Tests` — 56 успешно, `SqlAnalyzer.Tests` — 44 успешно, `CSharpAnalyzer.Tests` — 9 успешно / 8 сбоев TD-003; код возврата 1).
+**Верификация тестовой базы (`dotnet test`):** 1411 тестов всего: 1399 успешно пройдено, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests`, 4 динамически пропущено в `DatabaseAnalyzer.Runner.Tests` при отсутствии Docker daemon на хосте [при доступном Docker 105 успешно / 0 пропущено] (6 сборок: `Backend.Tests` — 999 успешно [0 сбоев], `DatabaseAnalyzer.Tests` — 190 успешно, `DatabaseAnalyzer.Runner.Tests` — 101 успешно / 4 пропущено `[DockerFact]`, `SecurityAnalyzer.Tests` — 56 успешно, `SqlAnalyzer.Tests` — 44 успешно, `CSharpAnalyzer.Tests` — 9 успешно / 8 сбоев TD-003; код возврата 1).
 **Состояние модели EF Core:** `dotnet ef migrations has-pending-model-changes` подтверждает полное соответствие снимка `AppDbContextModelSnapshot.cs` сущностям предметной области (`No changes have been made to the model since the last migration`). Обе миграции `20261122150614_AddAnalysisRetryAndPoisonPillQueue` (TD-007) и `20261124090814_AddCommitProvenanceAndProjectSyncCheckpoint` (TD-006) применены и согласованы.
 
 ---
@@ -227,17 +227,20 @@
 ---
 
 ### DEF-007: Пропуск небезопасной конфигурации CORS через `WithOrigins("*")` в SEC003
-- **Статус:** `CONFIRMED`
+- **Статус:** `REJECTED / FALSE POSITIVE`
 - **Приоритет:** `P3 (Medium)`
 - **Компонент:** `SecurityAnalyzer` (`src/Analyzers/Security/Rules/`)
 - **Ссылки на код:**
   - [`Sec003InsecureCorsRule.cs#L28-L60`](../../src/Analyzers/Security/Rules/Sec003InsecureCorsRule.cs#L28-L60)
-- **Описание проблемы:**
+- **Первоначальное описание проблемы (почему замечание было выдвинуто):**
   - Правило `Sec003InsecureCorsRule` синтаксически проверяет наличие вызовов `AllowAnyOrigin()` и предикатов `SetIsOriginAllowed(_ => true)`.
-  - Использование вызова `.WithOrigins("*")` синтаксически пропускается анализатором.
-- **Семантические нюансы runtime ASP.NET Core:**
-  - Нельзя утверждать без интеграционной проверки, что `.WithOrigins("*")` во всех случаях распахивает доступ. В runtime ASP.NET Core вызов `.WithOrigins("*").AllowCredentials()` приводит к падению приложения при старте с `InvalidOperationException` (спецификация W3C запрещает wildcard origin вместе с credentials).
-  - Однако в сценариях без передачи credentials вызов `.WithOrigins("*")` функционально эквивалентен `AllowAnyOrigin()` и должен детектироваться правилом `SEC003` с соответствующим пояснением.
+  - Предполагалось, что вызов `.WithOrigins("*")` открывает доступ для любых источников аналогично `AllowAnyOrigin()`, но пропускается синтаксическим анализатором.
+- **Техническая причина отклонения замечания (False Positive):**
+  - По результатам детальной проверки механизма сопоставления CORS в ASP.NET Core установлено, что вызов `CorsPolicyBuilder.WithOrigins("*")` добавляет строковый литерал `"*"` в коллекцию конкретных разрешённых адресов (`Origins`), а не переключает политику в режим `AllowAnyOrigin` (который очищает `Origins` и устанавливает внутренний флаг `_allowAnyOrigin = true`).
+  - При обработке входящего HTTP-запроса промежуточный слой CORS в ASP.NET Core производит точное посимвольное сопоставление значения заголовка `Origin` с элементами списка `Origins`. Строка `"*"` не интерпретируется как глобальный wildcard: браузерный запрос с заголовком `Origin: https://evil.com` не совпадёт со значением `"*"` и будет отклонён.
+  - Таким образом, вызов `.WithOrigins("*")` не является функциональным эквивалентом `AllowAnyOrigin()` и не разрешает произвольные источники. Это некорректная конфигурация, разрешающая запросы только при буквальной передаче клиентом заголовка `Origin: *`, но не создающая уязвимости чрезмерно открытого CORS для сторонних доменов.
+  - Добавление проверки `WithOrigins("*")` в правило `SEC003` приводило бы к ложноположительной диагностике безопасности (ошибочной классификации некорректной настройки как уязвимости раскрытия данных).
+  - Реализация в `Sec003InsecureCorsRule` не требуется. Существующее поведение правила остаётся корректным для действительно опасных конструкций (`AllowAnyOrigin()` и предикатов `SetIsOriginAllowed`, безусловно возвращающих `true`).
 
 ---
 
@@ -336,3 +339,69 @@
 ## 6. Замечания по качеству тестового кода (Косметические)
 
 - **NEW-005 (BOM в тестах очереди):** В файле [`AnalysisServiceQueueTests.cs#L3`](../../tests/Backend.Tests/AnalysisServiceQueueTests.cs#L3) присутствует невидимый символ Unicode BOM. Не является дефектом логики, не включается в реестр долга, устраняется попутно при правке тестов.
+
+---
+
+## 7. Актуализация результатов исправлений от 25.11.2026
+
+25 ноября 2026 года в ходе дополнительного технического аудита и стабилизации кодовой базы были выявлены и устранены четыре подтверждённых дефекта. Во избежание конфликта с исторической нумерацией дефектов первоначального аудита от 06.11.2026 результаты зафиксированы в настоящем разделе с указанием полных хешей коммитов, затрагиваемых компонентов и подтверждающей тестовой базы.
+
+### 7.1. Маппинг исключений синхронизации GitHub в RFC 9457 ProblemDetails (DEF-001 от 25.11.2026)
+- **Статус:** `RESOLVED`
+- **Коммит:** [`10c82f0095810bdd22511e613e5a72cbfc27955b`](https://github.com/Ivan-Vol4ok69/CourseProject/commit/10c82f0095810bdd22511e613e5a72cbfc27955b) (*fix(api): map GitHub sync exceptions to problem details*)
+- **Компонент:** `Backend.Api` (`src/Backend/Api/Controllers/ProjectsController.cs`, `src/Backend/Api/Common/ApiErrorCodes.cs`)
+- **Устранённая проблема:**
+  - В методе `ProjectsController.SyncGitHub` отсутствовал перехват специфических исключений `SyncCheckpointChangedException` (выбрасывается при параллельном изменении контрольной точки синхронизации) и `IncompleteHistoryException` (выбрасывается при получении неполной истории коммитов из GitHub API).
+  - Неперехваченные исключения приводили к неконтролируемому возврату HTTP 500 Internal Server Error с потенциальной утечкой внутренних деталей реализации (трассировка стека, внутренние токены и хеши).
+- **Реализованное решение:**
+  - В `ProjectsController.SyncGitHub` добавлены явные блоки `catch`:
+    - `SyncCheckpointChangedException`: возвращает HTTP 409 Conflict со структурированным объектом ProblemDetails и кодом ошибки `ApiErrorCodes.SyncCheckpointChanged` (`SYNC_CHECKPOINT_CHANGED`);
+    - `IncompleteHistoryException`: возвращает HTTP 502 Bad Gateway со структурированным объектом ProblemDetails и кодом ошибки `ApiErrorCodes.GitHubIncompleteHistory` (`GITHUB_INCOMPLETE_HISTORY`), без утечки внутренней информации.
+  - В `ApiErrorCodes.cs` добавлены константы кодов ошибок `SyncCheckpointChanged` и `GitHubIncompleteHistory`.
+- **Подтверждающие тесты:**
+  - Добавлен интеграционный тестовый класс [`GitHubSyncExceptionMappingIntegrationTests.cs`](../../tests/Backend.Tests/Integration/GitHubSyncExceptionMappingIntegrationTests.cs) (3 метода / 7 тест-кейсов с `[Theory]`), проверяющий возврат HTTP 409 и HTTP 502 ProblemDetails, отсутствие утечек внутренних строк и сохранение контракта существующих исключений. Все тесты выполнены успешно.
+
+### 7.2. Завершение и ожидание задачи продления аренды анализа (DEF-003 от 25.11.2026)
+- **Статус:** `RESOLVED`
+- **Коммит:** [`185379bf0bd00b62115fdaaefa85cba900d5453c`](https://github.com/Ivan-Vol4ok69/CourseProject/commit/185379bf0bd00b62115fdaaefa85cba900d5453c) (*fix(analysis): ensure lease renewal task is awaited*)
+- **Компонент:** `Backend.Application` (`src/Backend/Application/Services/AnalysisService.cs`)
+- **Устранённая проблема:**
+  - В `AnalysisService.cs` фоновая задача периодического продления аренды `leaseRenewalTask` на путях завершения и обработки исключений останавливалась через `linkedCts.Cancel()`, однако сам объект задачи `leaseRenewalTask` не всегда безопасно ожидался (`await`), что могло приводить к фоновым гонкам при освобождении `IAnalysisLeaseGuard` и очистке рабочего каталога в блоке `finally`.
+  - Примечание: данное исправление не отменяет и не переопределяет историческую инфраструктурную задачу `DEF-003` / `TD-003` (фоновая очистка «сиротских» каталогов и сессионные advisory locks), которая сохраняет статус `DEFERRED`.
+- **Реализованное решение:**
+  - Реализован централизованный вспомогательный метод `StopLeaseRenewalAsync(linkedCts, leaseRenewalTask)`, гарантирующий отмену токена, безопасное ожидание `await leaseRenewalTask` и подавление ожидаемого `OperationCanceledException`.
+  - Метод вызывается на всех путях выхода из `ExecuteAnalysisAsync`, включая нормальное завершение, отмену, ошибки анализаторов и блок `finally` перед очисткой каталога.
+- **Подтверждающие тесты:**
+  - Добавлен тестовый класс [`AnalysisLeaseRenewalLifecycleTests.cs`](../../tests/Backend.Tests/Unit/AnalysisLeaseRenewalLifecycleTests.cs) (10 специализированных тестов жизненного цикла задачи продления аренды: отмена по токену, порядок остановки, исключение ошибок продления, завершение задачи строго до диспоуза guard). Все 10 тестов выполнены успешно.
+
+### 7.3. Валидация даты коммита, обязательность UTC и нормализация CommitHash (DEF-002 от 25.11.2026)
+- **Статус:** `RESOLVED`
+- **Коммит:** [`dcda0ff058c50fe3130b39880a351b97fac76ab3`](https://github.com/Ivan-Vol4ok69/CourseProject/commit/dcda0ff058c50fe3130b39880a351b97fac76ab3) (*fix(api): validate commit dates and normalize commit hashes*)
+- **Компонент:** `Backend.Application` / `Backend.Infrastructure` (`CreateCommitDto.cs`, `CommitService.cs`, `GitHubSyncService.cs`, `CommitRepository.cs`)
+- **Устранённая проблема:**
+  - В `CreateCommitDto.cs` поле `CommitDate` было объявлено как `DateTime` (value type): отсутствующее в JSON поле привязывалось к `DateTime.MinValue`, обходя проверку обязательности.
+  - Npgsql и PostgreSQL тип `timestamp with time zone` отклоняют `DateTime` со значением `DateTimeKind.Unspecified` или `DateTimeKind.Local`.
+  - Значение `CommitHash` не нормализовалось к нижнему регистру при сохранении, что приводило к сбоям поиска коммитов в регистрозависимых операторах PostgreSQL (`WHERE "CommitHash" IN (...)`).
+  - При синхронизации через GitHub Sync `CommitRepository.SaveSyncBatchAsync` формировал коллекцию `hashesToLookup` без предварительной нормализации `existingToUpdate`, из-за чего существующие коммиты в нижнем регистре не находились, если входной DTO содержал символы верхнего регистра.
+- **Реализованное решение:**
+  - В `CreateCommitDto.cs`: свойство `CommitDate` объявлено как `DateTime?` с атрибутом `[Required]`, добавлена валидация на отклонение `DateTimeKind.Unspecified`.
+  - В `CommitService.cs`: добавлена нормализация даты к UTC (`DateTime.SpecifyKind(..., DateTimeKind.Utc)`) и нормализация `CommitHash.Trim().ToLowerInvariant()`.
+  - В `GitHubSyncService.cs`: нормализация хешей коммитов при создании доменных сущностей.
+  - В `CommitRepository.cs`: нормализация хешей в `SaveSyncBatchAsync` для `newCommits` и `existingToUpdate` до добавления в `hashesToLookup` и выполнения SQL-запроса к PostgreSQL.
+- **Подтверждающие тесты:**
+  - Добавлены тесты [`CommitServiceTests.cs`](../../tests/Backend.Tests/Unit/CommitServiceTests.cs) (7 тестов) и интеграционные тесты [`CommitValidationAndNormalizationIntegrationTests.cs`](../../tests/Backend.Tests/Integration/CommitValidationAndNormalizationIntegrationTests.cs) (7 тестов): проверка отклонения отсутствующей даты, `Unspecified` даты, нормализация UTC и lowercase для ручного добавления и пакетной синхронизации GitHub. Все тесты выполнены успешно.
+
+### 7.4. Классификация общей истории GitHub и обход проверенных предков (DEF-004 от 25.11.2026)
+- **Статус:** `RESOLVED`
+- **Коммит:** [`d0fa163714d41fb25a0c74cd267f7c069b5034e3`](https://github.com/Ivan-Vol4ok69/CourseProject/commit/d0fa163714d41fb25a0c74cd267f7c069b5034e3) (*fix(github-sync): classify history using verified ancestors*)
+- **Компонент:** `Backend.Application` (`src/Backend/Application/Services/GitHubHistoryClassifier.cs`)
+- **Устранённая проблема:**
+  - При инкрементальной синхронизации GitHub классификатор `GitHubHistoryClassifier` строил множество известных предков `currentAncestry` только из загруженных коммитов и непосредственных проверенных границ (`verifiedBoundaries`).
+  - Если общий предок находился глубже непосредственной проверенной границы в истории проверенных коммитов БД, алгоритм не обходил проверенных родителей за границей и возвращал `UnrelatedHistory` вместо `Diverged` или `FastForward`.
+  - Кроме того, требовалось исключить повторный учёт узлов при ограничении глубины обхода и сохранить приоритет доказательства `FastForward` при исчерпании лимита, если путь к общему предку уже полностью подтверждён.
+- **Реализованное решение:**
+  - В `GitHubHistoryClassifier.cs` реализован BFS-обход проверенных предков через очередь `boundaryQueue` с наполнением `currentAncestry`.
+  - Введён единый кэш `commitCache` и лимит `DefaultMaxTraversalNodes = 10_000` уникальных исследованных коммитов за один вызов `ClassifyAsync`.
+  - При обнаружении общего предка, являющегося целевым `targetRemoteCommitHash`, классификатор возвращает доказанный `FastForward` даже при достижении лимита обхода графа или обнаружении неполноты удалённых родителей.
+- **Подтверждающие тесты:**
+  - Добавлен тестовый класс [`GitHubHistoryClassifierTests.cs`](../../tests/Backend.Tests/Unit/GitHubHistoryClassifierTests.cs) (21 тест, включая детальные сценарии A–N для нелинейных ветвлений, обхода проверенных предков, сохранения FastForward и лимита узлов). Все 21 тест выполнены успешно.

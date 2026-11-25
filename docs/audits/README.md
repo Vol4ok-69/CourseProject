@@ -65,20 +65,21 @@
 
 ### 5.1. Полный технический аудит кодовой базы от 06.11.2026
 - **Расположение:** [`docs/audits/2026-11-06-technical-audit.md`](2026-11-06-technical-audit.md)
-- **Базовый коммит:** `7d5bfbb` (*feat(github-sync): implement reliable incremental commit synchronization*; первоначальный аудит от ревизии `2068c51`)
+- **Базовый коммит:** `d0fa163` (*fix(github-sync): classify history using verified ancestors*; первоначальный аудит от ревизии `2068c51`)
 - **Охват:**
-  - Детальная перепроверка дефектов `DEF-001` – `DEF-010`;
+  - Детальная перепроверка дефектов `DEF-001` – `DEF-010` (включая отклонение `DEF-007` как ложноположительного срабатывания);
+  - Актуализация результатов исправлений от 25.11.2026 (коммиты `10c82f0`, `185379b`, `dcda0ff`, `d0fa163`);
   - Анализ архитектурных рисков очереди `NEW-001` – `NEW-004`;
   - Статус замечаний `API-020`, `API-022`, `API-024`, `API-025`;
   - Ограничения среды аудита и сценарии воспроизведения со ссылками на код.
 
 ### 5.2. Аудит тестового покрытия и стратегия интеграционного тестирования
 - **Расположение:** [`docs/audits/test-suite-evaluation.md`](test-suite-evaluation.md)
-- **Охват:** Оценка качества 1363 тестов решения (1355 успешно, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests`, 0 пропущено; код завершения 1; подтверждено выводом полного запуска `dotnet test` от 24.11.2026; `Backend.Tests` — 951 успешный тест, код завершения 0) по 10-балльной шкале, классификация `KEEP`/`REWRITE`/`MERGE`/`REMOVE`, отчет о реализации сквозных HTTP-тестов на базе `WebApplicationFactory<Program>` (Rate Limiting, CORS, RFC 9457 ProblemDetails, JWT Auth) в `ApiPipelineIntegrationTests` и строгое разграничение SQLite in-memory от реального PostgreSQL.
+- **Охват:** Оценка качества 1411 тестов решения (1399 успешно, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests`, 4 динамически пропущено [тесты DockerFact в `DatabaseAnalyzer.Runner.Tests` при отсутствии Docker daemon], код завершения 1; подтверждено выводом полного запуска `dotnet test` от 25.11.2026; `Backend.Tests` — 999 успешных тестов, код завершения 0) по 10-балльной шкале, классификация `KEEP`/`REWRITE`/`MERGE`/`REMOVE`, отчет о реализации сквозных HTTP-тестов на базе `WebApplicationFactory<Program>` (Rate Limiting, CORS, RFC 9457 ProblemDetails, JWT Auth) в `ApiPipelineIntegrationTests` и строгое разграничение SQLite in-memory от реального PostgreSQL.
 
 ### 5.3. Актуальный план устранения технического долга (Technical Debt Plan)
 - **Расположение:** [`docs/plans/Technical-Debt-Plan.md`](../plans/Technical-Debt-Plan.md)
-- **Охват:** Единый структурированный реестр из 15 задач (`TD-001` – `TD-015`) со статусами, приоритетами (P1/P2/P3), критериями приемки, необходимыми тестами, зависимостями и явным выделением задач, требующих миграции БД PostgreSQL (`TD-007` и `TD-006`).
+- **Охват:** Единый структурированный реестр из 15 задач (`TD-001` – `TD-015`, включая отклоненную `TD-009`) со статусами, приоритетами (P1/P2/P3), критериями приемки, необходимыми тестами, зависимостями и явным выделением задач, требующих миграции БД PostgreSQL (`TD-007` и `TD-006`).
 
 ### 5.4. Архитектурное решение по изоляции анализатора БД и конвейера (ADR-001)
 - **Расположение:** [`docs/architecture/database-analyzer-isolation.md`](../architecture/database-analyzer-isolation.md)

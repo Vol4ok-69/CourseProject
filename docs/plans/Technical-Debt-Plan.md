@@ -19,6 +19,7 @@
 - **`FIXED`** — исправление внесено в код, но требует комплексной верификации.
 - **`VERIFIED`** — исправление полностью протестировано и проверено на отсутствие регрессий.
 - **`DEFERRED`** — задача отложена на этап развития после завершения MVP.
+- **`REJECTED`** — задача отклонена по результатам анализа (ложное срабатывание, не применимо, кодовые изменения не требуются).
 
 ### Приоритеты:
 - **`P1 (Critical)`** — безопасность, защита от Remote Code Execution, предотвращение потери данных, устранение гонок в файловой системе и критических сбоев конвейера анализа.
@@ -39,7 +40,7 @@
 | **`TD-006`** | Инкрементальная синхронизация коммитов репозитория GitHub | `Backend.Infrastructure` | **P2** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `VERIFIED` | **ДА** | [TD-006 REV4](TD-006-Architecture-Investigation-Design-REV4-APPROVED.md) |
 | **`TD-007`** | Управление жизненным циклом очереди: retry, backoff, Poison Pill | `Backend.Queue` | **P2** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `VERIFIED` | **ДА** | [TD-007 Plan](TD-007-Implementation-Plan.md) |
 | **`TD-008`** | Поддержка хешей SHA-256 (64 hex) и валидация в CreateCommitDto | `Backend.Application` | **P2** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `VERIFIED` | **Нет** | Закрыто в коммите 57da9b8: StringLength(64, 7), Regex hex-валидации, unit и сквозные интеграционные тесты |
-| **`TD-009`** | Детектирование паттерна `WithOrigins("*")` в правиле SEC003 | `SecurityAnalyzer` | **P3** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
+| **`TD-009`** | Детектирование паттерна `WithOrigins("*")` в правиле SEC003 | `SecurityAnalyzer` | **P3** | `REJECTED` | `REJECTED` | `NOT APPLICABLE` | **Нет** | Отклонено (DEF-007 признан FALSE POSITIVE: WithOrigins("*") не включает AllowAnyOrigin в ASP.NET Core) |
 | **`TD-010`** | Детектирование `ServicePointManager` в правиле SEC005 | `SecurityAnalyzer` | **P3** | `ACCEPTED` | `OPEN` | `UNVERIFIED` | **Нет** | — |
 | **`TD-011`** | Адаптивная нормализация структуры путей ZIP-архивов | `Backend.Infrastructure` | **P3** | `NEEDS_DESIGN` | `OPEN` | `UNVERIFIED` | **Нет** | — |
 | **`TD-012`** | Расширение семантических эвристик в `SqlAnalyzer` | `SqlAnalyzer` | **P3** | `DEFERRED` | `DEFERRED` | `DEFERRED` | **Нет** | — |
@@ -385,16 +386,19 @@
 ### TD-009: Детектирование паттерна WithOrigins("*") в правиле SEC003
 - **Связанный дефект:** [DEF-007](../audits/2026-11-06-technical-audit.md#def-007-пропуск-небезопасной-конфигурации-cors-через-withorigins-в-sec003)
 - **Компонент:** `SecurityAnalyzer` (`Sec003InsecureCorsRule.cs`)
-- **Статус:** `OPEN`
+- **Статус архитектурного решения:** `REJECTED`
+- **Статус реализации:** `REJECTED`
+- **Статус проверки:** `NOT APPLICABLE`
 - **Приоритет:** `P3`
 - **Миграция БД:** Нет
 - **Зависимости:** Нет
-- **Описание:** Выявлять вызовы `.WithOrigins("*")` при анализе политик CORS.
-- **Критерии приёмки:**
-  1. Правило `SEC003` распознает аргумент `"*"` внутри вызовов `WithOrigins`.
-  2. Выдается замечание с уровнем `Severity.Warning` и рекомендацией указать точный список доверенных доменов.
-- **Необходимые тесты:**
-  - Тест с синтаксическим деревом вызова `builder.WithOrigins("*")`.
+- **Описание:** Первоначально предполагалось выявлять вызовы `.WithOrigins("*")` при анализе политик CORS как потенциально небезопасные.
+- **Техническая причина отклонения задачи:**
+  1. В архитектуре CORS ASP.NET Core метод `CorsPolicyBuilder.WithOrigins("*")` добавляет литеральную строку `"*"` как конкретный разрешённый адрес в коллекцию `Origins`, а не переключает политику в режим `AllowAnyOrigin`.
+  2. В runtime промежуточный слой CORS сопоставляет входящий заголовок `Origin` по точному совпадению с элементами `Origins`. Значение `Origin: https://evil.com` не совпадает с `"*"` и запрос отклоняется.
+  3. Следовательно, `WithOrigins("*")` не является эквивалентом `AllowAnyOrigin()` и не открывает доступ произвольным источникам.
+  4. Добавление такой проверки в правило `SEC003` приводило бы к ложноположительным срабатываниям.
+  5. Кодовые изменения не требуются. Поведение правила `Sec003InsecureCorsRule` остаётся корректным для опасных конструкций (`AllowAnyOrigin()` и `SetIsOriginAllowed(_ => true)`).
 
 ---
 
