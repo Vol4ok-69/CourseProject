@@ -13,7 +13,9 @@ namespace SecurityAnalyzer.Rules;
 /// </summary>
 public sealed class Sec005DisabledCertificateValidationRule : ISecurityRule
 {
-    private const string TargetPropertyName = "ServerCertificateCustomValidationCallback";
+    private const string CustomValidationPropertyName = "ServerCertificateCustomValidationCallback";
+    private const string ServicePointValidationPropertyName = "ServerCertificateValidationCallback";
+    private const string ServicePointManagerTypeName = "ServicePointManager";
     private const string DangerousValidatorName = "DangerousAcceptAnyServerCertificateValidator";
 
     public IReadOnlyList<AnalyzerFinding> Analyze(SyntaxNode root, string filePath)
@@ -24,8 +26,14 @@ public sealed class Sec005DisabledCertificateValidationRule : ISecurityRule
 
         foreach (var assignment in assignments)
         {
-            var propertyName = GetTargetPropertyName(assignment.Left);
-            if (propertyName != TargetPropertyName)
+            if (!assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) &&
+                !assignment.IsKind(SyntaxKind.AddAssignmentExpression))
+            {
+                continue;
+            }
+
+            var propertyName = GetTargetPropertyName(assignment);
+            if (propertyName is null)
             {
                 continue;
             }
@@ -38,7 +46,7 @@ public sealed class Sec005DisabledCertificateValidationRule : ISecurityRule
                     FilePath = filePath,
                     LineNumber = line,
                     Rule = "SEC005",
-                    Message = "Отключена валидация сертификатов SSL/TLS в свойстве 'ServerCertificateCustomValidationCallback'. Приложение уязвимо к атакам типа Man-in-the-Middle (MITM).",
+                    Message = $"Отключена валидация сертификатов SSL/TLS в свойстве '{propertyName}'. Приложение уязвимо к атакам типа Man-in-the-Middle (MITM).",
                     Severity = Severity.Critical,
                     Recommendation = "Не отключайте проверку сертификатов в продакшен-коде. Для локального тестирования добавьте самоподписанный сертификат в доверенное хранилище корневых сертификатов ОС или настройте выборочную проверку отпечатка (thumbprint) доверенного сертификата."
                 });
@@ -48,13 +56,114 @@ public sealed class Sec005DisabledCertificateValidationRule : ISecurityRule
         return findings;
     }
 
-    private static string? GetTargetPropertyName(ExpressionSyntax left)
+    private static bool CanUseUnqualifiedServicePointManager(AssignmentExpressionSyntax assignment)
     {
-        return left switch
+        foreach (var ancestor in assignment.Ancestors())
+        {
+            SyntaxList<UsingDirectiveSyntax> usings = ancestor switch
+            {
+                BaseNamespaceDeclarationSyntax ns => ns.Usings,
+                CompilationUnitSyntax cu => cu.Usings,
+                _ => default
+            };
+
+            if (usings.Count == 0)
+            {
+                continue;
+            }
+
+            var matchingAlias = usings.FirstOrDefault(u =>
+                u.Alias is not null &&
+                u.Alias.Name.Identifier.Text == ServicePointManagerTypeName);
+
+            if (matchingAlias is not null)
+            {
+                return IsSystemServicePointManagerAlias(matchingAlias);
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsSystemServicePointManagerAlias(UsingDirectiveSyntax usingDirective)
+    {
+        if (usingDirective.NamespaceOrType is not QualifiedNameSyntax spmName ||
+            spmName.Right.Identifier.Text != ServicePointManagerTypeName)
+        {
+            return false;
+        }
+
+        if (spmName.Left is not QualifiedNameSyntax netName ||
+            netName.Right.Identifier.Text != "Net")
+        {
+            return false;
+        }
+
+        return netName.Left switch
+        {
+            IdentifierNameSyntax sysId => sysId.Identifier.Text == "System",
+            AliasQualifiedNameSyntax alias => alias.Alias.Identifier.Text == "global" &&
+                                              alias.Name.Identifier.Text == "System",
+            _ => false
+        };
+    }
+
+    private static string? GetTargetPropertyName(AssignmentExpressionSyntax assignment)
+    {
+        var left = assignment.Left;
+        var rawName = left switch
         {
             MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.Text,
             IdentifierNameSyntax identifier => identifier.Identifier.Text,
             _ => null
+        };
+
+        if (rawName == CustomValidationPropertyName)
+        {
+            return CustomValidationPropertyName;
+        }
+
+        if (rawName == ServicePointValidationPropertyName &&
+            left is MemberAccessExpressionSyntax spmMemberAccess &&
+            IsServicePointManagerExpression(spmMemberAccess.Expression, assignment))
+        {
+            return ServicePointValidationPropertyName;
+        }
+
+        return null;
+    }
+
+    private static bool IsServicePointManagerExpression(ExpressionSyntax expression, AssignmentExpressionSyntax assignment)
+    {
+        if (expression is IdentifierNameSyntax identifier)
+        {
+            return identifier.Identifier.Text == ServicePointManagerTypeName &&
+                   CanUseUnqualifiedServicePointManager(assignment);
+        }
+
+        if (expression is MemberAccessExpressionSyntax typeAccess &&
+            typeAccess.Name.Identifier.Text == ServicePointManagerTypeName)
+        {
+            return IsSystemNetNamespace(typeAccess.Expression);
+        }
+
+        return false;
+    }
+
+    private static bool IsSystemNetNamespace(ExpressionSyntax expression)
+    {
+        if (expression is not MemberAccessExpressionSyntax netAccess ||
+            netAccess.Name.Identifier.Text != "Net")
+        {
+            return false;
+        }
+
+        return netAccess.Expression switch
+        {
+            IdentifierNameSyntax sysId => sysId.Identifier.Text == "System",
+            AliasQualifiedNameSyntax alias => alias.Alias.Identifier.Text == "global" &&
+                                              alias.Name.Identifier.Text == "System",
+            _ => false
         };
     }
 
