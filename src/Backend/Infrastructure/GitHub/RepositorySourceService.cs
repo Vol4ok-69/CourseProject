@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 
 namespace Infrastructure.GitHub;
 
@@ -56,6 +57,31 @@ public class RepositorySourceService : IRepositorySourceService
         ".gradle",
         "build"
     };
+
+    private static readonly HashSet<string> WindowsReservedDeviceNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "COM\u00B9", "COM\u00B2", "COM\u00B3",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "LPT\u00B9", "LPT\u00B2", "LPT\u00B3"
+    };
+
+    private static readonly char[] InvalidWindowsSegmentChars = ['<', '>', ':', '"', '|', '?', '*'];
+
+    private readonly record struct ValidatedArchiveEntry(
+        ZipArchiveEntry Entry,
+        string[] OriginalSegments,
+        string[] CanonicalSegments,
+        bool IsDirectory);
+
+    private readonly record struct ExtractionPlanItem(
+        ZipArchiveEntry Entry,
+        string[] OriginalSegments,
+        string[] CanonicalSegments,
+        bool IsDirectory,
+        string OriginalRelativePath,
+        string CanonicalRelativePath);
 
     private string GetExecutionDirectory(int analysisId, Guid executionToken)
     {
@@ -400,9 +426,7 @@ public class RepositorySourceService : IRepositorySourceService
     {
         using var archive = new ZipArchive(archiveStream, ZipArchiveMode.Read, leaveOpen: true);
 
-        var fileCount = 0;
-        long totalExtractedBytes = 0;
-        var copyBuffer = new byte[81920];
+        var validatedEntries = new List<ValidatedArchiveEntry>();
 
         foreach (var entry in archive.Entries)
         {
@@ -411,13 +435,57 @@ public class RepositorySourceService : IRepositorySourceService
             if (ensureOwnership is not null)
                 await ensureOwnership();
 
-            var relativePath = GetRelativePath(entry.FullName);
-            if (string.IsNullOrEmpty(relativePath) || ShouldExclude(relativePath))
+            var rawName = entry.FullName;
+            ValidateRawArchivePath(rawName);
+
+            // Unix S_IFLNK = 0xA000. Символические ссылки проходят проверку имени, но не извлекаются
+            // и не участвуют в определении общего корневого каталога.
+            var isSymlink = (entry.ExternalAttributes >> 16 & 0xF000) == 0xA000;
+            var rawSegments = rawName.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var endsWithDotSegment = rawSegments.Length > 0 && rawSegments[^1] == ".";
+            var isDirectory = rawName.EndsWith('/') || rawName.EndsWith('\\') || endsWithDotSegment;
+
+            var originalSegments = rawSegments.Where(segment => segment != ".").ToArray();
+
+            if (originalSegments.Length == 0)
                 continue;
 
-            var destinationPath = GetSafeDestinationPath(repositoryPath, relativePath);
+            ValidateNormalizedSegments(originalSegments);
+            var canonicalSegments = NormalizeSegmentsToNfc(originalSegments);
 
-            if (entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\'))
+            if (isSymlink)
+                continue;
+
+            // Исключённые каталоги не участвуют в определении общего корневого каталога и не извлекаются.
+            if (ShouldExclude(string.Join(Path.DirectorySeparatorChar, originalSegments)))
+                continue;
+
+            validatedEntries.Add(new ValidatedArchiveEntry(
+                entry,
+                originalSegments,
+                canonicalSegments,
+                isDirectory));
+        }
+
+        var stripFirstSegment = HasSingleRootDirectory(validatedEntries);
+        var extractionPlan = BuildExtractionPlan(validatedEntries, stripFirstSegment);
+
+        ValidateNoPathCollisions(extractionPlan);
+
+        var fileCount = 0;
+        long totalExtractedBytes = 0;
+        var copyBuffer = new byte[81920];
+
+        foreach (var item in extractionPlan)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (ensureOwnership is not null)
+                await ensureOwnership();
+
+            var destinationPath = GetSafeDestinationPath(repositoryPath, item.OriginalRelativePath);
+
+            if (item.IsDirectory)
             {
                 if (ensureOwnership is not null)
                     await ensureOwnership();
@@ -425,10 +493,6 @@ public class RepositorySourceService : IRepositorySourceService
                 Directory.CreateDirectory(destinationPath);
                 continue;
             }
-
-            // Unix S_IFLNK = 0xA000. Символические ссылки не извлекаются.
-            if ((entry.ExternalAttributes >> 16 & 0xF000) == 0xA000)
-                continue;
 
             fileCount++;
             if (fileCount > MaxFileCount)
@@ -446,7 +510,7 @@ public class RepositorySourceService : IRepositorySourceService
                 Directory.CreateDirectory(destinationDirectory);
             }
 
-            await using var entryStream = entry.Open();
+            await using var entryStream = item.Entry.Open();
 
             if (ensureOwnership is not null)
                 await ensureOwnership();
@@ -700,17 +764,196 @@ public class RepositorySourceService : IRepositorySourceService
             $"GitHub API вернул статус {(int)statusCode} {statusCode} при загрузке архива.");
     }
 
-    private static string GetRelativePath(string archivePath)
+    private static void ValidateRawArchivePath(string rawName)
     {
-        var normalizedPath = archivePath.Replace('\\', '/');
-        var segments = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-
-        if (segments.Length <= 1)
+        if (string.IsNullOrWhiteSpace(rawName) || rawName.IndexOf('\0') >= 0)
         {
-            return string.Empty;
+            throw new InvalidOperationException("Некорректное или пустое имя записи в архиве.");
         }
 
-        return string.Join(Path.DirectorySeparatorChar, segments.Skip(1));
+        if (rawName.StartsWith('/') || rawName.StartsWith('\\') || Path.IsPathRooted(rawName))
+        {
+            throw new InvalidOperationException(
+                "Обнаружена попытка выхода за пределы целевой директории (Zip Slip): абсолютный путь.");
+        }
+
+        if (rawName.Length >= 2 && char.IsAsciiLetter(rawName[0]) && rawName[1] == ':')
+        {
+            throw new InvalidOperationException(
+                "Обнаружена попытка выхода за пределы целевой директории (Zip Slip): путь с буквой диска.");
+        }
+
+        var rawSegments = rawName.Replace('\\', '/').Split('/', StringSplitOptions.None);
+        if (rawSegments.Any(segment => segment == ".."))
+        {
+            throw new InvalidOperationException(
+                "Обнаружена попытка выхода за пределы целевой директории (Zip Slip): недопустимый сегмент '..'.");
+        }
+    }
+
+    private static void ValidateNormalizedSegments(string[] segments)
+    {
+        foreach (var segment in segments)
+        {
+            if (segment.EndsWith('.') || segment.EndsWith(' '))
+            {
+                throw new InvalidOperationException(
+                    "Недопустимое имя записи в архиве: завершающая точка или пробел.");
+            }
+
+            if (segment.IndexOf(':') >= 0)
+            {
+                throw new InvalidOperationException(
+                    "Обнаружена попытка выхода за пределы целевой директории (Zip Slip): недопустимый символ ':' в имени записи архива.");
+            }
+
+            if (segment.IndexOfAny(InvalidWindowsSegmentChars) >= 0 || segment.Any(c => c < '\x20'))
+            {
+                throw new InvalidOperationException(
+                    "Недопустимые символы в имени записи архива.");
+            }
+
+            var baseName = segment.Split('.', 2)[0].TrimEnd(' ');
+            if (WindowsReservedDeviceNames.Contains(baseName))
+            {
+                throw new InvalidOperationException(
+                    "Недопустимое имя записи в архиве: зарезервированное имя устройства Windows.");
+            }
+        }
+    }
+
+    private static string[] NormalizeSegmentsToNfc(string[] segments)
+    {
+        var normalized = new string[segments.Length];
+
+        for (var i = 0; i < segments.Length; i++)
+        {
+            try
+            {
+                normalized[i] = segments[i].Normalize(NormalizationForm.FormC);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new InvalidOperationException(
+                    "Некорректная Unicode-последовательность в имени записи архива.",
+                    ex);
+            }
+        }
+
+        return normalized;
+    }
+
+    private static bool HasSingleRootDirectory(IReadOnlyList<ValidatedArchiveEntry> entries)
+    {
+        if (entries.Count == 0)
+            return false;
+
+        string? firstRoot = null;
+
+        foreach (var entry in entries)
+        {
+            if (entry.OriginalSegments.Length == 1 && !entry.IsDirectory)
+                return false;
+
+            var candidate = entry.OriginalSegments[0];
+            if (firstRoot is null)
+            {
+                firstRoot = candidate;
+            }
+            else if (!string.Equals(firstRoot, candidate, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return firstRoot is not null && !ExcludedDirectories.Contains(firstRoot);
+    }
+
+    private static List<ExtractionPlanItem> BuildExtractionPlan(
+        IReadOnlyList<ValidatedArchiveEntry> entries,
+        bool stripFirstSegment)
+    {
+        var plan = new List<ExtractionPlanItem>();
+
+        foreach (var entry in entries)
+        {
+            var effectiveOriginal = stripFirstSegment
+                ? entry.OriginalSegments[1..]
+                : entry.OriginalSegments;
+
+            var effectiveCanonical = stripFirstSegment
+                ? entry.CanonicalSegments[1..]
+                : entry.CanonicalSegments;
+
+            if (effectiveOriginal.Length == 0)
+                continue;
+
+            var originalRelativePath = string.Join(Path.DirectorySeparatorChar, effectiveOriginal);
+            if (ShouldExclude(originalRelativePath))
+                continue;
+
+            var canonicalRelativePath = string.Join(Path.DirectorySeparatorChar, effectiveCanonical);
+
+            plan.Add(new ExtractionPlanItem(
+                entry.Entry,
+                effectiveOriginal,
+                effectiveCanonical,
+                entry.IsDirectory,
+                originalRelativePath,
+                canonicalRelativePath));
+        }
+
+        return plan;
+    }
+
+    private static void ValidateNoPathCollisions(IReadOnlyList<ExtractionPlanItem> plan)
+    {
+        var directories = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var fileCanonicalKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in plan)
+        {
+            var dirSegmentCount = item.IsDirectory
+                ? item.OriginalSegments.Length
+                : item.OriginalSegments.Length - 1;
+
+            for (var i = 1; i <= dirSegmentCount; i++)
+            {
+                var originalDirPath = string.Join(Path.DirectorySeparatorChar, item.OriginalSegments[..i]);
+                var canonicalDirKey = string.Join(Path.DirectorySeparatorChar, item.CanonicalSegments[..i]);
+
+                if (directories.TryGetValue(canonicalDirKey, out var existingOriginalDirPath))
+                {
+                    if (!string.Equals(existingOriginalDirPath, originalDirPath, StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException(
+                            "Обнаружен конфликт регистра или Unicode-представления каталогов в архиве.");
+                    }
+                }
+                else
+                {
+                    directories[canonicalDirKey] = originalDirPath;
+                }
+            }
+        }
+
+        foreach (var item in plan)
+        {
+            if (item.IsDirectory)
+                continue;
+
+            if (!fileCanonicalKeys.Add(item.CanonicalRelativePath))
+            {
+                throw new InvalidOperationException(
+                    "Обнаружен дублирующийся путь файла, конфликт регистра или Unicode-представления в архиве.");
+            }
+
+            if (directories.ContainsKey(item.CanonicalRelativePath))
+            {
+                throw new InvalidOperationException(
+                    "Обнаружен конфликт имени файла и каталога в архиве.");
+            }
+        }
     }
 
     private static bool ShouldExclude(string relativePath)
