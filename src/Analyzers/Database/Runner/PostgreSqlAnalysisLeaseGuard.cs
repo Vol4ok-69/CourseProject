@@ -157,6 +157,7 @@ public sealed class PostgreSqlAnalysisLeaseGuard : IAnalysisLeaseGuard
                     if (IsAcquired && _connection.State == ConnectionState.Open)
                     {
                         await using var unlockCmd = _connection.CreateCommand();
+                        unlockCmd.CommandTimeout = 10;
                         unlockCmd.CommandText = "SELECT pg_advisory_unlock_shared(hashtext('netscope_analysis_workspace'), @analysisId);";
                         unlockCmd.Parameters.AddWithValue("analysisId", AnalysisId);
                         await unlockCmd.ExecuteScalarAsync(CancellationToken.None);

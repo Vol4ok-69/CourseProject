@@ -12,6 +12,12 @@ public sealed class PostgreSqlAnalysisLeaseGuardProvider : IAnalysisLeaseGuardPr
 {
     private readonly string _connectionString;
     private readonly Application.Interfaces.IWorkspaceFileLockProvider _workspaceFileLockProvider;
+    private int _acquireAttemptCount;
+    private int _poolClearCount;
+
+    internal int AcquireAttemptCount => Volatile.Read(ref _acquireAttemptCount);
+    internal int PoolClearCount => Volatile.Read(ref _poolClearCount);
+    internal Func<NpgsqlConnection, int, CancellationToken, Task<object?>>? LockCommandExecutorAsync { get; set; }
 
     public PostgreSqlAnalysisLeaseGuardProvider(
         string connectionString,
@@ -39,96 +45,66 @@ public sealed class PostgreSqlAnalysisLeaseGuardProvider : IAnalysisLeaseGuardPr
                 nameof(executionToken));
         }
 
-        for (var attempt = 0; attempt < 2; attempt++)
+        Interlocked.Increment(ref _acquireAttemptCount);
+
+        NpgsqlConnection? connection = null;
+        FileStream? workspaceFileLock = null;
+
+        var lockAttemptStarted = false;
+        var lockAttemptCompleted = false;
+        var postgresLockAcquired = false;
+
+        try
         {
-            NpgsqlConnection? connection = null;
-            FileStream? workspaceFileLock = null;
+            connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
 
-            var lockAttemptStarted = false;
-            var lockAttemptCompleted = false;
-            var postgresLockAcquired = false;
-
-            try
+            if (LockCommandExecutorAsync != null)
             {
-                connection = new NpgsqlConnection(_connectionString);
-                await connection.OpenAsync(cancellationToken);
+                lockAttemptStarted = true;
+                var customResult = await LockCommandExecutorAsync(connection, analysisId, cancellationToken);
+                lockAttemptCompleted = true;
+                postgresLockAcquired = customResult is true;
+            }
+            else
+            {
+                await using var lockCommand = connection.CreateCommand();
+                lockCommand.CommandTimeout = 10;
+                lockCommand.CommandText = """
+                    SELECT pg_try_advisory_lock_shared(
+                        hashtext('netscope_analysis_workspace'),
+                        @analysisId);
+                    """;
 
-                await using (var lockCommand = connection.CreateCommand())
-                {
-                    lockCommand.CommandText = """
-                        SELECT pg_try_advisory_lock_shared(
-                            hashtext('netscope_analysis_workspace'),
-                            @analysisId);
-                        """;
+                lockCommand.Parameters.AddWithValue("analysisId", analysisId);
 
-                    lockCommand.Parameters.AddWithValue("analysisId", analysisId);
+                lockAttemptStarted = true;
 
-                    lockAttemptStarted = true;
+                var lockResult = await lockCommand.ExecuteScalarAsync(cancellationToken);
 
-                    var lockResult = await lockCommand.ExecuteScalarAsync(cancellationToken);
+                lockAttemptCompleted = true;
+                postgresLockAcquired = lockResult is true;
+            }
 
-                    lockAttemptCompleted = true;
-                    postgresLockAcquired = lockResult is true;
-                }
-
-                if (!postgresLockAcquired)
-                {
-                    await ReleaseResourcesAsync(
-                        connection,
-                        workspaceFileLock,
-                        analysisId,
-                        lockAttemptStarted,
-                        lockAttemptCompleted,
-                        postgresLockAcquired);
-
-                    connection = null;
-                    workspaceFileLock = null;
-
-                    return CreateNotAcquiredGuard(analysisId, executionToken);
-                }
-
-                workspaceFileLock = _workspaceFileLockProvider.TryAcquireShared(analysisId);
-
-                if (workspaceFileLock == null)
-                {
-                    await ReleaseResourcesAsync(
-                        connection,
-                        workspaceFileLock,
-                        analysisId,
-                        lockAttemptStarted,
-                        lockAttemptCompleted,
-                        postgresLockAcquired);
-
-                    connection = null;
-                    workspaceFileLock = null;
-
-                    return CreateNotAcquiredGuard(analysisId, executionToken);
-                }
-
-                var guard = new PostgreSqlAnalysisLeaseGuard(
-                    analysisId,
-                    executionToken,
-                    isAcquired: true,
+            if (!postgresLockAcquired)
+            {
+                await ReleaseResourcesAsync(
                     connection,
-                    workspaceFileLock);
+                    workspaceFileLock,
+                    analysisId,
+                    lockAttemptStarted,
+                    lockAttemptCompleted,
+                    postgresLockAcquired);
 
-                // Guard принимает владение обоими ресурсами.
                 connection = null;
                 workspaceFileLock = null;
 
-                return guard;
+                return CreateNotAcquiredGuard(analysisId, executionToken);
             }
-            catch (NpgsqlException) when (attempt == 0)
-            {
-                await ReleaseResourcesAsync(
-                    connection,
-                    workspaceFileLock,
-                    analysisId,
-                    lockAttemptStarted,
-                    lockAttemptCompleted,
-                    postgresLockAcquired);
-            }
-            catch
+
+            workspaceFileLock = _workspaceFileLockProvider.TryAcquireShared(analysisId);
+
+            if (workspaceFileLock == null)
             {
                 await ReleaseResourcesAsync(
                     connection,
@@ -138,11 +114,37 @@ public sealed class PostgreSqlAnalysisLeaseGuardProvider : IAnalysisLeaseGuardPr
                     lockAttemptCompleted,
                     postgresLockAcquired);
 
-                throw;
+                connection = null;
+                workspaceFileLock = null;
+
+                return CreateNotAcquiredGuard(analysisId, executionToken);
             }
+
+            var guard = new PostgreSqlAnalysisLeaseGuard(
+                analysisId,
+                executionToken,
+                isAcquired: true,
+                connection,
+                workspaceFileLock);
+
+            // Guard принимает владение обоими ресурсами.
+            connection = null;
+            workspaceFileLock = null;
+
+            return guard;
         }
+        catch
+        {
+            await ReleaseResourcesAsync(
+                connection,
+                workspaceFileLock,
+                analysisId,
+                lockAttemptStarted,
+                lockAttemptCompleted,
+                postgresLockAcquired);
 
-        return CreateNotAcquiredGuard(analysisId, executionToken);
+            throw;
+        }
     }
 
     private static PostgreSqlAnalysisLeaseGuard CreateNotAcquiredGuard(
@@ -157,7 +159,7 @@ public sealed class PostgreSqlAnalysisLeaseGuardProvider : IAnalysisLeaseGuardPr
             workspaceFileLock: null);
     }
 
-    private static async Task ReleaseResourcesAsync(
+    private async Task ReleaseResourcesAsync(
         NpgsqlConnection? connection,
         FileStream? workspaceFileLock,
         int analysisId,
@@ -203,7 +205,7 @@ public sealed class PostgreSqlAnalysisLeaseGuardProvider : IAnalysisLeaseGuardPr
                     try
                     {
                         await using var unlockCommand = connection.CreateCommand();
-
+                        unlockCommand.CommandTimeout = 10;
                         unlockCommand.CommandText = """
                             SELECT pg_advisory_unlock_shared(
                                 hashtext('netscope_analysis_workspace'),
@@ -233,6 +235,7 @@ public sealed class PostgreSqlAnalysisLeaseGuardProvider : IAnalysisLeaseGuardPr
                 {
                     // Соединение с неизвестным состоянием блокировки не должно
                     // возвращаться в пул для повторного использования.
+                    Interlocked.Increment(ref _poolClearCount);
                     NpgsqlConnection.ClearPool(connection);
                 }
                 catch

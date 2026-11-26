@@ -5,7 +5,7 @@
 **Базовая ветка:** `main`
 **Базовый коммит:** `d0fa163` (*fix(github-sync): classify history using verified ancestors*; базовый коммит первоначального аудита: `7d5bfbb` / ревизия `2068c51`)
 **Состояние рабочего дерева:** Clean строго на дату первоначального аудита (06.11.2026); последующие обновления документа отражают результаты реализации и верификации задач техдолга.
-**Верификация тестовой базы (`dotnet test`):** 1411 тестов всего: 1399 успешно пройдено, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests`, 4 динамически пропущено в `DatabaseAnalyzer.Runner.Tests` при отсутствии Docker daemon на хосте [при доступном Docker 105 успешно / 0 пропущено] (6 сборок: `Backend.Tests` — 999 успешно [0 сбоев], `DatabaseAnalyzer.Tests` — 190 успешно, `DatabaseAnalyzer.Runner.Tests` — 101 успешно / 4 пропущено `[DockerFact]`, `SecurityAnalyzer.Tests` — 56 успешно, `SqlAnalyzer.Tests` — 44 успешно, `CSharpAnalyzer.Tests` — 9 успешно / 8 сбоев TD-003; код возврата 1).
+**Верификация тестовой базы (`dotnet test`):** 1411 тестов всего: 1399 успешно пройдено, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests` (впоследствии полностью устранены в Stage 3, все 24 теста `CSharpAnalyzer.Tests` проходят успешно), 4 динамически пропущено в `DatabaseAnalyzer.Runner.Tests` при отсутствии Docker daemon на хосте [при доступном Docker 105 успешно / 0 пропущено] (6 сборок: `Backend.Tests` — 999 успешно [0 сбоев], `DatabaseAnalyzer.Tests` — 190 успешно, `DatabaseAnalyzer.Runner.Tests` — 101 успешно / 4 пропущено `[DockerFact]`, `SecurityAnalyzer.Tests` — 56 успешно, `SqlAnalyzer.Tests` — 44 успешно, `CSharpAnalyzer.Tests` — 9 успешно / 8 сбоев TD-003; код возврата 1).
 **Состояние модели EF Core:** `dotnet ef migrations has-pending-model-changes` подтверждает полное соответствие снимка `AppDbContextModelSnapshot.cs` сущностям предметной области (`No changes have been made to the model since the last migration`). Обе миграции `20261122150614_AddAnalysisRetryAndPoisonPillQueue` (TD-007) и `20261124090814_AddCommitProvenanceAndProjectSyncCheckpoint` (TD-006) применены и согласованы.
 
 ---
@@ -103,7 +103,7 @@
 ---
 
 ### DEF-003: Изоляция рабочих каталогов анализа по токену выполнения и безопасная очистка
-- **Статус:** `CONFIRMED`
+- **Статус:** `RESOLVED` (Закрыто в рамках задачи [TD-003](../plans/Technical-Debt-Plan.md#td-003), ноябрь 2026 г.)
 - **Приоритет:** `P1 (Critical)`
 - **Компонент:** `Backend.Application` / `Backend.Infrastructure`
 - **Ссылки на код:**
@@ -130,16 +130,17 @@
      4. Единый протокол сессионных advisory locks: воркер удерживает `pg_advisory_lock_shared` для `AnalysisId` на всё время файловых операций и повторно проверяет актуальность токена в БД перед операциями. Сервис очистки получает эксклюзивный `pg_advisory_lock`, повторно проверяет токен в БД и удаляет только директории неактуальных токенов.
      5. При потере соединения с БД воркер прекращает файловые операции, а сервис очистки прекращает удаление.
 
-3. **Фактически реализованные компоненты (по состоянию на ноябрь 2026 г.):**
+3. **Фактически реализованные компоненты:**
    - В `RepositorySourceService.cs` поддержана схема пути `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` и конфигурационный ключ `Storage:AnalysisPath` (дефолт `Path.Combine(Path.GetTempPath(), "CourseProject", "analyses")`), исключающий размещение рабочих файлов в `AppContext.BaseDirectory`.
    - В `AnalysisService.cs` и `RepositorySourceService.cs` поддержана сквозная передача `executionToken` и требование `IAnalysisLeaseGuard` для операций с рабочим пространством.
    - Очистка рабочего каталога в блоке `finally` `AnalysisService.cs` защищена проверкой подтверждённого владения задачей (`ownershipConfirmed == true`).
+   - Реализован сервис фоновой очистки `AnalysisCleanupService` и фоновая служба `AnalysisCleanupBackgroundService` (поиск сиротских каталогов, сверка с БД под эксклюзивными advisory и файловыми блокировками, fail-closed при потере связи, защита активных токенов).
+   - Внедрён протокол взаимных блокировок воркеров и очистителя (`pg_advisory_lock_shared` + `workspace.lock` для воркеров, эксклюзивные блокировки для очистителя и Startup Recovery).
 
-4. **Оставшиеся проблемы и решение об откладывании:**
-   - **Фоновая очистка «сиротских» каталогов:** механизм периодической фоновой очистки каталогов, оставшихся после аварийных завершений процессов (OOM, SIGKILL, падение хоста), в кодовой базе не реализован.
-   - **Протокол сессионных блокировок:** единый протокол сессионных `pg_advisory_lock_shared` (для воркеров на время файловых операций) и эксклюзивного `pg_advisory_lock` (для сервиса очистки) не реализован.
-   - **Тестовые сбои в `CSharpAnalyzer.Tests`:** в тестовом классе `RepositorySourceServiceTests.cs` сохраняются 8 известных сбоев тестов, вызывающих устаревшие методы без передачи мока `IAnalysisLeaseGuard`.
-   - **Решение о планировании:** задача **`TD-003`** ([Technical-Debt-Plan.md](../plans/Technical-Debt-Plan.md#td-003)) сохраняет статус реализации **`OPEN`**, статус проверки **`UNVERIFIED`** и статус планирования **`DEFERRED`** (Отложена). На текущем этапе её дальнейшая реализация временно приостановлена и не входит в ближайший этап разработки; возвращение к ней допускается только по отдельному решению.
+4. **Актуализация результатов (ноябрь 2026 г., закрытие задачи TD-003):**
+   - Задача **`TD-003`** полностью реализована во всех четырёх этапах (Stage 1 – Stage 4) и переведена в статус **`VERIFIED` / `Задача закрыта`**.
+   - Все 8 известных сбоев в `CSharpAnalyzer.Tests.RepositorySourceServiceTests` устранены в Stage 3 переводом тестов на контракт `IAnalysisLeaseGuard` (24/24 тестов успешно).
+   - Все 12 критериев приёмки подтверждены 53 интеграционными тестами `PostgreSqlWorkspaceCleanupIntegrationTests` и 24 тестами `PostgreSqlAdvisoryLockIntegrationTests`.
 
 ---
 
@@ -352,7 +353,7 @@
   - Проход А: регистрация явных и родительских каталогов по NFC-ключу (`OrdinalIgnoreCase`) с проверкой точного совпадения исходного написания по `Ordinal` (отклоняет коллизии регистра и формы Unicode, например `Src/` и `src/`, `É/` и `É/`, допуская точные повторы каталога).
   - Проход Б: регистрация файлов по NFC-ключу (отклоняет точные дубликаты, регистровые коллизии `App.cs` / `app.cs`, Unicode-коллизии) и проверка пересечения с путями каталогов (`src` и `src/App.cs`).
 - **Подтверждающие тесты:**
-  - В [`RepositoryArchiveSecurityTests.cs`](../../tests/Backend.Tests/RepositoryArchiveSecurityTests.cs) добавлены 26 тестовых сценариев. Все **1059 тестов `Backend.Tests` выполнены успешно (0 сбоев)**. *(Примечание: в `CSharpAnalyzer.Tests` остаются 8 предсуществующих сбоев, связанных с задачей TD-003).*
+  - В [`RepositoryArchiveSecurityTests.cs`](../../tests/Backend.Tests/RepositoryArchiveSecurityTests.cs) добавлены 26 тестовых сценариев. Все **1059 тестов `Backend.Tests` выполнены успешно (0 сбоев)**. *(Примечание: ранее остававшиеся 8 предсуществующих сбоев в `CSharpAnalyzer.Tests` были впоследствии полностью устранены в Stage 3 задачи TD-003).*
 - **Коммит:**
   - [`9f2fda5fd74598e49fdf47a706c1f4c1172a732a`](https://github.com/Ivan-Vol4ok69/CourseProject/commit/9f2fda5fd74598e49fdf47a706c1f4c1172a732a) (*fix(github): correct excluded entries in archive root detection*)
 
@@ -362,7 +363,7 @@
 
 | ID | Статус | Анализ и зафиксированные решения |
 | :--- | :---: | :--- |
-| **API-020** | `OPEN` *(DEFERRED)* | **Хранилище в `AppContext.BaseDirectory`:** Путь `Path.Combine(AppContext.BaseDirectory, "data", "analysis")` загрязняет каталог исполняемых файлов и не работает в контейнерах с read-only root. Задача объединена с `DEF-003` / `TD-003`: внедрить конфигурационную секцию `Storage:AnalysisPath` с дефолтом в `Path.Combine(Path.GetTempPath(), "CourseProject", "analyses")`, а каталоги изолировать по `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` с безопасной очисткой. Реализация отложена (`DEFERRED`) до отдельного решения. |
+| **API-020** | `RESOLVED` | **Хранилище в `AppContext.BaseDirectory`:** Путь `Path.Combine(AppContext.BaseDirectory, "data", "analysis")` загрязнял каталог исполняемых файлов. Задача объединена с `DEF-003` / `TD-003`: внедрена конфигурационная секция `Storage:AnalysisPath` с дефолтом `Path.Combine(Path.GetTempPath(), "CourseProject", "analyses")`, каталоги изолированы по `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` со сквозным токеном, немедленной очисткой в `finally` и фоновой очисткой в `AnalysisCleanupService` под защитой PostgreSQL advisory locks. Дефект полностью устранён (TD-003, ноябрь 2026 г.). |
 | **API-022** | `FIXED` | **Шаблон переменных окружения:** Полностью устранено в рамках реализации Этапа 6: осуществлен переход на единый механизм конфигурации ASP.NET Core через переменные окружения и файл `.env`, создан документированный шаблон `.env.example`, механизм User Secrets полностью выведен из эксплуатации, а `appsettings.json` очищен от секретов (задача TD-013 закрыта). |
 | **API-024** | `FIXED` | **Устаревшая документация:** Полностью устранено в рамках задачи [TD-014](../plans/Technical-Debt-Plan.md#td-014-синхронизация-базовой-документации). Документы `Технический регламент.md`, `Исполнительное резюме.md`, `Архитектура проекта.drawio` и спецификации анализаторов синхронизированы по состоянию ревизии `2068c51`. |
 | **API-025** | `FIXED` | **Защита последнего администратора:** В коде [`AdminUsersController.cs#L104-L140`](../../src/Backend/Api/Controllers/AdminUsersController.cs#L104-L140) и `UserService.cs` реализована надежная защита через консультативную блокировку PostgreSQL `SELECT pg_advisory_xact_lock(hashtext('admin_role_protection'))` с повторным подсчетом админов в транзакции. Дефект полностью устранен и исключен из реестра открытых проблем. |
@@ -400,7 +401,7 @@
 - **Компонент:** `Backend.Application` (`src/Backend/Application/Services/AnalysisService.cs`)
 - **Устранённая проблема:**
   - В `AnalysisService.cs` фоновая задача периодического продления аренды `leaseRenewalTask` на путях завершения и обработки исключений останавливалась через `linkedCts.Cancel()`, однако сам объект задачи `leaseRenewalTask` не всегда безопасно ожидался (`await`), что могло приводить к фоновым гонкам при освобождении `IAnalysisLeaseGuard` и очистке рабочего каталога в блоке `finally`.
-  - Примечание: данное исправление не отменяет и не переопределяет историческую инфраструктурную задачу `DEF-003` / `TD-003` (фоновая очистка «сиротских» каталогов и сессионные advisory locks), которая сохраняет статус `DEFERRED`.
+  - Примечание: инфраструктурная задача `DEF-003` / `TD-003` (фоновая очистка «сиротских» каталогов и сессионные advisory locks) впоследствии была полностью реализована и верифицирована в рамках этапов Stage 1–4 (ноябрь 2026 г.).
 - **Реализованное решение:**
   - Реализован централизованный вспомогательный метод `StopLeaseRenewalAsync(linkedCts, leaseRenewalTask)`, гарантирующий отмену токена, безопасное ожидание `await leaseRenewalTask` и подавление ожидаемого `OperationCanceledException`.
   - Метод вызывается на всех путях выхода из `ExecuteAnalysisAsync`, включая нормальное завершение, отмену, ошибки анализаторов и блок `finally` перед очисткой каталога.

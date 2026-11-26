@@ -69,6 +69,18 @@ public interface IAnalysisRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Атомарно переводит незапущенную задачу анализа из статуса Running в статус Failed,
+    /// если не удалось получить охранную блокировку до старта выполнения.
+    /// Операция защищена проверкой совпадения ExecutionToken, статуса Running
+    /// и отсутствия активной shared advisory-блокировки другого исполнителя.
+    /// </summary>
+    Task<bool> TryFailStartupWithoutGuardAsync(
+        int analysisId,
+        Guid executionToken,
+        string errorMessage,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Атомарно планирует повторную попытку выполнения анализа (перевод в Pending с отложенным NextAttemptAt),
     /// сбрасывая ExecutionToken и LeaseExpiration, только если текущий статус Running,
     /// совпадает ExecutionToken, аренда не истекла и удерживается соответствующий advisory lock guard.

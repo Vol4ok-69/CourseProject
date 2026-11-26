@@ -34,7 +34,7 @@
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
 | **`TD-001`** | Изоляция анализатора моделей EF Core (Roslyn + Runner в Docker) | `DatabaseAnalyzer` | **P1** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `VERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
 | **`TD-002`** | Отказоустойчивость конвейера анализа при сбоях анализатора БД | `DatabaseAnalyzer` | **P1** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `VERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
-| **`TD-003`** | Изоляция рабочих каталогов `{Path}/{Id}/{Token}` и безопасная очистка | `Backend.Infrastructure` | **P1** | `ACCEPTED` | `DEFERRED` | `DEFERRED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
+| **`TD-003`** | Изоляция рабочих каталогов `{Path}/{Id}/{Token}` и безопасная очистка | `Backend.Infrastructure` | **P1** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `VERIFIED` | **Нет** | [ADR-001](../architecture/database-analyzer-isolation.md) |
 | **`TD-004`** | Учет первичных/альтернативных ключей и порядка столбцов в DB04 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `VERIFIED` | **Нет** | Закрыто: маппинг PK/AK в `Indexes`, `AlternateKeys`, 15 тестов (7 тестов маппера + 8 тестов DB04/DB05) в `DatabaseAnalyzer.Tests` |
 | **`TD-005`** | Поддержка частичных/фильтрованных индексов в правиле DB05 | `DatabaseAnalyzer` | **P2** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `VERIFIED` | **Нет** | Закрыто в целевом конвейере Roslyn + Runner (SqlFilterComparer, DB05 filter normalization); legacy-класс EfCoreMetadataMapper устарел и не используется в production |
 | **`TD-006`** | Инкрементальная синхронизация коммитов репозитория GitHub | `Backend.Infrastructure` | **P2** | `ACCEPTED` | `IMPLEMENTATION_COMPLETE` | `VERIFIED` | **ДА** | [TD-006 REV4](TD-006-Architecture-Investigation-Design-REV4-APPROVED.md) |
@@ -159,70 +159,78 @@
 <a id="td-003"></a>
 ### TD-003: Изоляция рабочих каталогов `{Path}/{Id}/{Token}` и безопасная очистка
 - **Связанный дефект:** [DEF-003](../audits/2026-11-06-technical-audit.md#def-003-изоляция-рабочих-каталогов-анализа-по-токену-выполнения-и-безопасная-очистка), [API-020](../audits/2026-11-06-technical-audit.md#5-статус-инфраструктурных-замечаний-api-020-api-022-api-024-api-025)
-- **Компонент:** `Backend.Infrastructure` (`RepositorySourceService.cs`, `AnalysisService.cs`, `AnalysisBackgroundService.cs`)
+- **Компонент:** `Backend.Infrastructure` (`RepositorySourceService.cs`, `AnalysisCleanupService.cs`, `AnalysisCleanupBackgroundService.cs`, `AnalysisService.cs`, `AnalysisBackgroundService.cs`, `PostgreSqlAnalysisLeaseGuardProvider.cs`)
 - **Статус архитектурного решения:** `ACCEPTED` ([ADR-001](../architecture/database-analyzer-isolation.md))
-- **Статус реализации:** `DEFERRED` (дальнейшая реализация отложена; схема путей `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` поддержана, но механизм фоновой очистки сиротских каталогов и протокол сессионных `pg_advisory_lock` не реализованы)
-- **Статус проверки:** `DEFERRED` (проверка отложена вместе с задачей; в `CSharpAnalyzer.Tests.RepositorySourceServiceTests` сохраняются 8 известных сбоев из-за отсутствия `IAnalysisLeaseGuard` в устаревших перегрузках)
-- **Статус планирования:** `DEFERRED` (Отложена до отдельного решения)
+- **Статус реализации:** `IMPLEMENTATION_COMPLETE` (Реализованы все 4 этапа: Stage 1 – фоновая очистка `AnalysisCleanupService` и advisory locks; Stage 2 – отказоустойчивость, получение/потеря lease, fenced startup recovery; Stage 3 – миграция `CSharpAnalyzer.Tests.RepositorySourceServiceTests`; Stage 4 – сквозная верификация всех 12 критериев)
+- **Статус проверки:** `VERIFIED` (Все 12 критериев приёмки подтверждены тестами; известные сбои в `CSharpAnalyzer.Tests` полностью устранены)
+- **Статус планирования:** `Задача закрыта` (Ноябрь 2026 г.)
 - **Приоритет:** `P1`
 - **Миграция БД:** Нет
 - **Зависимости:** [ADR-001: Архитектура анализаторов, изоляция анализа БД и отказоустойчивость конвейера](../architecture/database-analyzer-isolation.md)
 
-> [!IMPORTANT]
-> **Решение о планировании (ноябрь 2026 г.):**
-> TD-003 остаётся открытой задачей технического долга. На текущем этапе её дальнейшая реализация отложена. Известные проблемы и невыполненные критерии приёмки сохраняются в документации. Возвращение к задаче будет рассмотрено отдельно после принятия соответствующего решения. До этого момента не планировать работы по реализации TD-003 как следующий этап разработки.
->
-> Статус `DEFERRED` означает:
-> 1. Задача не закрыта и не считается выполненной.
-> 2. Известные технические проблемы и архитектурные ограничения сохраняются.
-> 3. Текущая частичная реализация не признаётся соответствующей полным требованиям критериев приёмки.
-> 4. Дальнейшая работа над задачей временно приостановлена.
-> 5. Возвращение к задаче допускается только после отдельного решения о возобновлении работ.
+> [!NOTE]
+> **Итоги реализации (ноябрь 2026 г.):**
+> Задача TD-003 полностью реализована и верифицирована. Механизм обеспечивает строгую изоляцию рабочих каталогов анализа по токену исполнения, двухуровневую синхронизацию через сессионные advisory locks PostgreSQL и файловые блокировки ОС, безопасную немедленную очистку в блоке `finally` и периодическую фоновую очистку «сиротских» каталогов через `AnalysisCleanupBackgroundService`. Все 8 предсуществующих сбоев в `CSharpAnalyzer.Tests` устранены переводом тестов на контракт `IAnalysisLeaseGuard`.
 
-- **Описание:** Исключить гонки в файловой системе между параллельными воркерами при перехвате аренды задач из очереди и вынести пути хранения временных файлов из бинарного каталога приложения.
-- **Критерии приёмки:**
-  1. Структура пути временного рабочего каталога строго соответствует схеме: `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}`.
-  2. Базовый путь настраивается через ключ конфигурации `Storage:AnalysisPath` в `appsettings.json` со значением по умолчанию `Path.Combine(Path.GetTempPath(), "CourseProject", "analyses")`. Размещение рабочих файлов в `AppContext.BaseDirectory` категорически запрещено.
-  3. Значение `ExecutionToken` генерируется воркером очереди при взятии задачи в обработку и передается сквозным образом через все уровни конвейера (`RepositorySourceService`, `AnalysisService`, распаковка ZIP, вызовы анализаторов).
-  4. Категорически запрещена очистка каталогов по маске или только по `AnalysisId`, чтобы предотвратить удаление файлов нового воркера при перехвате аренды по таймауту.
-  5. Немедленная очистка: удаление строго каталога `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` выполняется в блоке `finally` как при успешном завершении, так и при возникновении исключений.
-  6. Фоновая очистка "сиротских" каталогов (`Orphan directory cleanup`): спроектировать, реализовать и протестировать механизм периодической фоновой очистки каталогов, оставшихся после аварийных завершений процессов (OOM, SIGKILL, падение хоста).
-     - **Запрет удаления только по TTL:** истечение времени не является достаточным основанием для удаления.
-     - **Проверка по паре `(AnalysisId, ExecutionToken)`:** перед удалением фоновый сервис обязан проверить в БД PostgreSQL статус не только `AnalysisId`, но и соответствие конкретного `ExecutionToken`. Каталог разрешено удалять только при подтверждённом отсутствии активного исполнения именно с этим токеном.
-     - **Неприкосновенность новых исполнений:** если для того же `AnalysisId` существует новое активное исполнение с другим `ExecutionToken`, его каталог (`{AnalysisId}/{TokenB}`) должен оставаться абсолютно неприкосновенным.
-     - **Единый протокол сессионных advisory locks для синхронизации воркеров и очистки:**
-       * Рабочий процесс получает `pg_advisory_lock_shared` для `AnalysisId` и удерживает блокировку на протяжении всех файловых операций.
-       * После получения `pg_advisory_lock_shared` рабочий процесс обязан повторно проверить в PostgreSQL, что его `ExecutionToken` по-прежнему является актуальным для соответствующего `AnalysisId`. Только после успешной проверки разрешается создавать, распаковывать, читать или изменять файлы рабочего каталога.
-       * Если токен больше не актуален или состояние БД невозможно достоверно проверить, воркер обязан освободить блокировку и прекратить выполнение без файловых операций.
-       * Очистка получает эксклюзивный `pg_advisory_lock` для того же `AnalysisId`.
-       * После получения блокировки очистка повторно проверяет состояние в БД (актуальный `ExecutionToken`) и только затем принимает решение об удалении.
-       * Удалять разрешается только директорию, токен которой отличается от актуального токена в БД. Директорию актуального запуска удалять запрещено.
-       * При потере соединения с БД рабочий процесс немедленно прекращает файловые операции. Очистка при потере соединения или блокировки прекращает удаление.
-       * Блокировка должна удерживаться на протяжении всей соответствующей файловой операции.
-       * Если состояние БД или владение блокировкой невозможно достоверно проверить, очиститель обязан отказаться от удаления и повторить проверку позднее.
+- **Описание:** Исключить гонки в файловой системе между параллельными воркерами при перехвате аренды задач из очереди, обеспечить безопасное удаление временных файлов и вынести пути хранения рабочих данных из бинарного каталога приложения.
 
-- **Фактическое состояние реализации и оставшиеся проблемы:**
-  - **Изоляция рабочих каталогов:**
-    * Схема пути `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` и ключ `Storage:AnalysisPath` (дефолт `Temp/CourseProject/analyses`) поддержаны в `RepositorySourceService.cs` (`GetExecutionDirectory`) и конфигурации. Размещение в `AppContext.BaseDirectory` исключено в основном конвейере.
-    * Сквозная передача `ExecutionToken` поддержана в `AnalysisService.ExecuteAnalysisAsync` и `RepositorySourceService.DownloadAndExtractAsync` при наличии `IAnalysisLeaseGuard`. Однако в `RepositorySourceService.cs` сохраняются устаревшие перегрузки API (без `guard` и без токена), вызов которых прерывается исключением.
-    * Защита от пересечения параллельных исполнений обеспечена уникальностью GUID `ExecutionToken`, но механизм синхронизации на уровне СУБД (`pg_advisory_lock_shared` при файловых операциях) не реализован.
-  - **Очистка рабочих каталогов:**
-    * Очистка в блоке `finally` `AnalysisService.ExecuteAnalysisAsync` вызывает `CleanupAsync(analysis.Id, executionToken, guard)` строго для каталога текущего токена и защищена проверкой `ownershipConfirmed == true`.
-    * Защита каталога нового исполнения от старого воркера обеспечена точечным удалением каталога токена.
-    * **Фоновая очистка «сиротских» каталогов (`Orphan directory cleanup`) полностью отсутствует:** специализированный фоновый сервис очистки не спроектирован и не написан.
-    * Проверка пары `(AnalysisId, ExecutionToken)` в PostgreSQL перед фоновым удалением и единый протокол сессионных advisory locks (`pg_advisory_lock_shared` для воркеров и эксклюзивный `pg_advisory_lock` для очистителя) **не реализованы**.
-  - **Тестовое покрытие и известные сбои:**
-    * В `tests/CSharpAnalyzer.Tests/RepositorySourceServiceTests.cs` сохраняются **8 известных воспроизводимых сбоев**, вызванных вызовом устаревших методов `DownloadAndExtractAsync` и `CleanupAsync` без предоставления мока `IAnalysisLeaseGuard` (инвариант безопасности TD-003 блокирует файловые операции).
-    * При этом в `tests/Backend.Tests/RepositorySourceServiceTests.cs` тесты уже переведены на контракт с `IAnalysisLeaseGuard` и проходят успешно.
-    * Тесты взаимодействия воркеров и фонового сервиса очистки (конкурентные блокировки, потеря соединения СУБД) отсутствуют из-за отсутствия самого сервиса.
+- **Архитектурное и техническое описание реализации:**
+  1. **Иерархическая структура каталогов:** Каждое выполнение задачи анализа строго изолируется в каталоге `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}`.
+  2. **Конфигурация расположения хранилища:** Базовый путь настраивается через ключ конфигурации `Storage:AnalysisPath` в `appsettings.json` со значением по умолчанию `Path.Combine(Path.GetTempPath(), "CourseProject", "analyses")`. Размещение рабочих файлов в каталоге приложения `AppContext.BaseDirectory` категорически запрещено и контролируется инвариантами валидации путей.
+  3. **Сквозная передача ExecutionToken:** Токен исполнения `Guid executionToken` генерируется воркером при взятии задачи в обработку и передаётся сквозным образом во все слои конвейера (`RepositorySourceService`, `AnalysisService`, распаковка ZIP-архивов, запуск анализаторов).
+  4. **Запрет очистки по неполным идентификаторам:** Категорически запрещена очистка каталогов по маске или только по `AnalysisId`. Любая файловая операция требует подтверждённого владения через `IAnalysisLeaseGuard`.
+  5. **Немедленная очистка в finally:** Удаление строго каталога текущей попытки `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` выполняется в блоке `finally` конвейера как при успешном завершении, так и при сбоях (при условии подтверждённого владения lease).
+  6. **Фоновая очистка сиротских каталогов (`AnalysisCleanupService` / `AnalysisCleanupBackgroundService`):**
+     - Фоновый сервис запускается с интервалом 1 минута (начальная задержка 15 секунд) и выполняет сканирование корневого каталога анализов.
+     - Проверяет кандидатов на очистку: ищет директории с валидными числовыми `AnalysisId` и GUID `ExecutionToken`.
+     - Запрещено удаление исключительно по возрасту (TTL) без подтверждения статуса в PostgreSQL.
+     - Выполняет сверку с БД под эксклюзивным `pg_try_advisory_lock(hashtext('netscope_analysis_workspace'), analysisId)` на выделенном физическом соединении и эксклюзивной файловой блокировкой `workspace.lock`.
+     - Безусловно сохраняет каталог активного исполнения (если токен совпадает с актуальным в БД и задача находится в активном статусе).
+     - Безусловно сохраняет каталоги с более свежим токеном (`TokenB`), если токен каталога не совпадает со старым завершённым токеном.
+     - Безопасно удаляет каталоги, если запись анализа удалена из базы данных (`record deleted`), либо анализ находится в терминальном статусе (`Completed`, `Failed`, `Canceled`), либо токен каталога устарел по сравнению с актуальным токеном в БД.
+     - Принцип **Fail-Closed**: при потере связи с PostgreSQL, таймауте запроса или невозможности взятия эксклюзивного advisory lock фоновая очистка немедленно прекращает обработку данного анализа и оставляет каталоги нетронутыми.
+     - Пропускает reparse points (символические ссылки, точки монтирования) без перехода по ним, защищая систему от атак через файловую систему.
+  7. **Протокол синхронизации воркера:**
+     - Воркер получает разделяемую блокировку `pg_advisory_lock_shared(hashtext('netscope_analysis_workspace'), analysisId)` на выделенном соединении.
+     - Захватывает разделяемую файловую блокировку `workspace.lock` в целевом каталоге.
+     - Повторно валидирует владение в PostgreSQL (`ValidateOwnershipAsync`), гарантируя, что задача не была перехвачена другим воркером до начала файловых операций.
+  8. **Отказоустойчивость и Startup Recovery:**
+     - При старте приложения `AnalysisService` выполняет восстановление зависших задач (`Startup Recovery`).
+     - Метод `TryFailStartupWithoutGuardAsync` использует эксклюзивную сессионную блокировку `pg_try_advisory_lock` на выделенном соединении, защищая активные воркеры от ошибочного перевода в статус `Failed`.
+     - При конкуренции за блокировку реализован механизм повторных попыток (4 попытки с экспоненциальными задержками 50, 100, 200 мс).
+  9. **Миграция тестов CSharpAnalyzer:**
+     - Все 8 устаревших тестов в `tests/CSharpAnalyzer.Tests/RepositorySourceServiceTests.cs` переведены на вызовы с передачей мока `IAnalysisLeaseGuard`, что устранило все предсуществующие сбои.
 
-- **Необходимые тесты (при возобновлении работ):**
-  - Тест конкурентной обработки: воркер B выполняет задачу в `{AnalysisId}/{TokenB}`, в то время как воркер A завершает старую аренду и удаляет строго `{AnalysisId}/{TokenA}`, не затрагивая каталог воркера B.
-  - Тест гарантии удаления временного каталога при возникновении исключения в конвейере анализа.
-  - Тест механизма фоновой очистки «сиротских» каталогов: проверка подтверждения по токену `ExecutionToken` и `AnalysisId` в БД перед удалением; гарантия сохранности каталогов действующих анализов с другим токеном; тест отмены удаления при невозможности взятия блокировки синхронизации.
-  - Тест синхронизации воркера и очистителя: пока воркер удерживает разделяемую блокировку и работает с каталогом, очиститель не может получить исключительную блокировку и удалить каталог.
-  - Тест успешной очистки: после завершения воркера и освобождения блокировки очиститель получает исключительную блокировку, повторно проверяет ExecutionToken и удаляет только подтверждённый осиротевший каталог.
-  - Тест потери соединения PostgreSQL: воркер прекращает операции с каталогом после потери блокировки; очиститель не продолжает удаление при потере своей блокировки.
+- **Матрица верификации критериев приёмки (Stage 4):**
+
+| № | Критерий приёмки | Статус | Подтверждающие тесты |
+| :-: | :--- | :-: | :--- |
+| **1** | Структура пути `{Storage:AnalysisPath}/{AnalysisId}/{ExecutionToken}` | `VERIFIED` | `RepositorySourceServiceTests.GetExecutionDirectory_*`, `PostgreSqlWorkspaceCleanupIntegrationTests.BuildExecutionDirectory_*` |
+| **2** | Базовый путь из `Storage:AnalysisPath` (дефолт `Temp/CourseProject/analyses`), запрет `AppContext.BaseDirectory` | `VERIFIED` | `RepositorySourceServiceTests.GetExecutionDirectory_DefaultsToTempCourseProjectAnalyses`, `RepositorySourceServiceTests.Constructor_WhenConfiguredInsideBaseDirectory_ThrowsInvalidOperationException` |
+| **3** | Сквозная передача `ExecutionToken` через весь конвейер | `VERIFIED` | `AnalysisServiceTests.ExecuteAnalysisAsync_PassesExecutionTokenToAllStages`, `AnalysisServiceQueueTests.ExecuteAnalysisAsync_*` |
+| **4** | Запрет очистки по маске или только по `AnalysisId` | `VERIFIED` | `RepositorySourceServiceTests.CleanupAsync_RequiresExecutionTokenAndGuard`, `PostgreSqlWorkspaceCleanupIntegrationTests.Cleanup_DoesNotDeleteOtherTokens` |
+| **5** | Немедленная очистка собственного каталога в блоке `finally` | `VERIFIED` | `AnalysisServiceTests.ExecuteAnalysisAsync_CleansUpWorkspaceInFinally`, `RepositorySourceServiceTests.CleanupAsync_DeletesTargetDirectory` |
+| **6** | Фоновая очистка `AnalysisCleanupService` удаляет каталоги удалённых из БД анализов | `VERIFIED` | `PostgreSqlWorkspaceCleanupIntegrationTests.CleanupAsync_WhenAnalysisDeletedFromDatabase_DeletesOrphanDirectory` |
+| **7** | Фоновая очистка удаляет каталоги терминальных анализов (`Completed`, `Failed`, `Canceled`) | `VERIFIED` | `PostgreSqlWorkspaceCleanupIntegrationTests.CleanupAsync_WhenAnalysisInTerminalState_DeletesDirectory` |
+| **8** | Сохранение каталога активного исполнения (`TokenB`) при наличии старых каталогов | `VERIFIED` | `PostgreSqlWorkspaceCleanupIntegrationTests.CleanupAsync_PreservesActiveExecutionDirectory_WhileCleaningOldTokens` |
+| **9** | Конкурентная синхронизация: воркер (shared lock) блокирует удаление очистителем (exclusive lock) | `VERIFIED` | `PostgreSqlAdvisoryLockIntegrationTests.WorkerSharedLock_BlocksCleanerExclusiveLock`, `PostgreSqlWorkspaceCleanupIntegrationTests.CleanupAsync_WhenWorkerHoldsSharedLock_SkipsDirectory` |
+| **10** | Очиститель удаляет каталог только после завершения воркера и освобождения блокировок | `VERIFIED` | `PostgreSqlAdvisoryLockIntegrationTests.CleanerExclusiveLock_SucceedsAfterWorkerReleasesSharedLock`, `PostgreSqlWorkspaceCleanupIntegrationTests.CleanupAsync_AfterWorkerCompletes_DeletesDirectory` |
+| **11** | Поведение Fail-Closed при потере соединения с БД или ошибках PostgreSQL | `VERIFIED` | `PostgreSqlWorkspaceCleanupIntegrationTests.CleanupAsync_OnDatabaseConnectionLoss_FailsClosedWithoutDeletingDirectories`, `PostgreSqlCommitAckLossIntegrationTests` |
+| **12** | Атомарный Startup Recovery с защитой от гонок через эксклюзивный advisory lock и retry | `VERIFIED` | `PostgreSqlAdvisoryLockIntegrationTests.StartupRecovery_WithExclusiveAdvisoryLock_SafelyRecoversOrphanAnalyses`, `AnalysisServiceQueueTests.StartupRecovery_*` |
+
+- **Зафиксированные результаты тестирования (Stage 4):**
+
+| Тестовый набор | Выполнено | Успешно | Сбоев | Пропущено | Статус |
+| :--- | :-: | :-: | :-: | :-: | :-: |
+| `PostgreSqlWorkspaceCleanupIntegrationTests` | 53 | 53 | 0 | 0 | **ПРОЙДЕН** |
+| `PostgreSqlAdvisoryLockIntegrationTests` | 24 | 24 | 0 | 0 | **ПРОЙДЕН** |
+| `PostgreSqlCommitAckLossIntegrationTests` | 10 | 10 | 0 | 0 | **ПРОЙДЕН** |
+| `RepositorySourceServiceTests` (`Backend.Tests`) | 38 | 38 | 0 | 0 | **ПРОЙДЕН** |
+| `RepositoryArchiveSecurityTests` (`Backend.Tests`) | 67 | 67 | 0 | 0 | **ПРОЙДЕН** |
+| `AnalysisServiceTests` (`Backend.Tests`) | 10 | 10 | 0 | 0 | **ПРОЙДЕН** |
+| **Полный набор `CSharpAnalyzer.Tests`** | **24** | **24** | **0** | **0** | **ПРОЙДЕН (все 8 сбоев устранены)** |
+| **Полный набор `Backend.Tests`** | **1098** | **1098** | **0** | **0** | **ПРОЙДЕН** |
+| **Компиляция `Api.csproj` (dotnet build)** | — | — | **0 ошибок** | **0 пред.** | **УСПЕШНО** |
 
 ---
 
@@ -458,7 +466,7 @@
   13. **Сохранение существующих ограничений и надёжности:** сохранены лимиты `MaxArchiveSizeBytes` (50 МиБ), `MaxSingleFileSizeBytes` (50 МиБ), `MaxTotalExtractedSizeBytes` (250 МиБ), `MaxFileCount` (10 000), потоковое чтение, контроль владения `IAnalysisLeaseGuard`, поддержка `CancellationToken` и токенизированная очистка `CleanupAsync` при сбоях.
 - **Подтверждающие тесты:**
   В тестовый класс [`RepositoryArchiveSecurityTests.cs`](../../tests/Backend.Tests/RepositoryArchiveSecurityTests.cs) добавлены 26 тестовых сценариев (включая плоские архивы, несколько корней, один файл, пустой архив, Zip Slip, абсолютные пути, NTFS ADS, устройства Win32, пробелы перед расширением, завершающие точки/пробелы, дубликаты, case-коллизии, Unicode NFC/NFD коллизии, конфликты файл/каталог, исключённые каталоги и симлинки).
-  Все **1059 тестов проекта `Backend.Tests` выполнены успешно (0 сбоев)**. *(Примечание: успешный прогон `Backend.Tests` не означает полного зелёного статуса всего solution, так как в `CSharpAnalyzer.Tests` остаются 8 предсуществующих сбоев, связанных с отложенной задачей TD-003).*
+  Все **1059 тестов проекта `Backend.Tests` выполнены успешно (0 сбоев)**. *(Примечание: ранее остававшиеся 8 предсуществующих сбоев в `CSharpAnalyzer.Tests` впоследствии были полностью устранены в рамках реализации Stage 3 задачи TD-003).*
 - **Связанные коммиты:**
   - `9f2fda5fd74598e49fdf47a706c1f4c1172a732a` (`fix(github): correct excluded entries in archive root detection`)
 
@@ -501,7 +509,7 @@
 - **Зависимости:** Нет
 - **Описание:** Устранить противоречия в документах относительно статуса модулей `SqlAnalyzer`, `SecurityAnalyzer`, очереди задач PostgreSQL и схемы базы данных.
 - **Доказательная база верификации:**
-  1. **Файлы:** Документы [`docs/Технический регламент.md`](../Технический%20регламент.md) и [`docs/Исполнительное резюме.md`](../Исполнительное%20резюме.md) актуализированы: зафиксирована асинхронная очередь в PostgreSQL (`202 Accepted`), фоновая обработка через `AnalysisBackgroundService`, фактическая схема таблиц `"Users"` (поля GitHub PAT) и `"Analyses"`, статус `SqlAnalyzer` (44 теста) и `SecurityAnalyzer` (56 тестов), завершение TD-002 и перенос TD-003 в deferred.
+  1. **Файлы:** Документы [`docs/Технический регламент.md`](../Технический%20регламент.md) и [`docs/Исполнительное резюме.md`](../Исполнительное%20резюме.md) актуализированы: зафиксирована асинхронная очередь в PostgreSQL (`202 Accepted`), фоновая обработка через `AnalysisBackgroundService`, фактическая схема таблиц `"Users"` (поля GitHub PAT) и `"Analyses"`, статус `SqlAnalyzer` (44 теста) и `SecurityAnalyzer` (56 тестов), завершение TD-002 (задача TD-003 впоследствии была успешно завершена и верифицирована в ноябре 2026 г.).
   2. **Архитектурные схемы:** В диаграмме [`docs/Архитектура проекта.drawio`](../Архитектура%20проекта.drawio) блоки анализаторов и фонового сервиса переведены в статус «Реализовано».
   3. **История коммитов:** Синхронизация зафиксирована коммитами `5431edc` (*chore: align project documentation*), `58e0601` (*docs: finalize database analyzer isolation decisions*), `111f4d5` (*docs: document completed lease renewal and fault tolerance work*), `d615428` (*docs: defer TD-003 implementation*).
 

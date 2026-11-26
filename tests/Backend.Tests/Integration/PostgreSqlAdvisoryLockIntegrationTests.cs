@@ -761,4 +761,294 @@ public sealed class PostgreSqlAdvisoryLockIntegrationTests : IClassFixture<Postg
             Assert.Equal("DB01", dbAnalysis.Results.First().Rule);
         }
     }
+
+    [Fact]
+    public async Task AdvisoryLock_Contention_ReturnsNotAcquiredInSingleProviderAttempt()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Running, token, DateTime.UtcNow.AddMinutes(5));
+
+        using var exclusiveFileLock = _fileLockProvider.TryAcquireExclusive(analysis.Id);
+        Assert.NotNull(exclusiveFileLock);
+
+        var provider = new PostgreSqlAnalysisLeaseGuardProvider(fixture.ConnectionString, _fileLockProvider);
+        await using var guard = await provider.AcquireGuardAsync(analysis.Id, token);
+
+        Assert.False(guard.IsAcquired);
+        Assert.Equal(1, provider.AcquireAttemptCount);
+        Assert.Equal(0, provider.PoolClearCount);
+    }
+
+    [Fact]
+    public async Task AdvisoryLock_PermanentPostgresError_DoesNotRetryAndReleasesResources()
+    {
+        var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+        {
+            Database = $"nonexistent_td003_{Guid.NewGuid():N}"
+        };
+
+        var fileLockProviderMock = new Mock<IWorkspaceFileLockProvider>();
+        var provider = new PostgreSqlAnalysisLeaseGuardProvider(builder.ConnectionString, fileLockProviderMock.Object);
+
+        var ex = await Assert.ThrowsAnyAsync<PostgresException>(
+            () => provider.AcquireGuardAsync(9001, Guid.NewGuid()));
+
+        Assert.Equal(PostgresErrorCodes.InvalidCatalogName, ex.SqlState);
+        Assert.Equal(1, provider.AcquireAttemptCount);
+        fileLockProviderMock.Verify(p => p.TryAcquireShared(It.IsAny<int>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AdvisoryLock_AuthenticationAndConfigurationErrors_DoNotRetry()
+    {
+        // 1. Ошибка аутентификации PostgreSQL (SQLSTATE 28P01 / 28000)
+        var authBuilder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+        {
+            Password = "invalid_td003_password"
+        };
+
+        var authProvider = new PostgreSqlAnalysisLeaseGuardProvider(authBuilder.ConnectionString, _fileLockProvider);
+        var authEx = await Assert.ThrowsAnyAsync<PostgresException>(
+            () => authProvider.AcquireGuardAsync(9002, Guid.NewGuid()));
+
+        Assert.True(
+            authEx.SqlState is PostgresErrorCodes.InvalidPassword or PostgresErrorCodes.InvalidAuthorizationSpecification,
+            $"Unexpected auth SQLSTATE: {authEx.SqlState}");
+        Assert.Equal(1, authProvider.AcquireAttemptCount);
+
+        // 2. Ошибка конфигурации строки подключения
+        var invalidConfigProvider = new PostgreSqlAnalysisLeaseGuardProvider("Host=", _fileLockProvider);
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => invalidConfigProvider.AcquireGuardAsync(9003, Guid.NewGuid()));
+
+        Assert.Equal(1, invalidConfigProvider.AcquireAttemptCount);
+    }
+
+    [Fact]
+    public async Task AdvisoryLock_WhenLockStateIndeterminate_ClearsPoolReleasesResourcesAndDoesNotRetry()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Running, token, DateTime.UtcNow.AddMinutes(5));
+
+        var provider = new PostgreSqlAnalysisLeaseGuardProvider(fixture.ConnectionString, _fileLockProvider)
+        {
+            LockCommandExecutorAsync = async (connection, id, ct) =>
+            {
+                await using var cmd = connection.CreateCommand();
+                cmd.CommandText = """
+                    SELECT pg_try_advisory_lock_shared(
+                        hashtext('netscope_analysis_workspace'),
+                        @analysisId);
+                    """;
+                cmd.Parameters.AddWithValue("analysisId", id);
+                await cmd.ExecuteScalarAsync(ct);
+
+                // Симулируем сбой после отправки lock-запроса до подтверждения результата провайдером
+                throw new PostgresException(
+                    "Simulated indeterminate advisory lock error",
+                    "FATAL",
+                    "FATAL",
+                    PostgresErrorCodes.ConnectionException);
+            }
+        };
+
+        await Assert.ThrowsAsync<PostgresException>(
+            () => provider.AcquireGuardAsync(analysis.Id, token));
+
+        Assert.Equal(1, provider.AcquireAttemptCount);
+        Assert.Equal(1, provider.PoolClearCount);
+
+        // Файловая и PostgreSQL-блокировки не остались захваченными
+        var verifyProvider = new PostgreSqlAnalysisLeaseGuardProvider(fixture.ConnectionString, _fileLockProvider);
+        await using var cleanGuard = await verifyProvider.AcquireGuardAsync(analysis.Id, token);
+        Assert.True(cleanGuard.IsAcquired);
+        Assert.True(await cleanGuard.ValidateOwnershipAsync());
+    }
+
+    [Fact]
+    public async Task StartupRecovery_ScenarioA_WorkerHoldsSharedLock_BlocksRecoveryUntilReleased()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Running, token, DateTime.UtcNow.AddMinutes(5));
+
+        var provider = new PostgreSqlAnalysisLeaseGuardProvider(fixture.ConnectionString, _fileLockProvider);
+        var guard = await provider.AcquireGuardAsync(analysis.Id, token);
+        Assert.True(guard.IsAcquired);
+
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(fixture.ConnectionString)
+            .Options;
+
+        // Пока воркер удерживает shared lock, Startup Recovery не может получить exclusive lock и не меняет статус
+        await using (var recoveryCtx1 = new AppDbContext(options))
+        {
+            var repo1 = new AnalysisRepository(recoveryCtx1);
+            var failedWhileLocked = await repo1.TryFailStartupWithoutGuardAsync(
+                analysis.Id,
+                token,
+                "Should not fail while worker holds shared lock");
+            Assert.False(failedWhileLocked);
+        }
+
+        await using (var checkCtx = new AppDbContext(options))
+        {
+            var row = await checkCtx.Analyses.AsNoTracking().SingleAsync(a => a.Id == analysis.Id);
+            Assert.Equal(AnalysisStatus.Running, row.Status);
+            Assert.Equal(token, row.ExecutionToken);
+        }
+
+        // После освобождения shared lock повторная попытка Startup Recovery успешно переводит запись в Failed
+        await guard.DisposeAsync();
+
+        await using (var recoveryCtx2 = new AppDbContext(options))
+        {
+            var repo2 = new AnalysisRepository(recoveryCtx2);
+            var failedAfterRelease = await repo2.TryFailStartupWithoutGuardAsync(
+                analysis.Id,
+                token,
+                "Startup failed after shared lock released");
+            Assert.True(failedAfterRelease);
+        }
+
+        await using (var verifyCtx = new AppDbContext(options))
+        {
+            var row = await verifyCtx.Analyses.AsNoTracking().SingleAsync(a => a.Id == analysis.Id);
+            Assert.Equal(AnalysisStatus.Failed, row.Status);
+            Assert.Null(row.LeaseExpiration);
+            Assert.Equal("Startup failed after shared lock released", row.ErrorMessage);
+        }
+
+        Assert.Equal(0L, await CountWorkspaceAdvisoryLocksAsync(analysis.Id));
+    }
+
+    [Fact]
+    public async Task StartupRecovery_ScenarioB_RecoveryHoldsExclusiveLock_BlocksWorkerThenWorkerSeesFailed()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Running, token, DateTime.UtcNow.AddMinutes(5));
+
+        var exclusiveLockAcquired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowRecoveryToFinish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(fixture.ConnectionString)
+            .Options;
+
+        await using var recoveryCtx = new AppDbContext(options);
+        var repo = new AnalysisRepository(recoveryCtx)
+        {
+            SyncPointAfterStartupRecoveryLockAsync = async _ =>
+            {
+                exclusiveLockAcquired.TrySetResult();
+                await allowRecoveryToFinish.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        };
+
+        var recoveryTask = repo.TryFailStartupWithoutGuardAsync(
+            analysis.Id,
+            token,
+            "Startup aborted under exclusive lock");
+
+        await exclusiveLockAcquired.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Пока Startup Recovery удерживает exclusive lock, воркер не может получить shared lock
+        var provider = new PostgreSqlAnalysisLeaseGuardProvider(fixture.ConnectionString, _fileLockProvider);
+        await using (var blockedGuard = await provider.AcquireGuardAsync(analysis.Id, token))
+        {
+            Assert.False(blockedGuard.IsAcquired);
+        }
+
+        // Разрешаем Startup Recovery завершить UPDATE и освободить exclusive lock
+        allowRecoveryToFinish.TrySetResult();
+        Assert.True(await recoveryTask);
+        Assert.Equal(0L, await CountWorkspaceAdvisoryLocksAsync(analysis.Id));
+
+        // Теперь воркер может получить lock, но обязан увидеть статус Failed и отказаться от выполнения
+        await using var workerGuard = await provider.AcquireGuardAsync(analysis.Id, token);
+        Assert.True(workerGuard.IsAcquired);
+        Assert.False(await workerGuard.ValidateOwnershipAsync([(int)AnalysisStatus.Running]));
+
+        await using var checkCtx = new AppDbContext(options);
+        var dbRow = await checkCtx.Analyses.AsNoTracking().SingleAsync(a => a.Id == analysis.Id);
+        Assert.Equal(AnalysisStatus.Failed, dbRow.Status);
+    }
+
+    [Fact]
+    public async Task StartupRecovery_ForeignTokenAndTerminalState_AreNotModified()
+    {
+        var actualToken = Guid.NewGuid();
+        var foreignAttemptToken = Guid.NewGuid();
+        var runningAnalysis = await CreateTestAnalysisAsync(AnalysisStatus.Running, actualToken, DateTime.UtcNow.AddMinutes(5));
+
+        var completedToken = Guid.NewGuid();
+        var completedAnalysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, completedToken, null);
+
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(fixture.ConnectionString)
+            .Options;
+
+        await using (var ctx = new AppDbContext(options))
+        {
+            var repo = new AnalysisRepository(ctx);
+            Assert.False(await repo.TryFailStartupWithoutGuardAsync(runningAnalysis.Id, foreignAttemptToken, "Foreign attempt"));
+            Assert.False(await repo.TryFailStartupWithoutGuardAsync(completedAnalysis.Id, completedToken, "Already completed"));
+        }
+
+        await using (var verifyCtx = new AppDbContext(options))
+        {
+            var runningRow = await verifyCtx.Analyses.AsNoTracking().SingleAsync(a => a.Id == runningAnalysis.Id);
+            Assert.Equal(AnalysisStatus.Running, runningRow.Status);
+            Assert.Equal(actualToken, runningRow.ExecutionToken);
+
+            var completedRow = await verifyCtx.Analyses.AsNoTracking().SingleAsync(a => a.Id == completedAnalysis.Id);
+            Assert.Equal(AnalysisStatus.Completed, completedRow.Status);
+            Assert.Equal(completedToken, completedRow.ExecutionToken);
+        }
+
+        Assert.Equal(0L, await CountWorkspaceAdvisoryLocksAsync(runningAnalysis.Id));
+        Assert.Equal(0L, await CountWorkspaceAdvisoryLocksAsync(completedAnalysis.Id));
+    }
+
+    [Fact]
+    public async Task StartupRecovery_WhenCancelled_ThrowsAndReleasesLocks()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Running, token, DateTime.UtcNow.AddMinutes(5));
+
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(fixture.ConnectionString)
+            .Options;
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await using var ctx = new AppDbContext(options);
+        var repo = new AnalysisRepository(ctx);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => repo.TryFailStartupWithoutGuardAsync(analysis.Id, token, "Cancelled", cts.Token));
+
+        await using var verifyCtx = new AppDbContext(options);
+        var row = await verifyCtx.Analyses.AsNoTracking().SingleAsync(a => a.Id == analysis.Id);
+        Assert.Equal(AnalysisStatus.Running, row.Status);
+        Assert.Equal(0L, await CountWorkspaceAdvisoryLocksAsync(analysis.Id));
+    }
+
+    private async Task<long> CountWorkspaceAdvisoryLocksAsync(int analysisId)
+    {
+        await using var checkConnection = new NpgsqlConnection(fixture.ConnectionString);
+        await checkConnection.OpenAsync();
+        await using var command = checkConnection.CreateCommand();
+        command.CommandText = """
+            SELECT count(*)
+            FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid = hashtext('netscope_analysis_workspace')
+              AND objid = @analysisId
+              AND objsubid = 2
+              AND granted = true;
+            """;
+        command.Parameters.AddWithValue("analysisId", analysisId);
+        return (long)(await command.ExecuteScalarAsync())!;
+    }
 }

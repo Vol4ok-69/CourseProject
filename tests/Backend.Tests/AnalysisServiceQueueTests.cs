@@ -11,8 +11,10 @@ using Domain.Entities;
 using Domain.Enums;
 using Infrastructure.Data;
 using Infrastructure.Repository;
+using Infrastructure.Storage;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Moq;
 using Xunit;
 
@@ -2928,6 +2930,389 @@ public sealed class AnalysisServiceQueueTests
             It.IsAny<CancellationToken>()), Times.Once);
         analysisRepo.Verify(x => x.CompleteAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
         sourceService.Verify(x => x.CleanupAsync(219, token, It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    #endregion
+
+    #region TD-003 Stage 2: Guard Contention Retry on ExecuteAnalysisAsync Start
+
+    [Fact]
+    public async Task TD003_GuardAcquisition_WhenTemporarilyBusyThenReleased_RetriesAndSucceedsWithSameToken()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(220);
+
+        var unacquiredGuard = new Mock<IAnalysisLeaseGuard>();
+        unacquiredGuard.SetupGet(g => g.IsAcquired).Returns(false);
+
+        var acquiredGuard = new Mock<IAnalysisLeaseGuard>();
+        acquiredGuard.SetupGet(g => g.IsAcquired).Returns(true);
+        acquiredGuard.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+
+        var firstAttemptDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempt = 0;
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock
+            .Setup(p => p.AcquireGuardAsync(220, token, It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                attempt++;
+                if (attempt == 1)
+                {
+                    firstAttemptDone.TrySetResult();
+                    return Task.FromResult(unacquiredGuard.Object);
+                }
+
+                return Task.FromResult(acquiredGuard.Object);
+            });
+
+        var csMock = new Mock<IAnalyzer>();
+        csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+        csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+
+        var service = new AnalysisService(
+            analysisRepo.Object,
+            commitRepo.Object,
+            sourceService.Object,
+            [csMock.Object],
+            credentialService.Object,
+            guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(220, token);
+
+        await firstAttemptDone.Task;
+        Assert.True(success);
+        Assert.Equal(2, attempt);
+        unacquiredGuard.Verify(g => g.DisposeAsync(), Times.Once);
+        acquiredGuard.Verify(g => g.DisposeAsync(), Times.Once);
+        analysisRepo.Verify(x => x.GetByIdAsync(220, It.IsAny<CancellationToken>()), Times.Exactly(2));
+        analysisRepo.Verify(x => x.CompleteAsync(220, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), acquiredGuard.Object, It.IsAny<CancellationToken>()), Times.Once);
+        sourceService.Verify(x => x.CleanupAsync(220, token, acquiredGuard.Object, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD003_GuardAcquisition_WhenOwnershipLostDuringContention_StopsRetryingImmediately()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(221);
+
+        var reassignedAnalysis = new Analysis
+        {
+            Id = 221,
+            CommitId = 1,
+            Status = AnalysisStatus.Running,
+            ExecutionToken = Guid.NewGuid()
+        };
+
+        var getCalls = 0;
+        analysisRepo
+            .Setup(x => x.GetByIdAsync(221, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                getCalls++;
+                return getCalls == 1 ? analysis : reassignedAnalysis;
+            });
+
+        var unacquiredGuard = new Mock<IAnalysisLeaseGuard>();
+        unacquiredGuard.SetupGet(g => g.IsAcquired).Returns(false);
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock
+            .Setup(p => p.AcquireGuardAsync(221, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(unacquiredGuard.Object);
+
+        var service = new AnalysisService(
+            analysisRepo.Object,
+            commitRepo.Object,
+            sourceService.Object,
+            [new Mock<IAnalyzer>().Object],
+            credentialService.Object,
+            guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(221, token);
+
+        Assert.False(success);
+        guardProviderMock.Verify(p => p.AcquireGuardAsync(221, token, It.IsAny<CancellationToken>()), Times.Once);
+        unacquiredGuard.Verify(g => g.DisposeAsync(), Times.Once);
+        sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD003_GuardAcquisition_WhenCancelledDuringBackoff_ThrowsOperationCanceledException()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(222);
+        using var cts = new CancellationTokenSource();
+
+        var unacquiredGuard = new Mock<IAnalysisLeaseGuard>();
+        unacquiredGuard.SetupGet(g => g.IsAcquired).Returns(false);
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock
+            .Setup(p => p.AcquireGuardAsync(222, token, It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                cts.Cancel();
+                return Task.FromResult(unacquiredGuard.Object);
+            });
+
+        var service = new AnalysisService(
+            analysisRepo.Object,
+            commitRepo.Object,
+            sourceService.Object,
+            [new Mock<IAnalyzer>().Object],
+            credentialService.Object,
+            guardProviderMock.Object);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.ExecuteAnalysisAsync(222, token, cts.Token));
+
+        guardProviderMock.Verify(p => p.AcquireGuardAsync(222, token, It.IsAny<CancellationToken>()), Times.Once);
+        unacquiredGuard.Verify(g => g.DisposeAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD003_GuardAcquisition_RealFileLockContentionHandoff_SucceedsOnceExclusiveLockReleased()
+    {
+        var tempStoragePath = Path.Combine(Path.GetTempPath(), $"netscope_td003_lockrace_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempStoragePath);
+        try
+        {
+            var fileLockProvider = new WorkspaceFileLockProvider(tempStoragePath);
+            var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(223);
+
+            // Имитируем фоновую очистку, удерживающую эксклюзивную файловую блокировку в момент старта ExecuteAnalysisAsync
+            var exclusiveLock = fileLockProvider.TryAcquireExclusive(analysis.Id);
+            Assert.NotNull(exclusiveLock);
+
+            var firstContentionObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var lockReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var acquiredHandles = new List<FileStream>();
+
+            var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+            guardProviderMock
+                .Setup(p => p.AcquireGuardAsync(223, token, It.IsAny<CancellationToken>()))
+                .Returns(() =>
+                {
+                    var sharedHandle = fileLockProvider.TryAcquireShared(analysis.Id);
+                    if (sharedHandle == null)
+                    {
+                        firstContentionObserved.TrySetResult();
+                        var unacquired = new Mock<IAnalysisLeaseGuard>();
+                        unacquired.SetupGet(g => g.IsAcquired).Returns(false);
+                        return Task.FromResult(unacquired.Object);
+                    }
+
+                    acquiredHandles.Add(sharedHandle);
+                    var acquired = new Mock<IAnalysisLeaseGuard>();
+                    acquired.SetupGet(g => g.IsAcquired).Returns(true);
+                    acquired.Setup(g => g.ValidateOwnershipAsync(It.IsAny<int[]>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+                    acquired.Setup(g => g.DisposeAsync()).Returns(() =>
+                    {
+                        sharedHandle.Dispose();
+                        return ValueTask.CompletedTask;
+                    });
+                    return Task.FromResult(acquired.Object);
+                });
+
+            var csMock = new Mock<IAnalyzer>();
+            csMock.SetupGet(a => a.Type).Returns(AnalyzerType.CSharp);
+            csMock.Setup(a => a.AnalyzeAsync(It.IsAny<AnalyzerContext>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+
+            var service = new AnalysisService(
+                analysisRepo.Object,
+                commitRepo.Object,
+                sourceService.Object,
+                [csMock.Object],
+                credentialService.Object,
+                guardProviderMock.Object);
+
+            var executionTask = service.ExecuteAnalysisAsync(223, token);
+
+            // Детерминированно дожидаемся момента первой конкуренции за блокировку и освобождаем cleaner lock
+            await firstContentionObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            exclusiveLock!.Dispose();
+            lockReleased.TrySetResult();
+
+            await lockReleased.Task;
+            var success = await executionTask;
+
+            Assert.True(success);
+            Assert.Single(acquiredHandles);
+            guardProviderMock.Verify(p => p.AcquireGuardAsync(223, token, It.IsAny<CancellationToken>()), Times.Exactly(2));
+            analysisRepo.Verify(x => x.CompleteAsync(223, token, It.IsAny<IReadOnlyList<AnalysisResult>>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+        finally
+        {
+            if (Directory.Exists(tempStoragePath))
+            {
+                Directory.Delete(tempStoragePath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task TD003_GuardAcquisition_WhenAlwaysContended_StopsAfterFourAttemptsWithExpectedDelays()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(224);
+
+        var delaysField = typeof(AnalysisService).GetField("GuardAcquireRetryDelays", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(delaysField);
+        var configuredDelays = Assert.IsType<TimeSpan[]>(delaysField!.GetValue(null));
+        Assert.Equal([TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200)], configuredDelays);
+
+        var unacquiredGuard = new Mock<IAnalysisLeaseGuard>();
+        unacquiredGuard.SetupGet(g => g.IsAcquired).Returns(false);
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock
+            .Setup(p => p.AcquireGuardAsync(224, token, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(unacquiredGuard.Object);
+
+        var service = new AnalysisService(
+            analysisRepo.Object,
+            commitRepo.Object,
+            sourceService.Object,
+            [new Mock<IAnalyzer>().Object],
+            credentialService.Object,
+            guardProviderMock.Object);
+
+        var success = await service.ExecuteAnalysisAsync(224, token);
+
+        Assert.False(success);
+        guardProviderMock.Verify(p => p.AcquireGuardAsync(224, token, It.IsAny<CancellationToken>()), Times.Exactly(4));
+        unacquiredGuard.Verify(g => g.DisposeAsync(), Times.Exactly(4));
+        analysisRepo.Verify(x => x.GetByIdAsync(224, It.IsAny<CancellationToken>()), Times.Exactly(4));
+        sourceService.Verify(x => x.DownloadAndExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IAnalysisLeaseGuard>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TD003_GuardAcquisition_WhenProviderThrowsNpgsqlException_DoesNotRetryInService()
+    {
+        var (analysis, token, analysisRepo, commitRepo, sourceService, credentialService) = CreateAnalysisPipelineContext(225);
+
+        var guardProviderMock = new Mock<IAnalysisLeaseGuardProvider>();
+        guardProviderMock
+            .Setup(p => p.AcquireGuardAsync(225, token, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new NpgsqlException("Simulated PostgreSQL connectivity error"));
+
+        var service = new AnalysisService(
+            analysisRepo.Object,
+            commitRepo.Object,
+            sourceService.Object,
+            [new Mock<IAnalyzer>().Object],
+            credentialService.Object,
+            guardProviderMock.Object);
+
+        await Assert.ThrowsAsync<NpgsqlException>(() => service.ExecuteAnalysisAsync(225, token));
+
+        guardProviderMock.Verify(p => p.AcquireGuardAsync(225, token, It.IsAny<CancellationToken>()), Times.Once);
+        analysisRepo.Verify(x => x.GetByIdAsync(225, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TD003_AnalyzeAsync_WithRealSqliteRepository_TransitionsOwnRunningToFailedAndPreservesForeignToken()
+    {
+        await using var connection = new SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using (var setupContext = new AppDbContext(options))
+        {
+            await setupContext.Database.EnsureCreatedAsync();
+
+            var role = new Role { Id = 1, Name = "User" };
+            var user = new User { Id = 1, Username = "td003_user", PasswordHash = "hash", RoleId = 1 };
+            var project = new Project
+            {
+                Id = 1,
+                Name = "Repo",
+                RepoUrl = "https://github.com/org/repo",
+                OwnerId = 1
+            };
+            var commit = new Commit
+            {
+                Id = 1,
+                ProjectId = 1,
+                CommitHash = "commit_td003_a",
+                CommitDate = DateTime.UtcNow
+            };
+
+            setupContext.Roles.Add(role);
+            setupContext.Users.Add(user);
+            setupContext.Projects.Add(project);
+            setupContext.Commits.Add(commit);
+            await setupContext.SaveChangesAsync();
+        }
+
+        // 1. Свой сбой получения guard: реальная строка переводится из Running в Failed
+        await using (var context1 = new AppDbContext(options))
+        {
+            var analysisRepo1 = new AnalysisRepository(context1);
+            var commitRepo1 = new CommitRepository(context1);
+            var guardProvider1 = new Mock<IAnalysisLeaseGuardProvider>();
+            guardProvider1
+                .Setup(p => p.AcquireGuardAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidOperationException("Simulated lock acquire error"));
+
+            var service1 = new AnalysisService(
+                analysisRepo1,
+                commitRepo1,
+                Mock.Of<IRepositorySourceService>(),
+                [Mock.Of<IAnalyzer>()],
+                Mock.Of<IGitHubCredentialService>(),
+                guardProvider1.Object);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => service1.AnalyzeAsync(1));
+        }
+
+        await using (var verifyContext1 = new AppDbContext(options))
+        {
+            var row1 = await verifyContext1.Analyses.AsNoTracking().SingleAsync(a => a.Id == 1);
+            Assert.Equal(AnalysisStatus.Failed, row1.Status);
+            Assert.Null(row1.LeaseExpiration);
+            Assert.NotNull(row1.CompletedAt);
+        }
+
+        // 2. Потеря владения до TryFailStartupWithoutGuardAsync: чужой токен не перезаписывается
+        var foreignToken = Guid.NewGuid();
+        await using (var context2 = new AppDbContext(options))
+        {
+            var analysisRepo2 = new AnalysisRepository(context2);
+            var commitRepo2 = new CommitRepository(context2);
+            var guardProvider2 = new Mock<IAnalysisLeaseGuardProvider>();
+            var unacquiredGuard = new Mock<IAnalysisLeaseGuard>();
+            unacquiredGuard.SetupGet(g => g.IsAcquired).Returns(false);
+
+            guardProvider2
+                .Setup(p => p.AcquireGuardAsync(It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .Returns<int, Guid, CancellationToken>(async (analysisId, _, _) =>
+                {
+                    await using var competingContext = new AppDbContext(options);
+                    await competingContext.Analyses
+                        .Where(a => a.Id == analysisId)
+                        .ExecuteUpdateAsync(s => s.SetProperty(a => a.ExecutionToken, foreignToken));
+                    return unacquiredGuard.Object;
+                });
+
+            var service2 = new AnalysisService(
+                analysisRepo2,
+                commitRepo2,
+                Mock.Of<IRepositorySourceService>(),
+                [Mock.Of<IAnalyzer>()],
+                Mock.Of<IGitHubCredentialService>(),
+                guardProvider2.Object);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => service2.AnalyzeAsync(1));
+        }
+
+        await using (var verifyContext2 = new AppDbContext(options))
+        {
+            var row2 = await verifyContext2.Analyses.AsNoTracking().SingleAsync(a => a.Id == 2);
+            Assert.Equal(AnalysisStatus.Running, row2.Status);
+            Assert.Equal(foreignToken, row2.ExecutionToken);
+        }
     }
 
     #endregion

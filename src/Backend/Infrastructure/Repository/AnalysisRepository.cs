@@ -705,6 +705,236 @@ public class AnalysisRepository(AppDbContext context) : IAnalysisRepository
         }
     }
 
+    internal Func<int, Task>? SyncPointAfterStartupRecoveryLockAsync { get; set; }
+
+    public async Task<bool> TryFailStartupWithoutGuardAsync(
+        int analysisId,
+        Guid executionToken,
+        string errorMessage,
+        CancellationToken cancellationToken = default)
+    {
+        if (executionToken == Guid.Empty)
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+
+        if (context.Database.IsNpgsql())
+        {
+            var connectionString = context.Database.GetConnectionString();
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new InvalidOperationException(
+                    "Не настроена строка подключения PostgreSQL для синхронизации Startup Recovery.");
+            }
+
+            NpgsqlConnection? connection = null;
+            var lockAttemptStarted = false;
+            var lockAttemptCompleted = false;
+            var postgresLockAcquired = false;
+
+            try
+            {
+                connection = new NpgsqlConnection(connectionString);
+                await connection.OpenAsync(cancellationToken);
+
+                await using (var lockCommand = connection.CreateCommand())
+                {
+                    lockCommand.CommandTimeout = 10;
+                    lockCommand.CommandText = """
+                        SELECT pg_try_advisory_lock(
+                            hashtext('netscope_analysis_workspace'),
+                            @analysisId);
+                        """;
+                    lockCommand.Parameters.AddWithValue("analysisId", analysisId);
+
+                    lockAttemptStarted = true;
+                    var lockResult = await lockCommand.ExecuteScalarAsync(cancellationToken);
+                    lockAttemptCompleted = true;
+                    postgresLockAcquired = lockResult is true;
+                }
+
+                if (!postgresLockAcquired)
+                {
+                    return false;
+                }
+
+                if (SyncPointAfterStartupRecoveryLockAsync != null)
+                {
+                    await SyncPointAfterStartupRecoveryLockAsync(analysisId);
+                }
+
+                // Повторно проверяем состояние задачи в БД под эксклюзивной блокировкой.
+                int? currentStatus = null;
+                Guid? currentToken = null;
+                await using (var readCommand = connection.CreateCommand())
+                {
+                    readCommand.CommandTimeout = 10;
+                    readCommand.CommandText = """
+                        SELECT "Status", "ExecutionToken"
+                        FROM "Analyses"
+                        WHERE "Id" = @id;
+                        """;
+                    readCommand.Parameters.AddWithValue("id", analysisId);
+
+                    await using var reader = await readCommand.ExecuteReaderAsync(cancellationToken);
+                    if (await reader.ReadAsync(cancellationToken))
+                    {
+                        currentStatus = reader.GetInt32(0);
+                        currentToken = reader.IsDBNull(1) ? null : reader.GetGuid(1);
+                    }
+                }
+
+                if (currentStatus != (int)AnalysisStatus.Running || currentToken != executionToken)
+                {
+                    return false;
+                }
+
+                int affected;
+                await using (var updateCommand = connection.CreateCommand())
+                {
+                    updateCommand.CommandTimeout = 10;
+                    updateCommand.CommandText = """
+                        UPDATE "Analyses"
+                        SET "Status" = 3,
+                            "CompletedAt" = clock_timestamp(),
+                            "LeaseExpiration" = NULL,
+                            "ErrorMessage" = @errorMessage
+                        WHERE "Id" = @id
+                          AND "ExecutionToken" = @token
+                          AND "Status" = 1;
+                        """;
+                    updateCommand.Parameters.Add(new NpgsqlParameter("id", NpgsqlDbType.Integer) { Value = analysisId });
+                    updateCommand.Parameters.Add(new NpgsqlParameter("token", NpgsqlDbType.Uuid) { Value = executionToken });
+                    updateCommand.Parameters.Add(new NpgsqlParameter("errorMessage", NpgsqlDbType.Text) { Value = errorMessage });
+
+                    affected = await updateCommand.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                if (affected == 0)
+                {
+                    return false;
+                }
+
+                var local = context.Analyses.Local.FirstOrDefault(a => a.Id == analysisId);
+                if (local != null)
+                {
+                    local.Status = AnalysisStatus.Failed;
+                    local.CompletedAt = now;
+                    local.LeaseExpiration = null;
+                    local.ErrorMessage = errorMessage;
+                }
+
+                return true;
+            }
+            finally
+            {
+                await ReleaseExclusiveStartupLockAsync(
+                    connection,
+                    analysisId,
+                    lockAttemptStarted,
+                    lockAttemptCompleted,
+                    postgresLockAcquired);
+            }
+        }
+        else
+        {
+            var affected = await context.Analyses
+                .Where(a => a.Id == analysisId &&
+                            a.ExecutionToken == executionToken &&
+                            a.Status == AnalysisStatus.Running)
+                .ExecuteUpdateAsync(setter => setter
+                    .SetProperty(a => a.Status, AnalysisStatus.Failed)
+                    .SetProperty(a => a.CompletedAt, now)
+                    .SetProperty(a => a.LeaseExpiration, (DateTime?)null)
+                    .SetProperty(a => a.ErrorMessage, errorMessage),
+                    cancellationToken);
+
+            if (affected == 0)
+            {
+                return false;
+            }
+
+            var local = context.Analyses.Local.FirstOrDefault(a => a.Id == analysisId);
+            if (local != null)
+            {
+                local.Status = AnalysisStatus.Failed;
+                local.CompletedAt = now;
+                local.LeaseExpiration = null;
+                local.ErrorMessage = errorMessage;
+            }
+
+            return true;
+        }
+    }
+
+    private static async Task ReleaseExclusiveStartupLockAsync(
+        NpgsqlConnection? connection,
+        int analysisId,
+        bool lockAttemptStarted,
+        bool lockAttemptCompleted,
+        bool postgresLockAcquired)
+    {
+        if (connection == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var mustClearPool = lockAttemptStarted && !lockAttemptCompleted;
+
+            if (postgresLockAcquired)
+            {
+                if (connection.State == ConnectionState.Open)
+                {
+                    try
+                    {
+                        await using var unlockCommand = connection.CreateCommand();
+                        unlockCommand.CommandTimeout = 10;
+                        unlockCommand.CommandText = """
+                            SELECT pg_advisory_unlock(
+                                hashtext('netscope_analysis_workspace'),
+                                @analysisId);
+                            """;
+                        unlockCommand.Parameters.AddWithValue("analysisId", analysisId);
+                        await unlockCommand.ExecuteScalarAsync(CancellationToken.None);
+                    }
+                    catch
+                    {
+                        mustClearPool = true;
+                    }
+                }
+                else
+                {
+                    mustClearPool = true;
+                }
+            }
+
+            if (mustClearPool)
+            {
+                try
+                {
+                    NpgsqlConnection.ClearPool(connection);
+                }
+                catch
+                {
+                }
+            }
+        }
+        finally
+        {
+            try
+            {
+                await connection.DisposeAsync();
+            }
+            catch
+            {
+            }
+        }
+    }
+
     public async Task<bool> ScheduleRetryAsync(
         int analysisId,
         Guid executionToken,

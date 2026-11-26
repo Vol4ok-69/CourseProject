@@ -1,4 +1,9 @@
-﻿using System.Data;
+using System.Collections.Concurrent;
+using System.Data;
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
 using Application.Interfaces;
 using IAnalysisLeaseGuard = Application.Interfaces.IAnalysisLeaseGuard;
 using DatabaseAnalyzer.Runner;
@@ -28,6 +33,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
     : IClassFixture<PostgreSqlFixture>, IAsyncLifetime
 {
     private string _testStorageRoot = null!;
+    private string _testContainerRoot = null!;
     private WorkspaceFileLockProvider _fileLockProvider = null!;
 
     public async Task InitializeAsync()
@@ -36,6 +42,8 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         _testStorageRoot = Path.Combine(Path.GetTempPath(), "CourseProject_WorkspaceTests_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_testStorageRoot);
         _fileLockProvider = new WorkspaceFileLockProvider(_testStorageRoot);
+        _testContainerRoot = Path.Combine(Path.GetTempPath(), "CourseProject_ContainerTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_testContainerRoot);
     }
 
     public Task DisposeAsync()
@@ -51,8 +59,76 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
             }
         }
 
+        TryDeleteDirectory(_testContainerRoot);
         return Task.CompletedTask;
     }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+        }
+    }
+
+    private AnalysisCleanupService CreateCleanupService(
+        string? storageRoot = null,
+        IWorkspaceFileLockProvider? fileLockProvider = null,
+        string? containerRoot = null,
+        ILogger<AnalysisCleanupService>? logger = null,
+        string? connectionString = null)
+    {
+        return new AnalysisCleanupService(
+            connectionString ?? fixture.ConnectionString,
+            fileLockProvider ?? _fileLockProvider,
+            storageRoot ?? _testStorageRoot,
+            containerRoot ?? _testContainerRoot,
+            logger);
+    }
+
+    private string CreateContainerExchangeDirectory(int analysisId, Guid token)
+    {
+        var dir = Path.Combine(_testContainerRoot, $"{analysisId}_{token:N}");
+        Directory.CreateDirectory(Path.Combine(dir, "in"));
+        File.WriteAllText(Path.Combine(dir, "in", "input.json"), "{}");
+        return dir;
+    }
+
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        private readonly ConcurrentQueue<(LogLevel Level, string Message)> _entries = new();
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Entries => _entries.ToArray();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            var message = formatter(state, exception);
+            if (exception is not null)
+            {
+                message = $"{message} | {exception.GetType().Name}: {exception.Message}";
+            }
+
+            _entries.Enqueue((logLevel, message));
+        }
+    }
+
 
     private async Task<Analysis> CreateTestAnalysisAsync(AnalysisStatus status, Guid token, DateTime? leaseExpiration = null)
     {
@@ -129,7 +205,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
 
         Assert.True(Directory.Exists(dirA));
 
-        var cleanupService = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleanupService = CreateCleanupService();
         var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
 
         Assert.Equal(0, deletedCount);
@@ -157,7 +233,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         Assert.True(Directory.Exists(dirA));
         Assert.True(Directory.Exists(dirB));
 
-        var cleanupService = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleanupService = CreateCleanupService();
         var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
 
         Assert.Equal(1, deletedCount);
@@ -189,7 +265,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         await using var guard = await guardProvider.AcquireGuardAsync(analysis.Id, tokenA);
         Assert.True(guard.IsAcquired, "Session-level advisory lock должен быть успешно получен воркером");
 
-        var cleanupService = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleanupService = CreateCleanupService();
         var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
 
         // Очиститель должен пропустить данный analysisId, так как блокировка занята
@@ -234,7 +310,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         var dirB = CreateExecutionDirectory(analysis.Id, tokenB);
 
         // Теперь запускаем очиститель
-        var cleanupService = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleanupService = CreateCleanupService();
         var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
 
         Assert.Equal(1, deletedCount);
@@ -273,7 +349,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         var fileStale2 = Path.Combine(dirStale2, "repository", "stale2.cs");
         await File.WriteAllTextAsync(fileStale2, "// stale 2");
 
-        var cleanupService = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleanupService = CreateCleanupService();
 
         var terminatedSession = false;
 
@@ -696,10 +772,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
             fixture.ConnectionString,
             _fileLockProvider);
 
-        var cleanupService = new AnalysisCleanupService(
-            fixture.ConnectionString,
-            _fileLockProvider,
-            _testStorageRoot);
+        var cleanupService = CreateCleanupService();
 
         IAnalysisLeaseGuard? guard = null;
 
@@ -948,7 +1021,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         var dirStale2 = CreateExecutionDirectory(analysis2.Id, tokenStale2);
         var dirActive2 = CreateExecutionDirectory(analysis2.Id, tokenActive2);
 
-        var cleanupService = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleanupService = CreateCleanupService();
         var count = await cleanupService.CleanupStaleDirectoriesAsync();
 
         Assert.Equal(2, count);
@@ -1041,7 +1114,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         await analyzerEnteredTcs.Task;
 
         // Пока воркер заблокирован внутри анализатора, запускаем фоновый очиститель
-        var cleanupService = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleanupService = CreateCleanupService();
         var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
 
         // Очиститель не смог захватить advisory lock для этой задачи и пропустил её!
@@ -1310,7 +1383,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
 
         // После завершения метода guard освобождён
         // Теперь очиститель может захватить advisory lock без конфликтов
-        var cleanupService = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleanupService = CreateCleanupService();
         var count = await cleanupService.CleanupStaleDirectoriesAsync();
 
         // Очиститель смог получить блокировку
@@ -1491,7 +1564,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         await using var guardA = await guardProvider.AcquireGuardAsync(analysis.Id, tokenA);
         Assert.True(guardA.IsAcquired);
 
-        var cleaner = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleaner = CreateCleanupService();
         var deletedCount = await cleaner.CleanupStaleDirectoriesAsync();
 
         Assert.Equal(0, deletedCount);
@@ -1519,7 +1592,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         // Worker A освобождает shared lock
         await guardA.DisposeAsync();
 
-        var cleaner = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleaner = CreateCleanupService();
         var deletedCount = await cleaner.CleanupStaleDirectoriesAsync();
 
         Assert.Equal(1, deletedCount);
@@ -2192,7 +2265,7 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
         // Даем время на закрытие сессии в PostgreSQL
         await Task.Delay(100);
 
-        var cleanupService = new AnalysisCleanupService(fixture.ConnectionString, _fileLockProvider, _testStorageRoot);
+        var cleanupService = CreateCleanupService();
 
         // Сценарий 7: Cleaner пытается очистить каталог.
         // PostgreSQL lock свободен (сессия закрыта), но файловый SharedLock все еще удерживается процессом Worker!
@@ -2263,4 +2336,580 @@ public sealed class PostgreSqlWorkspaceCleanupIntegrationTests(PostgreSqlFixture
             Directory.Exists(executionDirectory),
             $"Собственный workspace должен удаляться при статусе {terminalStatus}.");
     }
+    #region Stage 1 Background Cleanup Integration Tests (TD-003)
+
+    private static bool TryCreateReparsePoint(string linkPath, string targetPath)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return true;
+        }
+        catch (Exception) when (OperatingSystem.IsWindows())
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("/c");
+            startInfo.ArgumentList.Add("mklink");
+            startInfo.ArgumentList.Add("/J");
+            startInfo.ArgumentList.Add(linkPath);
+            startInfo.ArgumentList.Add(targetPath);
+
+            using var process = System.Diagnostics.Process.Start(startInfo);
+            if (process is null)
+            {
+                return false;
+            }
+
+            process.WaitForExit(5000);
+            return process.ExitCode == 0 && Directory.Exists(linkPath);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    [Fact]
+    public async Task Stage1_Test01_OrphanDirectory_WhenAnalysisDeletedFromDatabase_DeletesWorkspaceAndContainerDirectories()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Running, token);
+        var executionDir = CreateExecutionDirectory(analysis.Id, token);
+        var analysisParentDir = Path.Combine(_testStorageRoot, analysis.Id.ToString());
+        var containerDir = CreateContainerExchangeDirectory(analysis.Id, token);
+
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(fixture.ConnectionString)
+            .Options;
+
+        await using (var context = new AppDbContext(options))
+        {
+            await context.Analyses
+                .Where(a => a.Id == analysis.Id)
+                .ExecuteDeleteAsync();
+        }
+
+        var cleanupService = CreateCleanupService();
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(1, deletedCount);
+        Assert.False(Directory.Exists(executionDir), "Осиротевший рабочий каталог удалённого анализа должен быть удалён.");
+        Assert.False(Directory.Exists(analysisParentDir), "Пустой родительский каталог удалённого анализа должен быть удалён.");
+        Assert.False(Directory.Exists(containerDir), "Осиротевший каталог контейнера удалённого анализа должен быть удалён.");
+    }
+
+    [Fact]
+    public async Task Stage1_Test02_CompletedAnalysis_WithRetainedExecutionToken_DeletesWorkspaceAndContainerDirectories()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, token);
+        var executionDir = CreateExecutionDirectory(analysis.Id, token);
+        var analysisParentDir = Path.Combine(_testStorageRoot, analysis.Id.ToString());
+        var containerDir = CreateContainerExchangeDirectory(analysis.Id, token);
+
+        var cleanupService = CreateCleanupService();
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(1, deletedCount);
+        Assert.False(Directory.Exists(executionDir), "Каталог завершённого (Completed) анализа должен быть удалён даже при сохранённом ExecutionToken.");
+        Assert.False(Directory.Exists(analysisParentDir));
+        Assert.False(Directory.Exists(containerDir), "Контейнерный каталог завершённого (Completed) анализа должен быть удалён.");
+    }
+
+    [Fact]
+    public async Task Stage1_Test03_FailedAnalysis_WithRetainedExecutionToken_DeletesWorkspaceAndContainerDirectories()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Failed, token);
+        var executionDir = CreateExecutionDirectory(analysis.Id, token);
+        var analysisParentDir = Path.Combine(_testStorageRoot, analysis.Id.ToString());
+        var containerDir = CreateContainerExchangeDirectory(analysis.Id, token);
+
+        var cleanupService = CreateCleanupService();
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(1, deletedCount);
+        Assert.False(Directory.Exists(executionDir), "Каталог аварийно завершённого (Failed) анализа должен быть удалён даже при сохранённом ExecutionToken.");
+        Assert.False(Directory.Exists(analysisParentDir));
+        Assert.False(Directory.Exists(containerDir), "Контейнерный каталог аварийно завершённого (Failed) анализа должен быть удалён.");
+    }
+
+    [Fact]
+    public async Task Stage1_Test04_ContainerExchangeDirectory_WithoutWorkspaceParentDir_CleansCompletedAndPreservesRunning()
+    {
+        var completedToken = Guid.NewGuid();
+        var completedAnalysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, completedToken);
+        var completedContainerDir = CreateContainerExchangeDirectory(completedAnalysis.Id, completedToken);
+
+        var runningToken = Guid.NewGuid();
+        var runningAnalysis = await CreateTestAnalysisAsync(AnalysisStatus.Running, runningToken);
+        var runningContainerDir = CreateContainerExchangeDirectory(runningAnalysis.Id, runningToken);
+
+        Assert.False(Directory.Exists(Path.Combine(_testStorageRoot, completedAnalysis.Id.ToString())));
+        Assert.False(Directory.Exists(Path.Combine(_testStorageRoot, runningAnalysis.Id.ToString())));
+
+        var cleanupService = CreateCleanupService();
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(1, deletedCount);
+        Assert.False(Directory.Exists(completedContainerDir), "Контейнерный каталог завершённого анализа должен очищаться без fullAnalysisDir.");
+        Assert.True(Directory.Exists(runningContainerDir), "Контейнерный каталог активного (Running) анализа не должен удаляться.");
+    }
+
+    [Fact]
+    public async Task Stage1_Test05_StoragePathWithTrailingForwardSlash_CleansStaleDirectory()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, token);
+        var executionDir = CreateExecutionDirectory(analysis.Id, token);
+
+        var storageWithForwardSlash = _testStorageRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + "/";
+        var lockProvider = new WorkspaceFileLockProvider(storageWithForwardSlash);
+        var cleanupService = CreateCleanupService(
+            storageRoot: storageWithForwardSlash,
+            fileLockProvider: lockProvider);
+
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(1, deletedCount);
+        Assert.False(Directory.Exists(executionDir), "Очистка обязана работать при Storage:AnalysisPath с завершающим '/'.");
+    }
+
+    [Fact]
+    public async Task Stage1_Test06_StoragePathWithTrailingBackslash_AndRelativePath_CleansStaleDirectory()
+    {
+        var token1 = Guid.NewGuid();
+        var completedAnalysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, token1);
+        var executionDir1 = CreateExecutionDirectory(completedAnalysis.Id, token1);
+
+        if (OperatingSystem.IsWindows())
+        {
+            var storageWithBackslash = _testStorageRoot.TrimEnd('\\', '/') + "\\";
+            var backslashLockProvider = new WorkspaceFileLockProvider(storageWithBackslash);
+            var backslashCleaner = CreateCleanupService(
+                storageRoot: storageWithBackslash,
+                fileLockProvider: backslashLockProvider);
+
+            var deletedBackslash = await backslashCleaner.CleanupStaleDirectoriesAsync();
+            Assert.Equal(1, deletedBackslash);
+            Assert.False(Directory.Exists(executionDir1), "Очистка обязана работать на Windows при Storage:AnalysisPath с завершающим '\\'.");
+        }
+
+        var relativeFolderName = $"tmp_rel_cleanup_{Guid.NewGuid():N}/";
+        var fullRelativeRoot = Path.GetFullPath(relativeFolderName);
+        try
+        {
+            var token2 = Guid.NewGuid();
+            var failedAnalysis = await CreateTestAnalysisAsync(AnalysisStatus.Failed, token2);
+            var relExecutionDir = Path.Combine(fullRelativeRoot, failedAnalysis.Id.ToString(), token2.ToString("D"), "repository");
+            Directory.CreateDirectory(relExecutionDir);
+            await File.WriteAllTextAsync(Path.Combine(relExecutionDir, "file.cs"), "// rel");
+
+            var relLockProvider = new WorkspaceFileLockProvider(relativeFolderName);
+            var relCleaner = CreateCleanupService(
+                storageRoot: relativeFolderName,
+                fileLockProvider: relLockProvider);
+
+            var deletedRelative = await relCleaner.CleanupStaleDirectoriesAsync();
+            Assert.Equal(1, deletedRelative);
+            Assert.False(Directory.Exists(Path.Combine(fullRelativeRoot, failedAnalysis.Id.ToString())));
+        }
+        finally
+        {
+            TryDeleteDirectory(fullRelativeRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Stage1_Test07_PostgreSqlUnavailableDuringCleanup_FailClosed_DeletesNothingAndLogsReason()
+    {
+        var token = Guid.NewGuid();
+        const int analysisId = 999;
+        var executionDir = CreateExecutionDirectory(analysisId, token);
+        var containerDir = CreateContainerExchangeDirectory(analysisId, token);
+
+        int unusedPort;
+        using (var listener = new TcpListener(IPAddress.Loopback, 0))
+        {
+            listener.Start();
+            unusedPort = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+        }
+
+        var unreachableConnectionString =
+            $"Host=127.0.0.1;Port={unusedPort};Database=courseproject_test;Username=test_user;Password=test_password;Timeout=2";
+
+        var logger = new CapturingLogger<AnalysisCleanupService>();
+        var cleanupService = CreateCleanupService(
+            logger: logger,
+            connectionString: unreachableConnectionString);
+
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(0, deletedCount);
+        Assert.True(Directory.Exists(executionDir), "При недоступности PostgreSQL удаление запрещено (fail-closed).");
+        Assert.True(Directory.Exists(containerDir), "При недоступности PostgreSQL контейнерный каталог не должен удаляться.");
+        Assert.Contains(logger.Entries, e =>
+            e.Level == LogLevel.Error &&
+            e.Message.Contains("PostgreSQL", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Stage1_Test08_PostgreSqlExclusiveLockHeld_SkipsCleanup_AndLogsContention()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, token);
+        var executionDir = CreateExecutionDirectory(analysis.Id, token);
+
+        await using var lockConn = new NpgsqlConnection(fixture.ConnectionString);
+        await lockConn.OpenAsync();
+
+        await using (var lockCmd = lockConn.CreateCommand())
+        {
+            lockCmd.CommandText = "SELECT pg_try_advisory_lock_shared(hashtext('netscope_analysis_workspace'), @analysisId);";
+            lockCmd.Parameters.AddWithValue("analysisId", analysis.Id);
+            Assert.True((bool)(await lockCmd.ExecuteScalarAsync())!);
+        }
+
+        var logger = new CapturingLogger<AnalysisCleanupService>();
+        var cleanupService = CreateCleanupService(logger: logger);
+
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(0, deletedCount);
+        Assert.True(Directory.Exists(executionDir), "При невозможности получить PostgreSQL exclusive lock каталог не должен удаляться.");
+        Assert.Contains(logger.Entries, e =>
+            e.Message.Contains("PostgreSQL exclusive advisory lock", StringComparison.OrdinalIgnoreCase));
+
+        using var fileProbe = _fileLockProvider.TryAcquireExclusive(analysis.Id);
+        Assert.NotNull(fileProbe);
+    }
+
+    [Fact]
+    public async Task Stage1_Test09_FileExclusiveLockHeld_SkipsCleanup_AndLogsContention()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, token);
+        var executionDir = CreateExecutionDirectory(analysis.Id, token);
+
+        using var sharedFileLock = _fileLockProvider.TryAcquireShared(analysis.Id);
+        Assert.NotNull(sharedFileLock);
+
+        var logger = new CapturingLogger<AnalysisCleanupService>();
+        var cleanupService = CreateCleanupService(logger: logger);
+
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(0, deletedCount);
+        Assert.True(Directory.Exists(executionDir), "При невозможности получить файловую exclusive-блокировку каталог не должен удаляться.");
+        Assert.Contains(logger.Entries, e =>
+            e.Message.Contains("файловую exclusive-блокировку", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Stage1_Test10_ExtraneousAndInvalidDirectoryNames_ArePreservedUntouched()
+    {
+        var validToken = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, validToken);
+        var validExecutionDir = CreateExecutionDirectory(analysis.Id, validToken);
+
+        var unrelatedRootDir = Path.Combine(_testStorageRoot, "unrelated-folder");
+        var zeroIdDir = Path.Combine(_testStorageRoot, "0");
+        var negativeIdDir = Path.Combine(_testStorageRoot, "-5");
+        var leadingZeroIdDir = Path.Combine(_testStorageRoot, "042");
+        var nonGuidSubdir = Path.Combine(_testStorageRoot, analysis.Id.ToString(), "not-a-guid");
+        var emptyGuidSubdir = Path.Combine(_testStorageRoot, analysis.Id.ToString(), Guid.Empty.ToString("D"));
+        var locksDir = Path.Combine(_testStorageRoot, ".locks");
+
+        Directory.CreateDirectory(unrelatedRootDir);
+        Directory.CreateDirectory(zeroIdDir);
+        Directory.CreateDirectory(negativeIdDir);
+        Directory.CreateDirectory(leadingZeroIdDir);
+        Directory.CreateDirectory(nonGuidSubdir);
+        Directory.CreateDirectory(emptyGuidSubdir);
+        Directory.CreateDirectory(locksDir);
+        await File.WriteAllTextAsync(Path.Combine(unrelatedRootDir, "keep.txt"), "keep");
+
+        var invalidContainerDir = Path.Combine(_testContainerRoot, "custom-folder");
+        var leadingZeroContainerDir = Path.Combine(_testContainerRoot, $"042_{validToken:N}");
+        var emptyGuidContainerDir = Path.Combine(_testContainerRoot, $"{analysis.Id}_{Guid.Empty:N}");
+        Directory.CreateDirectory(invalidContainerDir);
+        Directory.CreateDirectory(leadingZeroContainerDir);
+        Directory.CreateDirectory(emptyGuidContainerDir);
+
+        var cleanupService = CreateCleanupService();
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(1, deletedCount);
+        Assert.False(Directory.Exists(validExecutionDir), "Корректный каталог завершённого анализа должен быть удалён.");
+        Assert.True(Directory.Exists(unrelatedRootDir));
+        Assert.True(File.Exists(Path.Combine(unrelatedRootDir, "keep.txt")));
+        Assert.True(Directory.Exists(zeroIdDir));
+        Assert.True(Directory.Exists(negativeIdDir));
+        Assert.True(Directory.Exists(leadingZeroIdDir));
+        Assert.True(Directory.Exists(nonGuidSubdir));
+        Assert.True(Directory.Exists(emptyGuidSubdir));
+        Assert.True(Directory.Exists(locksDir));
+        Assert.True(Directory.Exists(invalidContainerDir));
+        Assert.True(Directory.Exists(leadingZeroContainerDir));
+        Assert.True(Directory.Exists(emptyGuidContainerDir));
+    }
+
+    [Fact]
+    public async Task Stage1_Test11_ReparsePointPointingOutsideRoot_IsSkippedAndTargetPreserved()
+    {
+        var outsideDir = Path.Combine(Path.GetTempPath(), "CourseProject_OutsideTarget_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var secretFile = Path.Combine(outsideDir, "secret.txt");
+        await File.WriteAllTextAsync(secretFile, "outside-secret-content");
+
+        var validToken = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, validToken);
+        var analysisDir = Path.Combine(_testStorageRoot, analysis.Id.ToString());
+        Directory.CreateDirectory(analysisDir);
+
+        var executionLink = Path.Combine(analysisDir, validToken.ToString("D"));
+        var topLevelAnalysisLink = Path.Combine(_testStorageRoot, (analysis.Id + 5000).ToString());
+        var containerLink = Path.Combine(_testContainerRoot, $"{analysis.Id}_{validToken:N}");
+
+        try
+        {
+            Assert.True(TryCreateReparsePoint(executionLink, outsideDir), "Не удалось создать reparse point для executionDir.");
+            Assert.True(TryCreateReparsePoint(topLevelAnalysisLink, outsideDir), "Не удалось создать reparse point для analysisDir.");
+            Assert.True(TryCreateReparsePoint(containerLink, outsideDir), "Не удалось создать reparse point для containerDir.");
+
+            var logger = new CapturingLogger<AnalysisCleanupService>();
+            var cleanupService = CreateCleanupService(logger: logger);
+
+            var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+            Assert.Equal(0, deletedCount);
+            Assert.True(Directory.Exists(outsideDir), "Целевой каталог за пределами корня не должен удаляться.");
+            Assert.True(File.Exists(secretFile), "Файлы за пределами корня не должны удаляться через reparse point.");
+            Assert.Equal("outside-secret-content", await File.ReadAllTextAsync(secretFile));
+            Assert.Contains(logger.Entries, e =>
+                e.Message.Contains("reparse point", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            if (Directory.Exists(executionLink))
+            {
+                try { Directory.Delete(executionLink, recursive: false); } catch { }
+            }
+            if (Directory.Exists(topLevelAnalysisLink))
+            {
+                try { Directory.Delete(topLevelAnalysisLink, recursive: false); } catch { }
+            }
+            if (Directory.Exists(containerLink))
+            {
+                try { Directory.Delete(containerLink, recursive: false); } catch { }
+            }
+            TryDeleteDirectory(outsideDir);
+        }
+    }
+
+    [Fact]
+    public async Task Stage1_Test12_ActiveWorkerHoldingSharedLocks_BlocksCleanerUntilReleased()
+    {
+        var activeToken = Guid.NewGuid();
+        var staleToken = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Running, activeToken);
+
+        var activeDir = CreateExecutionDirectory(analysis.Id, activeToken);
+        var staleDir = CreateExecutionDirectory(analysis.Id, staleToken);
+
+        var guardProvider = new PostgreSqlAnalysisLeaseGuardProvider(fixture.ConnectionString, _fileLockProvider);
+        var workerLocksAcquired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowWorkerRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var workerTask = Task.Run(async () =>
+        {
+            await using var guard = await guardProvider.AcquireGuardAsync(analysis.Id, activeToken);
+            Assert.True(guard.IsAcquired);
+            workerLocksAcquired.TrySetResult();
+            await allowWorkerRelease.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        });
+
+        await workerLocksAcquired.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var logger = new CapturingLogger<AnalysisCleanupService>();
+        var cleaner = CreateCleanupService(logger: logger);
+
+        var deletedWhileActive = await cleaner.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(0, deletedWhileActive);
+        Assert.True(Directory.Exists(activeDir));
+        Assert.True(Directory.Exists(staleDir));
+        Assert.Contains(logger.Entries, e =>
+            e.Message.Contains("PostgreSQL exclusive advisory lock", StringComparison.OrdinalIgnoreCase));
+
+        allowWorkerRelease.TrySetResult();
+        await workerTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var deletedAfterRelease = await cleaner.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(1, deletedAfterRelease);
+        Assert.False(Directory.Exists(staleDir));
+        Assert.True(Directory.Exists(activeDir));
+    }
+
+    [Fact]
+    public async Task Stage1_Test13_ConcurrentCleaners_CoordinateViaExclusiveLock_WithoutDoubleDeletion()
+    {
+        var token = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, token);
+        var executionDir = CreateExecutionDirectory(analysis.Id, token);
+
+        var cleaner1InsideCriticalSection = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleaner2Completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var cleaner1 = CreateCleanupService();
+        cleaner1.SyncPointBeforeDeleteAsync = async _ =>
+        {
+            cleaner1InsideCriticalSection.TrySetResult();
+            await cleaner2Completed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        };
+
+        var logger2 = new CapturingLogger<AnalysisCleanupService>();
+        var cleaner2 = CreateCleanupService(logger: logger2);
+
+        var cleaner1Task = cleaner1.CleanupStaleDirectoriesAsync();
+        await cleaner1InsideCriticalSection.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var deletedByCleaner2 = await cleaner2.CleanupStaleDirectoriesAsync();
+        cleaner2Completed.TrySetResult();
+
+        var deletedByCleaner1 = await cleaner1Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(0, deletedByCleaner2);
+        Assert.Equal(1, deletedByCleaner1);
+        Assert.False(Directory.Exists(executionDir));
+        Assert.Contains(logger2.Entries, e =>
+            e.Message.Contains("PostgreSQL exclusive advisory lock", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Stage1_Test14_AlternativeGuidFormats_AreRejectedInWorkspaceAndContainerDirectories()
+    {
+        var validToken = Guid.NewGuid();
+        var altTokenN = Guid.NewGuid();
+        var altTokenB = Guid.NewGuid();
+        var altTokenP = Guid.NewGuid();
+        var altTokenUpper = Guid.NewGuid();
+
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, validToken);
+        var validWorkspaceDir = CreateExecutionDirectory(analysis.Id, validToken);
+        var validContainerDir = CreateContainerExchangeDirectory(analysis.Id, validToken);
+        var analysisParentDir = Path.Combine(_testStorageRoot, analysis.Id.ToString());
+
+        var altWorkspaceN = Path.Combine(analysisParentDir, altTokenN.ToString("N"));
+        var altWorkspaceB = Path.Combine(analysisParentDir, altTokenB.ToString("B"));
+        var altWorkspaceP = Path.Combine(analysisParentDir, altTokenP.ToString("P"));
+        var altWorkspaceUpperD = Path.Combine(analysisParentDir, altTokenUpper.ToString("D").ToUpperInvariant());
+        Directory.CreateDirectory(altWorkspaceN);
+        Directory.CreateDirectory(altWorkspaceB);
+        Directory.CreateDirectory(altWorkspaceP);
+        Directory.CreateDirectory(altWorkspaceUpperD);
+
+        var altContainerD = Path.Combine(_testContainerRoot, $"{analysis.Id}_{altTokenN:D}");
+        var altContainerB = Path.Combine(_testContainerRoot, $"{analysis.Id}_{altTokenB:B}");
+        var altContainerP = Path.Combine(_testContainerRoot, $"{analysis.Id}_{altTokenP:P}");
+        var altContainerUpperN = Path.Combine(_testContainerRoot, $"{analysis.Id}_{altTokenUpper.ToString("N").ToUpperInvariant()}");
+        Directory.CreateDirectory(altContainerD);
+        Directory.CreateDirectory(altContainerB);
+        Directory.CreateDirectory(altContainerP);
+        Directory.CreateDirectory(altContainerUpperN);
+
+        var cleanupService = CreateCleanupService();
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.Equal(1, deletedCount);
+        Assert.False(Directory.Exists(validWorkspaceDir));
+        Assert.False(Directory.Exists(validContainerDir));
+
+        Assert.True(Directory.Exists(altWorkspaceN), "Формат GUID 'N' не должен приниматься для workspace-каталога.");
+        Assert.True(Directory.Exists(altWorkspaceB), "Формат GUID 'B' не должен приниматься для workspace-каталога.");
+        Assert.True(Directory.Exists(altWorkspaceP), "Формат GUID 'P' не должен приниматься для workspace-каталога.");
+        Assert.True(Directory.Exists(altWorkspaceUpperD), "Верхний регистр GUID не должен приниматься для workspace-каталога.");
+        Assert.True(Directory.Exists(analysisParentDir), "Родительский каталог с посторонними подкаталогами должен сохраняться.");
+
+        Assert.True(Directory.Exists(altContainerD), "Формат GUID 'D' не должен приниматься для контейнерного каталога.");
+        Assert.True(Directory.Exists(altContainerB), "Формат GUID 'B' не должен приниматься для контейнерного каталога.");
+        Assert.True(Directory.Exists(altContainerP), "Формат GUID 'P' не должен приниматься для контейнерного каталога.");
+        Assert.True(Directory.Exists(altContainerUpperN), "Верхний регистр GUID не должен приниматься для контейнерного каталога.");
+    }
+
+    [Fact]
+    public async Task Stage1_Test15_ConnectionLossMidCleanupAfterFirstDelete_HaltsBeforeRemainingDirectories_AndReleasesFileLock()
+    {
+        var token1 = Guid.NewGuid();
+        var token2 = Guid.NewGuid();
+        var analysis = await CreateTestAnalysisAsync(AnalysisStatus.Completed, token2);
+
+        var dir1 = CreateExecutionDirectory(analysis.Id, token1);
+        var dir2 = CreateExecutionDirectory(analysis.Id, token2);
+        var containerDir2 = CreateContainerExchangeDirectory(analysis.Id, token2);
+
+        var logger = new CapturingLogger<AnalysisCleanupService>();
+        var cleanupService = CreateCleanupService(logger: logger);
+
+        var terminatedAfterFirstDelete = false;
+        cleanupService.SyncPointAfterDirectoryDeleteAsync = async (analysisId, deletedPath) =>
+        {
+            if (terminatedAfterFirstDelete)
+            {
+                return;
+            }
+
+            await using var adminConn = new NpgsqlConnection(fixture.ConnectionString);
+            await adminConn.OpenAsync();
+
+            await using var findCmd = adminConn.CreateCommand();
+            findCmd.CommandText = """
+                SELECT pid FROM pg_locks
+                WHERE locktype = 'advisory'
+                  AND classid = hashtext('netscope_analysis_workspace')
+                  AND objid = @analysisId
+                  AND objsubid = 2
+                  AND mode = 'ExclusiveLock'
+                  AND granted = true;
+                """;
+            findCmd.Parameters.AddWithValue("analysisId", analysisId);
+
+            var pidObj = await findCmd.ExecuteScalarAsync();
+            Assert.NotNull(pidObj);
+
+            await using var killCmd = adminConn.CreateCommand();
+            killCmd.CommandText = "SELECT pg_terminate_backend(@pid);";
+            killCmd.Parameters.AddWithValue("pid", Convert.ToInt32(pidObj));
+            await killCmd.ExecuteScalarAsync();
+
+            terminatedAfterFirstDelete = true;
+        };
+
+        var deletedCount = await cleanupService.CleanupStaleDirectoriesAsync();
+
+        Assert.True(terminatedAfterFirstDelete);
+        Assert.Equal(1, deletedCount);
+
+        var remainingWorkspaceDirs = new[] { dir1, dir2 }.Count(Directory.Exists);
+        Assert.Equal(1, remainingWorkspaceDirs);
+        Assert.True(Directory.Exists(containerDir2), "После обрыва соединения PostgreSQL контейнерный каталог не должен удаляться.");
+
+        Assert.Contains(logger.Entries, e =>
+            e.Level == LogLevel.Warning &&
+            e.Message.Contains("остановлена", StringComparison.OrdinalIgnoreCase));
+
+        using var fileProbe = _fileLockProvider.TryAcquireExclusive(analysis.Id);
+        Assert.NotNull(fileProbe);
+    }
+
+    #endregion
 }
