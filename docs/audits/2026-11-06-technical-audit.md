@@ -1,11 +1,15 @@
 # Технический аудит проекта CourseProject
 
 **Дата первоначального аудита:** 06 ноября 2026 г.<br/>
-**Дата последней актуализации:** 25 ноября 2026 г. (актуализация включает исправления от 25.11.2026: коммиты 10c82f0, 185379b, dcda0ff, d0fa163, а также отклонение DEF-007 / TD-009 как ложноположительного срабатывания; первоначальный аудит от 06.11.2026 сохранён как историческая база)<br/>
+**Дата последней актуализации:** 26 ноября 2026 г. (актуализировано по результатам завершения задачи TD-003 / DEF-003; первоначальный аудит от 06.11.2026 сохранён как историческая база)<br/>
 **Базовая ветка:** `main`
 **Базовый коммит:** `d0fa163` (*fix(github-sync): classify history using verified ancestors*; базовый коммит первоначального аудита: `7d5bfbb` / ревизия `2068c51`)
 **Состояние рабочего дерева:** Clean строго на дату первоначального аудита (06.11.2026); последующие обновления документа отражают результаты реализации и верификации задач техдолга.
-**Верификация тестовой базы (`dotnet test`):** 1411 тестов всего: 1399 успешно пройдено, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests` (впоследствии полностью устранены в Stage 3, все 24 теста `CSharpAnalyzer.Tests` проходят успешно), 4 динамически пропущено в `DatabaseAnalyzer.Runner.Tests` при отсутствии Docker daemon на хосте [при доступном Docker 105 успешно / 0 пропущено] (6 сборок: `Backend.Tests` — 999 успешно [0 сбоев], `DatabaseAnalyzer.Tests` — 190 успешно, `DatabaseAnalyzer.Runner.Tests` — 101 успешно / 4 пропущено `[DockerFact]`, `SecurityAnalyzer.Tests` — 56 успешно, `SqlAnalyzer.Tests` — 44 успешно, `CSharpAnalyzer.Tests` — 9 успешно / 8 сбоев TD-003; код возврата 1).
+**Верификация тестовой базы (исторический снимок на дату промежуточного аудита 25.11.2026):** 1411 тестов всего: 1399 успешно пройдено, 8 известных сбоев TD-003 в `CSharpAnalyzer.Tests`, 4 динамически пропущено в `DatabaseAnalyzer.Runner.Tests` при отсутствии Docker daemon на хосте [при доступном Docker 105 успешно / 0 пропущено] (6 сборок: `Backend.Tests` — 999 успешно [0 сбоев], `DatabaseAnalyzer.Tests` — 190 успешно, `DatabaseAnalyzer.Runner.Tests` — 101 успешно / 4 пропущено `[DockerFact]`, `SecurityAnalyzer.Tests` — 56 успешно, `SqlAnalyzer.Tests` — 44 успешно, `CSharpAnalyzer.Tests` — 9 успешно / 8 сбоев TD-003; код возврата 1).
+
+> [!NOTE]
+> **Актуализация тестовой базы (26.11.2026, после реализации TD-003 Stage 1–4):**
+> По результатам завершения задачи TD-003 все 8 сбоев в `CSharpAnalyzer.Tests` полностью устранены (24/24 успешно), а общее число тестов решения выросло до **1533 тестов** (`Backend.Tests`: 1098, `DatabaseAnalyzer.Tests`: 190, `DatabaseAnalyzer.Runner.Tests`: 105, `SecurityAnalyzer.Tests`: 72, `SqlAnalyzer.Tests`: 44, `CSharpAnalyzer.Tests`: 24; все 1533 успешно пройдены, 0 сбоев, 0 пропущено; код возврата `dotnet test CourseProject.slnx`: **0**). Дефект DEF-003 полностью закрыт (`RESOLVED`).
 **Состояние модели EF Core:** `dotnet ef migrations has-pending-model-changes` подтверждает полное соответствие снимка `AppDbContextModelSnapshot.cs` сущностям предметной области (`No changes have been made to the model since the last migration`). Обе миграции `20261122150614_AddAnalysisRetryAndPoisonPillQueue` (TD-007) и `20261124090814_AddCommitProvenanceAndProjectSyncCheckpoint` (TD-006) применены и согласованы.
 
 ---
