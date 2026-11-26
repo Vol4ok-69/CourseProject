@@ -1,10 +1,10 @@
 ﻿
 using Application.Analyzers;
-using CSharp.Rules;
+using CSharpAnalyzer.Rules;
 using Domain.Enums;
 using Microsoft.CodeAnalysis.CSharp;
 
-namespace CSharp;
+namespace CSharpAnalyzer;
 
 public sealed class CSharpAnalyzer : IAnalyzer
 {

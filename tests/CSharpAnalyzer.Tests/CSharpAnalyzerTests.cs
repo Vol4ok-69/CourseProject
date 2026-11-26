@@ -49,7 +49,7 @@ public class CSharpAnalyzerTests
             }
             """);
 
-            var analyzer = new CSharp.CSharpAnalyzer();
+            var analyzer = new CSharpAnalyzer();
 
             var context = new AnalyzerContext
             {
@@ -104,7 +104,7 @@ public class CSharpAnalyzerTests
                  """
             );
 
-            var analyzer = new CSharp.CSharpAnalyzer();
+            var analyzer = new CSharpAnalyzer();
 
             var context = new AnalyzerContext
             {

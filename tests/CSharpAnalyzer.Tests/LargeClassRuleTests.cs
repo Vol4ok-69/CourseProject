@@ -1,4 +1,4 @@
-﻿using CSharp.Rules;
+﻿using CSharpAnalyzer.Rules;
 using Microsoft.CodeAnalysis.CSharp;
 using Xunit;
 

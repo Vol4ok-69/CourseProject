@@ -23,7 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Analyzers\CSharp\CSharp.csproj" />
+    <ProjectReference Include="..\..\src\Analyzers\CSharp\CSharpAnalyzer.csproj" />
     <ProjectReference Include="..\..\src\Backend\Application\Application.csproj" />
     <ProjectReference Include="..\..\src\Backend\Infrastructure\Infrastructure.csproj" />
   </ItemGroup>

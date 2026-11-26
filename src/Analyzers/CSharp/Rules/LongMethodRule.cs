@@ -3,7 +3,7 @@ using Domain.Enums;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
-namespace CSharp.Rules;
+namespace CSharpAnalyzer.Rules;
 
 public class LongMethodRule
 {
