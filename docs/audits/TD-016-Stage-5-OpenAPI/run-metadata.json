@@ -1,0 +1,23 @@
+{
+  "stage": "TD-016 Stage 5 - OpenAPI & API Contract Audit",
+  "date": "2026-11-27",
+  "source_ref": {
+    "commit": "a061bb8a388ef1848b64548d0a03178bb83162d7",
+    "branch": "main"
+  },
+  "openapi_source": "swagger.json (OpenAPI 3.0.4, Swashbuckle.AspNetCore 10.2.3, refreshed by owner from http://localhost:5000/swagger/v1/swagger.json on 2026-11-27; 3 schema/response drifts vs current C# source detected)",
+  "operations_checked": 27,
+  "mvc_actions": 26,
+  "health_endpoints": 1,
+  "dtos_checked": 19,
+  "enums_checked": 3,
+  "code_generation_executed": false,
+  "code_generation_note": "Static code-generation assessment performed; no external generator tools (NSwag/Kiota/orval) executed in repository.",
+  "auditors": [
+    "Stage 5 Route Parity Auditor",
+    "Stage 5 DTO Serialization Auditor",
+    "Stage 5 Errors Security Auditor",
+    "Stage 5 Codegen Evolution Auditor",
+    "Stage 5 Independent Verifier"
+  ]
+}

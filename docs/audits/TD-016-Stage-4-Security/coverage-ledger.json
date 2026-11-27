@@ -1,0 +1,719 @@
+[
+  {
+    "coverage_id": "infrastructure%2Fdocker%2FDockerfile%23supplychain::docker-compose.yml%23images::SupplyChain::SUPPLY-CHAIN-AND-RELEASE.md%23Dependency%20resolution%2C%20lockfiles%2C%20and%20package%20sources",
+    "canonical_refs": {
+      "surface": "infrastructure/docker/Dockerfile#supplychain",
+      "boundary": "docker-compose.yml#images",
+      "subsystem": "SupplyChain",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Dependency resolution, lockfiles, and package sources"
+    },
+    "surface": "NuGet Packages & Docker Base Images",
+    "boundary": "Pinned versions & mutable image tags",
+    "subsystem": "SupplyChain",
+    "attack_class": "Supply chain",
+    "starting_paths": [
+      "src/Backend/Api/Api.csproj",
+      "src/Backend/Infrastructure/Infrastructure.csproj",
+      "infrastructure/docker/Dockerfile",
+      "infrastructure/docker/Dockerfile.database-analyzer",
+      "docker-compose.yml"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Dependency resolution, lockfiles, and package sources",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI triggers and permissions",
+        "reason": ".github/workflows directory is absent in repository"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-docker-queue-supply",
+    "reviewed_paths": [
+      "infrastructure/docker/Dockerfile",
+      "infrastructure/docker/Dockerfile.database-analyzer",
+      "docker-compose.yml"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-docker-queue-supply",
+        "method": "source",
+        "reviewed_paths": [
+          "infrastructure/docker/Dockerfile",
+          "infrastructure/docker/Dockerfile.database-analyzer",
+          "docker-compose.yml"
+        ],
+        "artifact": null,
+        "invariant": "Verified SUPPLY-01 and SUPPLY-02.",
+        "result": "Verified SUPPLY-01 and SUPPLY-02."
+      }
+    ],
+    "result_fingerprints": [
+      "SUPPLY-01",
+      "SUPPLY-02"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "src%2FAnalyzers%2FDatabase%2FProcess%2FDockerCliProcessAdapter.cs%23docker::src%2FAnalyzers%2FDatabase%2FRunner%2FDatabaseContainerRunner.cs%23Run::src%2FAnalyzers%2FDatabase::CLOUD-AND-DEPLOYMENT.md%23Container%2C%20VM%2C%20runtime%2C%20and%20control-plane%20isolation::container-execution",
+    "canonical_refs": {
+      "surface": "src/Analyzers/Database/Process/DockerCliProcessAdapter.cs#docker",
+      "boundary": "src/Analyzers/Database/Runner/DatabaseContainerRunner.cs#Run",
+      "subsystem": "src/Analyzers/Database",
+      "attack_class": "CLOUD-AND-DEPLOYMENT.md#Container, VM, runtime, and control-plane isolation",
+      "lifecycle": "container-execution"
+    },
+    "surface": "DatabaseAnalyzer Docker Runner",
+    "boundary": "Container isolation & JSON exchange",
+    "subsystem": "Analyzers/Database",
+    "attack_class": "Container & runtime isolation",
+    "starting_paths": [
+      "src/Analyzers/Database/Process/DockerCliProcessAdapter.cs",
+      "src/Analyzers/Database/Runner/DatabaseContainerRunner.cs",
+      "src/Analyzers/Database.Runner/Program.cs",
+      "docker-compose.yml",
+      "infrastructure/docker/Dockerfile"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+      "CLOUD-AND-DEPLOYMENT.md#Container, VM, runtime, and control-plane isolation",
+      "CLOUD-AND-DEPLOYMENT.md#Universal moves",
+      "CLOUD-AND-DEPLOYMENT.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Managed .NET 10 runner"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-docker-queue-supply",
+    "reviewed_paths": [
+      "docker-compose.yml",
+      "infrastructure/docker/Dockerfile",
+      "src/Analyzers/Database/Runner/DatabaseContainerRunner.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-docker-queue-supply",
+        "method": "source",
+        "reviewed_paths": [
+          "docker-compose.yml",
+          "infrastructure/docker/Dockerfile",
+          "src/Analyzers/Database/Runner/DatabaseContainerRunner.cs"
+        ],
+        "artifact": null,
+        "invariant": "Verified DOCKER-01, DOCKER-02; rejected DOCKER-03.",
+        "result": "Verified DOCKER-01, DOCKER-02; rejected DOCKER-03."
+      }
+    ],
+    "result_fingerprints": [
+      "DOCKER-01",
+      "DOCKER-02",
+      "DOCKER-03"
+    ],
+    "unresolved": [],
+    "lifecycle": "Container spawn and JSON exchange"
+  },
+  {
+    "coverage_id": "src%2FAnalyzers%2FSecurity%2FSecurityAnalyzer.cs%23inproc::src%2FAnalyzers%2FSecurity%2FRules%2FSec001HardcodedSecretsRule.cs%23Regex::src%2FAnalyzers::RESOURCE-EXHAUSTION-AND-AVAILABILITY.md%23Pre-auth%2C%20parser%2C%20and%20algorithmic%20amplification::inprocess-analysis",
+    "canonical_refs": {
+      "surface": "src/Analyzers/Security/SecurityAnalyzer.cs#inproc",
+      "boundary": "src/Analyzers/Security/Rules/Sec001HardcodedSecretsRule.cs#Regex",
+      "subsystem": "src/Analyzers",
+      "attack_class": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Pre-auth, parser, and algorithmic amplification",
+      "lifecycle": "inprocess-analysis"
+    },
+    "surface": "In-process Analyzers, /health, GitHubSync",
+    "boundary": "Untrusted repo file parsing & sync",
+    "subsystem": "Analyzers",
+    "attack_class": "ReDoS, Unbounded Reads, Sync DAG",
+    "starting_paths": [
+      "src/Analyzers/Security/SecurityAnalyzer.cs",
+      "src/Analyzers/CSharp/CSharpAnalyzer.cs",
+      "src/Analyzers/Sql/SqlAnalyzer.cs",
+      "src/Backend/Api/Health/DatabaseHealthCheck.cs",
+      "src/Backend/Application/Services/GitHubSyncService.cs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Core discipline",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Pre-auth, parser, and algorithmic amplification",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Universal moves",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No AI/LLM surface"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 2,
+    "status": "candidate",
+    "agent_id": "hunter-analyzers-wave2",
+    "reviewed_paths": [
+      "src/Analyzers/Security/Rules/Sec001HardcodedSecretsRule.cs",
+      "src/Analyzers/Security/Rules/Sec002PlaintextConfigSecretsRule.cs",
+      "src/Analyzers/CSharp/CSharpAnalyzer.cs",
+      "src/Analyzers/Sql/SqlAnalyzer.cs",
+      "src/Backend/Api/Health/DatabaseHealthCheck.cs",
+      "src/Backend/Application/Services/GitHubSyncService.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-wave2",
+        "method": "source",
+        "reviewed_paths": [
+          "src/Analyzers/Security/Rules/Sec001HardcodedSecretsRule.cs",
+          "src/Analyzers/Security/Rules/Sec002PlaintextConfigSecretsRule.cs",
+          "src/Analyzers/CSharp/CSharpAnalyzer.cs",
+          "src/Analyzers/Sql/SqlAnalyzer.cs",
+          "src/Backend/Api/Health/DatabaseHealthCheck.cs",
+          "src/Backend/Application/Services/GitHubSyncService.cs"
+        ],
+        "artifact": null,
+        "invariant": "Verified HUNTER-W2-001, HUNTER-W2-002, HUNTER-W2-003, HUNTER-W2-004.",
+        "result": "Verified HUNTER-W2-001, HUNTER-W2-002, HUNTER-W2-003, HUNTER-W2-004."
+      }
+    ],
+    "result_fingerprints": [
+      "HUNTER-W2-001",
+      "HUNTER-W2-002",
+      "HUNTER-W2-003",
+      "HUNTER-W2-004"
+    ],
+    "unresolved": [],
+    "lifecycle": "In-process static analysis & sync"
+  },
+  {
+    "coverage_id": "src%2FBackend%2FApi%2FBackgroundServices%2FAnalysisBackgroundService.cs%23queue::src%2FBackend%2FInfrastructure%2FRepository%2FAnalysisRepository.cs%23TryAcquire::src%2FBackend%2FInfrastructure::PROTOCOLS-RPC-AND-MESSAGING.md%23Queues%2C%20brokers%2C%20pub%2Fsub%2C%20and%20delivery%20guarantees::queue-retry-poison-pill",
+    "canonical_refs": {
+      "surface": "src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs#queue",
+      "boundary": "src/Backend/Infrastructure/Repository/AnalysisRepository.cs#TryAcquire",
+      "subsystem": "src/Backend/Infrastructure",
+      "attack_class": "PROTOCOLS-RPC-AND-MESSAGING.md#Queues, brokers, pub/sub, and delivery guarantees",
+      "lifecycle": "queue-retry-poison-pill"
+    },
+    "surface": "PostgreSQL Analysis Queue",
+    "boundary": "SKIP LOCKED, Lease, Retry/Poison Pill",
+    "subsystem": "Backend/Infrastructure",
+    "attack_class": "Queue & background worker lifecycle",
+    "starting_paths": [
+      "src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs",
+      "src/Backend/Infrastructure/Repository/AnalysisRepository.cs",
+      "src/Backend/Application/Services/AnalysisService.cs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Queues, brokers, pub/sub, and delivery guarantees",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Universal moves",
+      "PROTOCOLS-RPC-AND-MESSAGING.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "Backend background queue"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-docker-queue-supply",
+    "reviewed_paths": [
+      "src/Backend/Infrastructure/Repository/AnalysisRepository.cs",
+      "src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs",
+      "src/Backend/Application/Services/AnalysisService.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-docker-queue-supply",
+        "method": "source",
+        "reviewed_paths": [
+          "src/Backend/Infrastructure/Repository/AnalysisRepository.cs",
+          "src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs",
+          "src/Backend/Application/Services/AnalysisService.cs"
+        ],
+        "artifact": null,
+        "invariant": "Verified QUEUE-01, QUEUE-03; rejected QUEUE-02.",
+        "result": "Verified QUEUE-01, QUEUE-03; rejected QUEUE-02."
+      }
+    ],
+    "result_fingerprints": [
+      "QUEUE-01",
+      "QUEUE-02",
+      "QUEUE-03"
+    ],
+    "unresolved": [],
+    "lifecycle": "Queue acquisition, lease, retry"
+  },
+  {
+    "coverage_id": "src%2FBackend%2FApi%2FCommon%2FApiCorsPolicies.cs%23edge::src%2FBackend%2FApi%2FProgram.cs%23RateLimiting::src%2FBackend%2FApi::RESOURCE-EXHAUSTION-AND-AVAILABILITY.md%23Pre-auth%2C%20parser%2C%20and%20algorithmic%20amplification",
+    "canonical_refs": {
+      "surface": "src/Backend/Api/Common/ApiCorsPolicies.cs#edge",
+      "boundary": "src/Backend/Api/Program.cs#RateLimiting",
+      "subsystem": "src/Backend/Api",
+      "attack_class": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Pre-auth, parser, and algorithmic amplification"
+    },
+    "surface": "HTTP Edge (CORS, RateLimit, Validation)",
+    "boundary": "IP rate limit & origin validation",
+    "subsystem": "Backend/Api",
+    "attack_class": "Resource exhaustion & HTTP edge",
+    "starting_paths": [
+      "src/Backend/Api/Common/ApiCorsPolicies.cs",
+      "src/Backend/Api/Common/RateLimitingPolicies.cs",
+      "src/Backend/Api/Program.cs",
+      "src/Backend/Api/Common/ApiProblemDetails.cs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Core discipline",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Pre-auth, parser, and algorithmic amplification",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Universal moves",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+        "reason": "Desktop client not implemented"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-secrets-edge",
+    "reviewed_paths": [
+      "src/Backend/Api/Program.cs",
+      "src/Backend/Api/Controllers/AuthController.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-auth-edge",
+        "method": "source",
+        "reviewed_paths": [
+          "src/Backend/Api/Program.cs",
+          "src/Backend/Api/Controllers/AuthController.cs"
+        ],
+        "artifact": null,
+        "invariant": "Rejected CAND-SE-001 (loopback default KnownProxies); verified CAND-SE-002 unthrottled endpoints.",
+        "result": "Rejected CAND-SE-001 (loopback default KnownProxies); verified CAND-SE-002 unthrottled endpoints."
+      }
+    ],
+    "result_fingerprints": [
+      "CAND-SE-001",
+      "CAND-SE-002"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "src%2FBackend%2FApi%2FControllers%2FAdminUsersController.cs%23admin::src%2FBackend%2FApplication%2FServices%2FUserService.cs%23BeginAdminProtection::src%2FBackend%2FApplication::DATA-ISOLATION-AND-LIFECYCLE.md%23Tenant%20isolation%2C%20ownership%2C%20and%20sharing::admin-role-mutation",
+    "canonical_refs": {
+      "surface": "src/Backend/Api/Controllers/AdminUsersController.cs#admin",
+      "boundary": "src/Backend/Application/Services/UserService.cs#BeginAdminProtection",
+      "subsystem": "src/Backend/Application",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant isolation, ownership, and sharing",
+      "lifecycle": "admin-role-mutation"
+    },
+    "surface": "AdminUsersController",
+    "boundary": "Admin role & last-admin advisory lock",
+    "subsystem": "Backend/Application",
+    "attack_class": "Admin & Last-Admin Protection",
+    "starting_paths": [
+      "src/Backend/Api/Controllers/AdminUsersController.cs",
+      "src/Backend/Application/Services/UserService.cs",
+      "src/Backend/Infrastructure/Repository/UserRepository.cs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant isolation, ownership, and sharing",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "No browser frontend in repository"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-auth-access",
+    "reviewed_paths": [
+      "src/Backend/Api/Controllers/AdminUsersController.cs",
+      "src/Backend/Application/Services/UserService.cs",
+      "src/Backend/Infrastructure/Repository/UserRepository.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-auth-access",
+        "method": "source",
+        "reviewed_paths": [
+          "src/Backend/Api/Controllers/AdminUsersController.cs",
+          "src/Backend/Application/Services/UserService.cs",
+          "src/Backend/Infrastructure/Repository/UserRepository.cs"
+        ],
+        "artifact": null,
+        "invariant": "Verified [Authorize(Roles='Admin')], self-action Forbid(), and pg_advisory_xact_lock last-admin protection.",
+        "result": "Verified [Authorize(Roles='Admin')], self-action Forbid(), and pg_advisory_xact_lock last-admin protection."
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "lifecycle": "Admin role mutation/deletion"
+  },
+  {
+    "coverage_id": "src%2FBackend%2FApi%2FControllers%2FAuthController.cs%23auth::src%2FBackend%2FApi%2FProgram.cs%23AddJwtBearer::src%2FBackend%2FApi::WEB-PROTOCOL-AND-AUTH.md%23Authentication%2C%20tokens%2C%20sessions%2C%20and%20OAuth%2FOIDC",
+    "canonical_refs": {
+      "surface": "src/Backend/Api/Controllers/AuthController.cs#auth",
+      "boundary": "src/Backend/Api/Program.cs#AddJwtBearer",
+      "subsystem": "src/Backend/Api",
+      "attack_class": "WEB-PROTOCOL-AND-AUTH.md#Authentication, tokens, sessions, and OAuth/OIDC"
+    },
+    "surface": "AuthController & JWT",
+    "boundary": "JwtBearer & BCrypt",
+    "subsystem": "Backend/Api",
+    "attack_class": "Authentication & JWT",
+    "starting_paths": [
+      "src/Backend/Api/Controllers/AuthController.cs",
+      "src/Backend/Api/Program.cs",
+      "src/Backend/Infrastructure/Security/JwtTokenService.cs",
+      "src/Backend/Api/Common/ApiJwtEvents.cs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Authentication, tokens, sessions, and OAuth/OIDC",
+      "WEB-PROTOCOL-AND-AUTH.md#Universal moves",
+      "WEB-PROTOCOL-AND-AUTH.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Browser storage",
+        "reason": "No browser frontend in repository"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-auth-access",
+    "reviewed_paths": [
+      "src/Backend/Infrastructure/Security/JwtTokenService.cs",
+      "src/Backend/Api/Program.cs",
+      "src/Backend/Api/Common/ApiJwtEvents.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-auth-edge",
+        "method": "source",
+        "reviewed_paths": [
+          "src/Backend/Infrastructure/Security/JwtTokenService.cs",
+          "src/Backend/Api/Program.cs",
+          "src/Backend/Api/Common/ApiJwtEvents.cs"
+        ],
+        "artifact": null,
+        "invariant": "Verified stateless JWT without revocation and rejected Jwt:Key length claim.",
+        "result": "Verified stateless JWT without revocation and rejected Jwt:Key length claim."
+      }
+    ],
+    "result_fingerprints": [
+      "auth-jwt-no-revocation-stale-claims",
+      "auth-jwt-key-length-unvalidated"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "src%2FBackend%2FApi%2FControllers%2FProjectsController.cs%23resources::src%2FBackend%2FApi%2FControllers%2FProjectsController.cs%23Ownership::src%2FBackend%2FApi::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": "src/Backend/Api/Controllers/ProjectsController.cs#resources",
+      "boundary": "src/Backend/Api/Controllers/ProjectsController.cs#Ownership",
+      "subsystem": "src/Backend/Api",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "Projects/Commits/Analyses Controllers",
+    "boundary": "Resource Ownership & RBAC",
+    "subsystem": "Backend/Api",
+    "attack_class": "Access control / IDOR",
+    "starting_paths": [
+      "src/Backend/Api/Controllers/ProjectsController.cs",
+      "src/Backend/Api/Controllers/CommitsController.cs",
+      "src/Backend/Api/Controllers/AnalysesController.cs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant isolation, ownership, and sharing",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No LLM/AI component in target"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-auth-access",
+    "reviewed_paths": [
+      "src/Backend/Api/Controllers/ProjectsController.cs",
+      "src/Backend/Api/Controllers/CommitsController.cs",
+      "src/Backend/Api/Controllers/AnalysesController.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-auth-access",
+        "method": "source",
+        "reviewed_paths": [
+          "src/Backend/Api/Controllers/ProjectsController.cs",
+          "src/Backend/Api/Controllers/CommitsController.cs",
+          "src/Backend/Api/Controllers/AnalysesController.cs"
+        ],
+        "artifact": null,
+        "invariant": "Verified [Authorize], OwnerId == userId || Admin, and parent-child checks across all 13 endpoints.",
+        "result": "Verified [Authorize], OwnerId == userId || Admin, and parent-child checks across all 13 endpoints."
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "src%2FBackend%2FInfrastructure%2FGitHub%2FRepositorySourceService.cs%23zip::src%2FBackend%2FInfrastructure%2FGitHub%2FRepositorySourceService.cs%23Extract::src%2FBackend%2FInfrastructure::ATTACK-CLASSES.md%23Resource%20and%20file%20handling::archive-download-extract",
+    "canonical_refs": {
+      "surface": "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#zip",
+      "boundary": "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs#Extract",
+      "subsystem": "src/Backend/Infrastructure",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling",
+      "lifecycle": "archive-download-extract"
+    },
+    "surface": "GitHub Archive Download & Extraction",
+    "boundary": "ZipSlip, Symlinks, Quotas, SSRF",
+    "subsystem": "Backend/Infrastructure",
+    "attack_class": "Resource and file handling",
+    "starting_paths": [
+      "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+      "src/Backend/Infrastructure/GitHub/GitHubService.cs",
+      "src/Backend/Infrastructure/GitHub/Models/GitHubRepositoryReference.cs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Core discipline",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Universal moves",
+      "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "No AI/LLM surface"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-zip-workspace",
+    "reviewed_paths": [
+      "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+      "src/Backend/Infrastructure/GitHub/GitHubService.cs",
+      "src/Backend/Infrastructure/GitHub/Models/GitHubRepositoryReference.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-zip-workspace",
+        "method": "source",
+        "reviewed_paths": [
+          "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+          "src/Backend/Infrastructure/GitHub/GitHubService.cs",
+          "src/Backend/Infrastructure/GitHub/Models/GitHubRepositoryReference.cs"
+        ],
+        "artifact": null,
+        "invariant": "Verified ZW-001, ZW-003, ZW-005; rejected ZW-002 and ZW-004.",
+        "result": "Verified ZW-001, ZW-003, ZW-005; rejected ZW-002 and ZW-004."
+      }
+    ],
+    "result_fingerprints": [
+      "ZW-001",
+      "ZW-002",
+      "ZW-003",
+      "ZW-004",
+      "ZW-005"
+    ],
+    "unresolved": [],
+    "lifecycle": "Archive download and extraction"
+  },
+  {
+    "coverage_id": "src%2FBackend%2FInfrastructure%2FSecurity%2FAesGcmTokenEncryptionService.cs%23pat::src%2FBackend%2FInfrastructure%2FGitHub%2FGitHubCredentialService.cs%23PAT::src%2FBackend%2FInfrastructure::ATTACK-CLASSES.md%23Cryptography%20and%20secrets",
+    "canonical_refs": {
+      "surface": "src/Backend/Infrastructure/Security/AesGcmTokenEncryptionService.cs#pat",
+      "boundary": "src/Backend/Infrastructure/GitHub/GitHubCredentialService.cs#PAT",
+      "subsystem": "src/Backend/Infrastructure",
+      "attack_class": "ATTACK-CLASSES.md#Cryptography and secrets"
+    },
+    "surface": "GitHub PAT & Error Logging",
+    "boundary": "AES-256-GCM encryption & log redaction",
+    "subsystem": "Backend/Infrastructure",
+    "attack_class": "Cryptography and secrets",
+    "starting_paths": [
+      "src/Backend/Infrastructure/Security/AesGcmTokenEncryptionService.cs",
+      "src/Backend/Infrastructure/GitHub/GitHubCredentialService.cs",
+      "src/Backend/Application/Services/AnalysisService.cs",
+      "src/Backend/Api/Common/ApiProblemDetails.cs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Cryptography and secrets",
+    "selected_companion_blocks": [
+      "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+      "WEB-PROTOCOL-AND-AUTH.md#Universal moves",
+      "WEB-PROTOCOL-AND-AUTH.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "Managed .NET 10 codebase"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-secrets-edge",
+    "reviewed_paths": [
+      "src/Backend/Infrastructure/Security/AesGcmTokenEncryptionService.cs",
+      "src/Backend/Application/Services/AnalysisService.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-auth-edge",
+        "method": "source",
+        "reviewed_paths": [
+          "src/Backend/Infrastructure/Security/AesGcmTokenEncryptionService.cs",
+          "src/Backend/Application/Services/AnalysisService.cs"
+        ],
+        "artifact": null,
+        "invariant": "Verified and rejected CAND-SE-003, CAND-SE-004, CAND-SE-005.",
+        "result": "Verified and rejected CAND-SE-003, CAND-SE-004, CAND-SE-005."
+      }
+    ],
+    "result_fingerprints": [
+      "CAND-SE-003",
+      "CAND-SE-004",
+      "CAND-SE-005"
+    ],
+    "unresolved": []
+  },
+  {
+    "coverage_id": "src%2FBackend%2FInfrastructure%2FStorage%2FAnalysisCleanupService.cs%23workspace::src%2FBackend%2FInfrastructure%2FStorage%2FWorkspaceFileLockProvider.cs%23Locks::src%2FBackend%2FInfrastructure::DATA-ISOLATION-AND-LIFECYCLE.md%23Deletion%2C%20retention%2C%20export%2C%20and%20derived%20copies::workspace-cleanup-lease",
+    "canonical_refs": {
+      "surface": "src/Backend/Infrastructure/Storage/AnalysisCleanupService.cs#workspace",
+      "boundary": "src/Backend/Infrastructure/Storage/WorkspaceFileLockProvider.cs#Locks",
+      "subsystem": "src/Backend/Infrastructure",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Deletion, retention, export, and derived copies",
+      "lifecycle": "workspace-cleanup-lease"
+    },
+    "surface": "Workspace Storage & Cleanup",
+    "boundary": "ExecutionToken, File Locks, Advisory Locks",
+    "subsystem": "Backend/Infrastructure",
+    "attack_class": "Data isolation and lifecycle",
+    "starting_paths": [
+      "src/Backend/Infrastructure/Storage/AnalysisCleanupService.cs",
+      "src/Backend/Infrastructure/Storage/WorkspaceFileLockProvider.cs",
+      "src/Analyzers/Database/Runner/PostgreSqlAnalysisLeaseGuard.cs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Deletion, retention, export, and derived copies",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Core discipline",
+        "reason": "Server-side storage"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-zip-workspace",
+    "reviewed_paths": [
+      "src/Backend/Infrastructure/Storage/AnalysisCleanupService.cs",
+      "src/Backend/Infrastructure/Storage/WorkspaceFileLockProvider.cs",
+      "src/Analyzers/Database/Runner/PostgreSqlAnalysisLeaseGuard.cs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-zip-workspace",
+        "method": "source",
+        "reviewed_paths": [
+          "src/Backend/Infrastructure/Storage/AnalysisCleanupService.cs",
+          "src/Backend/Infrastructure/Storage/WorkspaceFileLockProvider.cs",
+          "src/Analyzers/Database/Runner/PostgreSqlAnalysisLeaseGuard.cs"
+        ],
+        "artifact": null,
+        "invariant": "Verified PG advisory locks, file locks, reparse point checks, and fail-closed cleanup.",
+        "result": "Verified PG advisory locks, file locks, reparse point checks, and fail-closed cleanup."
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "lifecycle": "Workspace execution and cleanup"
+  },
+  {
+    "coverage_id": "src%2FCli%23unimplemented::src%2FDesktop%23unimplemented::Clients::CLIENT-SIDE.md%23Core%20discipline",
+    "canonical_refs": {
+      "surface": "src/Cli#unimplemented",
+      "boundary": "src/Desktop#unimplemented",
+      "subsystem": "Clients",
+      "attack_class": "CLIENT-SIDE.md#Core discipline"
+    },
+    "surface": "Future Clients (CLI, Desktop, Telegram Bot)",
+    "boundary": "Unimplemented client surfaces",
+    "subsystem": "Clients",
+    "attack_class": "Client-side & local IPC",
+    "starting_paths": [
+      "docs/Технический регламент.md"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM rendering",
+        "reason": "Clients not yet implemented in repository"
+      }
+    ],
+    "prior_status": "none",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "CLI, Desktop, and Telegram Bot clients are not implemented in this repository."
+    ]
+  }
+]

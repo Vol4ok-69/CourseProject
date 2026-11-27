@@ -1,0 +1,30 @@
+{
+  "stage": "TD-016 Stage 6 - Test Coverage & Quality Audit",
+  "date": "2026-11-27",
+  "source_ref": {
+    "commit": "a061bb8a388ef1848b64548d0a03178bb83162d7",
+    "branch": "main",
+    "git_diff_stat": "empty (0 tracked files modified)",
+    "git_status_note": "Only untracked audit artifacts under docs/audits/ (TD-016-Stage-0..6)"
+  },
+  "dotnet_sdk": "10.0.401",
+  "test_framework": "xunit 2.9.3 + xunit.runner.visualstudio 3.1.4 + Microsoft.NET.Test.Sdk 17.14.1",
+  "test_run": {
+    "command": "dotnet test CourseProject.slnx --configuration Release",
+    "exit_code": 0,
+    "total": 1533,
+    "passed": 1530,
+    "failed": 0,
+    "skipped": 3,
+    "projects": [
+      { "name": "Backend.Tests", "passed": 1098, "failed": 0, "skipped": 0, "total": 1098, "duration": "1 m 27 s" },
+      { "name": "DatabaseAnalyzer.Tests", "passed": 190, "failed": 0, "skipped": 0, "total": 190, "duration": "35 s" },
+      { "name": "DatabaseAnalyzer.Runner.Tests", "passed": 102, "failed": 0, "skipped": 3, "total": 105, "duration": "6 s" },
+      { "name": "SecurityAnalyzer.Tests", "passed": 72, "failed": 0, "skipped": 0, "total": 72, "duration": "2 s" },
+      { "name": "SqlAnalyzer.Tests", "passed": 44, "failed": 0, "skipped": 0, "total": 44, "duration": "898 ms" },
+      { "name": "CSharpAnalyzer.Tests", "passed": 24, "failed": 0, "skipped": 0, "total": 24, "duration": "2 s" }
+    ]
+  },
+  "line_branch_coverage_collected": false,
+  "line_branch_coverage_note": "coverlet.collector 6.0.4 is installed in all 6 test projects, but XPlat Code Coverage XML was not collected in this run."
+}

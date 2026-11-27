@@ -1,0 +1,145 @@
+[
+  {
+    "id": "TD016-S5-001",
+    "category": "confirmed_defect",
+    "severity": "medium",
+    "target": "GitHubSyncResultDto",
+    "actual": "swagger.json:2223-2239 only exposes 'added' and 'skipped'.",
+    "expected": "GitHubSyncResultDto.cs:24-30 also defines 'AlreadyCurrent' (bool) and 'HistoryClassification' (HistoryClassification? enum).",
+    "source_ref": "src/Backend/Application/DTOs/GitHubSyncResultDto.cs:24-30",
+    "openapi_ref": "swagger.json:2223-2239",
+    "impact": "Medium (no live clients exist today; future generated clients will miss alreadyCurrent and historyClassification fields and the HistoryClassification enum)."
+  },
+  {
+    "id": "TD016-S5-002",
+    "category": "confirmed_defect",
+    "severity": "medium",
+    "target": "CreateCommitDto.CommitHash",
+    "actual": "swagger.json:2163-2168 specifies maxLength: 40, no pattern, and SHA-1 description.",
+    "expected": "CreateCommitDto.cs:14-15 specifies [StringLength(64, MinimumLength = 7)] and [RegularExpression(@\"\\A[0-9a-fA-F]{7,64}\\z\")] (SHA-1/SHA-256).",
+    "source_ref": "src/Backend/Application/DTOs/CreateCommitDto.cs:13-16",
+    "openapi_ref": "swagger.json:2163-2168",
+    "impact": "Medium (no live clients exist today; future client-side validation generated from OpenAPI will reject valid 64-char SHA-256 hashes)."
+  },
+  {
+    "id": "TD016-S5-003",
+    "category": "confirmed_defect",
+    "severity": "medium",
+    "target": "POST /api/projects/{projectId}/github/sync",
+    "actual": "swagger.json:1842-1903 only lists 200, 400, 401, 403, 404, 502.",
+    "expected": "ProjectsController.cs:331,367-384 declares [ProducesResponseType(409)] and returns 409 Conflict on SyncAlreadyInProgressException and SyncCheckpointChangedException.",
+    "source_ref": "src/Backend/Api/Controllers/ProjectsController.cs:331,367-384",
+    "openapi_ref": "swagger.json:1842-1903",
+    "impact": "Medium (no live clients exist today; future generated clients will not model 409 Conflict responses for concurrent sync or checkpoint mismatch)."
+  },
+  {
+    "id": "TD016-S5-004",
+    "category": "confirmed_defect",
+    "severity": "medium",
+    "target": "ProblemDetails & ValidationProblemDetails",
+    "actual": "swagger.json:2276-2302 omits 'code', 'traceId', and 'errors' (uses ProblemDetails for 400 too) and declares 'application/json' instead of 'application/problem+json'.",
+    "expected": "ApiProblemDetails.cs:43-49,86-100,126-231 always emits 'code', 'traceId', 'errors' (on 400 validation) with Content-Type 'application/problem+json'.",
+    "source_ref": "src/Backend/Api/Common/ApiProblemDetails.cs:43-231",
+    "openapi_ref": "swagger.json:2276-2302",
+    "impact": "Medium (no live clients exist today; strict typed-error deserializers like Kiota/orval/openapi-fetch will not deserialize 'code', 'traceId', or 'errors' or match 'application/problem+json')."
+  },
+  {
+    "id": "TD016-S5-005",
+    "category": "confirmed_defect",
+    "severity": "medium",
+    "target": "POST /api/auth/register, POST /api/auth/login",
+    "actual": "swagger.json:672-811 inherits global Bearer security requirement (swagger.json:2481-2485) with no 'security: []' override.",
+    "expected": "AuthController.cs:42-104 Register and Login are anonymous endpoints.",
+    "source_ref": "src/Backend/Api/Program.cs:268-271",
+    "openapi_ref": "swagger.json:672-811,2481-2485",
+    "impact": "Medium (no live clients exist today; future generated clients will treat login/register as requiring Bearer authentication unless overridden)."
+  },
+  {
+    "id": "TD016-S5-006",
+    "category": "client_generation_risk",
+    "severity": "medium",
+    "target": "All 26 MVC operations",
+    "actual": "0 of 26 operations in swagger.json define an 'operationId'.",
+    "expected": "CustomOperationIds configured in AddSwaggerGen for deterministic client method names.",
+    "source_ref": "src/Backend/Api/Program.cs:236-272",
+    "openapi_ref": "swagger.json:9-1905",
+    "impact": "NSwag/orval/Refitter fall back to noisy verb+path method names."
+  },
+  {
+    "id": "TD016-S5-007",
+    "category": "contract_ambiguity",
+    "severity": "medium",
+    "target": "Response DTOs (ProjectDto, UserDto, CommitDto, AnalysisDto, AnalysisResultDto, AuthResponseDto, PagedResultDto<T>)",
+    "actual": "Non-nullable C# reference properties are emitted with 'nullable: true' and omitted from 'required' in swagger.json.",
+    "expected": "Configure SupportNonNullableReferenceTypes() for nullable flags and separately evaluate NonNullableAsRequired / schema filter for OpenAPI required (exact behavior of Swashbuckle 10.2.3 requires build/inspection verification).",
+    "source_ref": "src/Backend/Api/Program.cs:236",
+    "openapi_ref": "swagger.json:1953,2311-2320,2422-2436",
+    "impact": "TypeScript and C# generators treat guaranteed non-null response fields as optional/nullable."
+  },
+  {
+    "id": "TD016-S5-008",
+    "category": "contract_ambiguity",
+    "severity": "medium",
+    "target": "CreateCommitDto.CommitDate",
+    "actual": "IValidatableObject rejects DateTimeKind.Unspecified, which is not reflected in swagger.json:2169-2173.",
+    "expected": "Document timezone requirement ('Z' or offset) in OpenAPI description/example.",
+    "source_ref": "src/Backend/Application/DTOs/CreateCommitDto.cs:21-32",
+    "openapi_ref": "swagger.json:2169-2173",
+    "impact": "Clients sending local DateTime without timezone receive 400 ValidationFailed."
+  },
+  {
+    "id": "TD016-S5-009",
+    "category": "documentation_gap",
+    "severity": "low",
+    "target": "Paginated endpoints (AdminUsers, Commits, Analyses)",
+    "actual": "page and pageSize in swagger.json lack minimum: 1 and maximum: 100 schema constraints.",
+    "expected": "Document minimum: 1 (page, pageSize) and maximum: 100 / clamp behavior (pageSize).",
+    "source_ref": "src/Backend/Api/Controllers/CommitsController.cs:61-81",
+    "openapi_ref": "swagger.json:1195-1215",
+    "impact": "Clients lack schema-level bounds for pagination parameters."
+  },
+  {
+    "id": "TD016-S5-010",
+    "category": "documentation_gap",
+    "severity": "low",
+    "target": "429 Retry-After & Global 500",
+    "actual": "Guaranteed 429 responses on register, login, and me/password omit the Retry-After header schema; 500 Internal Server Error (potentially returned by UseExceptionHandler middleware on unhandled exceptions) is only explicitly declared on SetGitHubToken.",
+    "expected": "Document Retry-After on guaranteed 429 responses; 500 does not need to be added mechanically to every operation and can be documented as a shared middleware convention.",
+    "source_ref": "src/Backend/Api/Program.cs:153-157,281",
+    "openapi_ref": "swagger.json:729-738,1127",
+    "impact": "Generated clients do not model Retry-After or 500 ProblemDetails uniformly."
+  },
+  {
+    "id": "TD016-S5-011",
+    "category": "documentation_gap",
+    "severity": "low",
+    "target": "UpdateUserRoleDto.RoleId",
+    "actual": "roleId has minimum: 1 but is not in 'required' in swagger.json:2400-2413.",
+    "expected": "Mark RoleId as [Required] or required modifier so omitting it is rejected by schema.",
+    "source_ref": "src/Backend/Application/DTOs/UpdateUserRoleDto.cs:13-14",
+    "openapi_ref": "swagger.json:2400-2413",
+    "impact": "Generated clients may treat roleId as optional."
+  },
+  {
+    "id": "TD016-S5-012",
+    "category": "documentation_gap",
+    "severity": null,
+    "target": "GET /health",
+    "actual": "Absent from swagger.json because MapHealthChecks registers a terminal middleware without ApiExplorer metadata.",
+    "expected": "Expected Swashbuckle/MapHealthChecks behavior; document separately for ops/monitoring or expose via Minimal API if needed in OpenAPI.",
+    "source_ref": "src/Backend/Api/Program.cs:313",
+    "openapi_ref": null,
+    "impact": "Minimal impact; health probes typically do not use generated SDKs."
+  },
+  {
+    "id": "TD016-S5-013",
+    "category": "evolution_risk",
+    "severity": null,
+    "target": "API Versioning Strategy",
+    "actual": "No API versioning is configured (SwaggerDoc 'v1' is only a label; routes are unversioned 'api/...').",
+    "expected": "With 0 implemented clients today, breaking changes are safe; before releasing 3 independent clients (CLI, Desktop, Bot), define /api/v1/ or an additive-only policy.",
+    "source_ref": "src/Backend/Api/Program.cs:238",
+    "openapi_ref": "swagger.json:5",
+    "impact": "High future risk once independent clients are distributed in separate repositories."
+  }
+]

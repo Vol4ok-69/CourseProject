@@ -1,0 +1,13 @@
+{
+  "stage": "TD-016 Stage 5",
+  "independent_verifier": "Stage 5 Independent Verifier (803813c9)",
+  "verified_claims": [
+    { "id": "TD016-S5-001", "verified": true, "notes": "GitHubSyncResultDto.cs:24-30 defines AlreadyCurrent and HistoryClassification?; swagger.json:2223-2239 omits both." },
+    { "id": "TD016-S5-002", "verified": true, "notes": "CreateCommitDto.cs:14-15 has [StringLength(64, MinimumLength = 7)] and regex; swagger.json:2163-2168 has maxLength: 40 and no pattern." },
+    { "id": "TD016-S5-003", "verified": true, "notes": "ProjectsController.cs:331 declares [ProducesResponseType(409)]; swagger.json:1842-1903 omits 409." },
+    { "id": "TD016-S5-004", "verified": true, "notes": "ApiProblemDetails.cs emits code, traceId, errors and application/problem+json; swagger.json omits them and uses application/json." },
+    { "id": "TD016-S5-005", "verified": true, "notes": "Program.cs:268-271 applies global Bearer security; swagger.json:672-810 has no security: [] override on register/login." },
+    { "id": "TD016-S5-006", "verified": true, "notes": "0 of 26 operations in swagger.json have operationId." },
+    { "id": "TD016-S5-007", "verified": true, "notes": "SupportNonNullableReferenceTypes() is not called in Program.cs:236-272; non-nullable response fields are nullable: true." }
+  ]
+}

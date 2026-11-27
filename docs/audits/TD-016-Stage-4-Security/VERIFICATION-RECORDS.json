@@ -1,0 +1,230 @@
+{
+  "audit_run": "run-1",
+  "source_ref": "a061bb8a388ef1848b64548d0a03178bb83162d7",
+  "execution_policy": "source-only-no-os-sandbox",
+  "dynamic_execution_performed": false,
+  "phases": {
+    "phase_1_reconnaissance": [
+      {
+        "agent_id": "recon-1a-1b",
+        "role": "research",
+        "scope": "Auth, JWT, Access Control, Secrets, HTTP Edge, Tests"
+      },
+      {
+        "agent_id": "recon-1c-1d",
+        "role": "research",
+        "scope": "GitHub API, ZIP/Workspace, Docker Runner, Supply Chain"
+      }
+    ],
+    "phase_2_hunting": [
+      {
+        "agent_id": "hunter-auth-access",
+        "role": "research",
+        "wave": 1,
+        "candidates_produced": 2
+      },
+      {
+        "agent_id": "hunter-secrets-edge",
+        "role": "research",
+        "wave": 1,
+        "candidates_produced": 5
+      },
+      {
+        "agent_id": "hunter-zip-workspace",
+        "role": "research",
+        "wave": 1,
+        "candidates_produced": 5
+      },
+      {
+        "agent_id": "hunter-docker-queue-supply",
+        "role": "research",
+        "wave": 1,
+        "candidates_produced": 8
+      },
+      {
+        "agent_id": "coverage-critic",
+        "role": "research",
+        "wave": 1,
+        "status": "gaps_found",
+        "gaps_identified": [
+          "in-process analyzers",
+          "/health",
+          "AnalysisCleanupBackgroundService",
+          "GitHubSyncService"
+        ]
+      },
+      {
+        "agent_id": "hunter-analyzers-wave2",
+        "role": "research",
+        "wave": 2,
+        "candidates_produced": 4
+      }
+    ],
+    "phase_3_candidate_validation": [
+      {
+        "agent_id": "verifier-auth-edge",
+        "role": "research",
+        "checked": [
+          "auth-jwt-no-revocation-stale-claims",
+          "auth-jwt-key-length-unvalidated",
+          "CAND-SE-001",
+          "CAND-SE-002",
+          "CAND-SE-003",
+          "CAND-SE-004",
+          "CAND-SE-005"
+        ]
+      },
+      {
+        "agent_id": "verifier-zip-workspace",
+        "role": "research",
+        "checked": [
+          "ZW-001",
+          "ZW-002",
+          "ZW-003",
+          "ZW-004",
+          "ZW-005"
+        ]
+      },
+      {
+        "agent_id": "verifier-docker-queue-supply",
+        "role": "research",
+        "checked": [
+          "DOCKER-01",
+          "DOCKER-02",
+          "DOCKER-03",
+          "QUEUE-01",
+          "QUEUE-02",
+          "QUEUE-03",
+          "SUPPLY-01",
+          "SUPPLY-02"
+        ]
+      },
+      {
+        "agent_id": "verifier-wave2",
+        "role": "research",
+        "checked": [
+          "HUNTER-W2-001",
+          "HUNTER-W2-002",
+          "HUNTER-W2-003",
+          "HUNTER-W2-004"
+        ]
+      }
+    ],
+    "phase_5_final_record_verification": [
+      {
+        "agent_id": "phase5-final-record-verifier",
+        "role": "research",
+        "verified_records": 15,
+        "notes": "All 15 initial needs_validation records verified against source; SUPPLY-01 and SUPPLY-02 subsequently reclassified to hardening recommendations (rejected as standalone vulnerabilities) during final review."
+      }
+    ]
+  },
+  "verification_note": "'verified' in Phase 5 means the structured record was checked against source code; it does NOT mean a 'confirmed' vulnerability.",
+  "records": [
+    {
+      "fingerprint": "CAND-SE-002",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "DOCKER-01",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "DOCKER-02",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "HUNTER-W2-001",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "HUNTER-W2-002",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "HUNTER-W2-003",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "HUNTER-W2-004",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "QUEUE-01",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "QUEUE-03",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "SUPPLY-01",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "rejected",
+      "reclassification_reason": "Reclassified from needs_validation to rejected (and moved to HARDENING.md) because missing lockfiles / mutable Docker tags alone do not establish a boundary violation without a compromised feed or registry."
+    },
+    {
+      "fingerprint": "SUPPLY-02",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "rejected",
+      "reclassification_reason": "Reclassified from needs_validation to rejected (and moved to HARDENING.md) because missing lockfiles / mutable Docker tags alone do not establish a boundary violation without a compromised feed or registry."
+    },
+    {
+      "fingerprint": "ZW-001",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "ZW-003",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "ZW-005",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    },
+    {
+      "fingerprint": "auth-jwt-no-revocation-stale-claims",
+      "initial_status": "needs_validation",
+      "phase5_result": "verified",
+      "final_status_in_findings_json": "needs_validation",
+      "reclassification_reason": null
+    }
+  ]
+}

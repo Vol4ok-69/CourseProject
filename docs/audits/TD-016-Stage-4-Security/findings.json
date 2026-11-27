@@ -1,0 +1,827 @@
+[
+  {
+    "verdict": "rejected",
+    "fingerprint": "CAND-SE-001",
+    "title": "Rate limiting IP partition relies on ForwardedHeaders without KnownProxies/KnownNetworks",
+    "description": "Claimed X-Forwarded-For spoofing could bypass AuthPolicy.",
+    "claimed_root_cause": "Program.cs:276-279 configures UseForwardedHeaders without explicit KnownProxies.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Api/Program.cs",
+        "line": 276,
+        "scope": "Program",
+        "description": "Configures ForwardedHeadersOptions."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Api/Program.cs",
+        "line": 276,
+        "description": "KnownProxies.Clear() is NOT called; ASP.NET Core defaults KnownProxies to loopback only."
+      }
+    ],
+    "reason": "ASP.NET Core ForwardedHeadersOptions defaults KnownProxies to loopback (127.0.0.1, ::1) and ForwardLimit to 1, preventing external X-Forwarded-For spoofing."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "CAND-SE-002",
+    "title": "Unthrottled sensitive and resource-intensive endpoints (me/username, me/github, github/sync, analyses)",
+    "description": "AuthPolicy rate limiting applies only to Register, Login, and ChangePassword; no GlobalLimiter exists, leaving me/username, me/github, github/sync, and analyses/create unthrottled.",
+    "claimed_root_cause": "Program.cs:145-196 configures only AuthPolicy with no GlobalLimiter, and AuthController.ChangeUsername/SetGitHubToken, ProjectsController.SyncGitHub, and AnalysesController.Create lack [EnableRateLimiting].",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Api/Controllers/ProjectsController.cs",
+        "line": 325,
+        "scope": "ProjectsController.SyncGitHub",
+        "description": "Accepts authenticated sync requests with no rate limiter."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Backend/Api/Program.cs",
+        "line": 145,
+        "scope": "Program.AddRateLimiter",
+        "description": "No GlobalLimiter or per-user policy configured."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Api/Program.cs",
+        "line": 145,
+        "description": "Only AuthPolicy is registered."
+      },
+      {
+        "file": "src/Backend/Api/Controllers/AnalysesController.cs",
+        "line": 30,
+        "description": "Create lacks [EnableRateLimiting]."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed.",
+      "External reverse-proxy / ingress rate limiting is outside repository source."
+    ],
+    "validation_plan": {
+      "local": "In an isolated loopback test, send >10 rapid requests to PUT /api/auth/me/username or POST .../analyses and observe absence of 429.",
+      "deployment": "Check whether ingress/reverse proxy enforces per-user/per-IP rate limits."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "CAND-SE-003",
+    "title": "Raw OperationCanceledException.Message stored in AnalysisResult without SanitizeErrorMessage",
+    "description": "Claimed DatabaseAnalyzer OperationCanceledException.Message could leak paths or secrets.",
+    "claimed_root_cause": "AnalysisService.cs:392 interpolates ex.Message directly.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Application/Services/AnalysisService.cs",
+        "line": 392,
+        "scope": "AnalysisService.ExecuteGuardedCoreAsync",
+        "description": "Formats OperationCanceledException.Message."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Analyzers/Database/DatabaseAnalyzer.cs",
+        "line": 124,
+        "description": "Only standard .NET OperationCanceledException instances are thrown."
+      }
+    ],
+    "reason": "DatabaseAnalyzer and its process/container adapters only propagate standard .NET OperationCanceledException with default messages containing no paths or secrets."
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "CAND-SE-004",
+    "title": "AES-256-GCM token encryption lacks AAD binding to user/purpose",
+    "description": "Claimed ciphertext could be transplanted between user rows.",
+    "claimed_root_cause": "AesGcmTokenEncryptionService.cs:58-61 omits AAD.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Infrastructure/Security/AesGcmTokenEncryptionService.cs",
+        "line": 58,
+        "scope": "AesGcmTokenEncryptionService.Encrypt",
+        "description": "Calls AesGcm.Encrypt without AAD."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Infrastructure/GitHub/GitHubCredentialService.cs",
+        "line": 46,
+        "description": "EncryptedGitHubToken is never exposed or accepted via API."
+      }
+    ],
+    "reason": "EncryptedGitHubToken is strictly server-side; no lower-trust actor can swap DB ciphertext between rows without already having direct write access to PostgreSQL."
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "CAND-SE-005",
+    "title": "Incomplete path and stacktrace redaction in AnalysisService.SanitizeErrorMessage",
+    "description": "Claimed SanitizeErrorMessage regexes could miss some Unix paths or app frames.",
+    "claimed_root_cause": "AnalysisService.cs:1536-1631 uses fixed Unix directory list.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Application/Services/AnalysisService.cs",
+        "line": 1471,
+        "scope": "AnalysisService.SanitizeErrorMessage",
+        "description": "Sanitizes exception.Message."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Application/Services/AnalysisService.cs",
+        "line": 1471,
+        "description": "Inspects only exception.Message, strips stack traces, redacts PATs/IPs/paths, truncates to 500 chars."
+      }
+    ],
+    "reason": "Defense-in-depth regex edge case with no concrete demonstrated leak path."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "DOCKER-01",
+    "title": "Host Docker socket mounted into backend container with root-group fallback",
+    "description": "docker-compose.yml mounts /var/run/docker.sock into backend and defaults group_add to GID 0 (${DOCKER_GID:-0}), granting host-equivalent Docker daemon control if backend is compromised.",
+    "claimed_root_cause": "docker-compose.yml:68 mounts /var/run/docker.sock and lines 71-72 default DOCKER_GID to 0; Dockerfile:37-38 adds app user to docker group.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "docker-compose.yml",
+        "line": 68,
+        "scope": "backend.volumes",
+        "description": "Mounts /var/run/docker.sock into backend container."
+      },
+      {
+        "kind": "sink",
+        "file": "docker-compose.yml",
+        "line": 71,
+        "scope": "backend.group_add",
+        "description": "Defaults DOCKER_GID to 0 (root group)."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "docker-compose.yml",
+        "line": 68,
+        "description": "Mounts /var/run/docker.sock:/var/run/docker.sock."
+      },
+      {
+        "file": "infrastructure/docker/Dockerfile",
+        "line": 37,
+        "description": "Adds app user to docker group."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed.",
+      "No live Docker daemon or deployment host environment available to inspect socket ACLs and DOCKER_GID."
+    ],
+    "validation_plan": {
+      "deployment": "Inspect host /var/run/docker.sock permissions, DOCKER_GID env var, and whether a Docker socket proxy / rootless Docker is used in deployment."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "DOCKER-02",
+    "title": "World-writable (0777) exchange output directory with non-atomic output.json read",
+    "description": "DatabaseContainerRunner sets 0777 on outputDirectory and Dockerfile sets 1777 on /tmp/netscope-database-analyzer, with non-atomic FileInfo symlink/size checks before File.ReadAllTextAsync.",
+    "claimed_root_cause": "DatabaseContainerRunner.cs:133-137 sets UnixFileMode 0777 on out/ and checks LinkTarget/Length at lines 244-253 before File.ReadAllTextAsync at line 255.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Analyzers/Database/Runner/DatabaseContainerRunner.cs",
+        "line": 133,
+        "scope": "DatabaseContainerRunner.RunAsync",
+        "description": "Sets 0777 permissions on outputDirectory."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Analyzers/Database/Runner/DatabaseContainerRunner.cs",
+        "line": 255,
+        "scope": "DatabaseContainerRunner.RunAsync",
+        "description": "Reads output.json after non-atomic FileInfo checks."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Analyzers/Database/Runner/DatabaseContainerRunner.cs",
+        "line": 133,
+        "description": "UnixFileMode 0777 set on outputDirectory."
+      },
+      {
+        "file": "infrastructure/docker/Dockerfile",
+        "line": 39,
+        "description": "chmod 1777 /tmp/netscope-database-analyzer."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed.",
+      "Requires Linux/Docker runtime to verify volume mount ownership and multi-process access."
+    ],
+    "validation_plan": {
+      "deployment": "Inspect mounted volume permissions and user namespaces on the Linux Docker host."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "DOCKER-03",
+    "title": "Bind-mount fallback in DockerCliProcessAdapter when ExchangeVolume is null",
+    "description": "Claimed host bind-mount fallback could leak host paths.",
+    "claimed_root_cause": "DockerCliProcessAdapter.cs:196-213 has bind-mount fallback.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Analyzers/Database/Process/DockerCliProcessAdapter.cs",
+        "line": 196,
+        "scope": "DockerCliProcessAdapter.BuildCreateArgumentList",
+        "description": "Fallback branch when ExchangeVolume is null."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Api/Program.cs",
+        "line": 59,
+        "description": "Program.cs requires Docker:ExchangeVolume at startup and throws if missing."
+      }
+    ],
+    "reason": "Api/Program.cs:59-63 enforces Docker:ExchangeVolume at startup and docker-compose.yml sets it, making the bind-mount fallback unreachable in the Api runtime."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "HUNTER-W2-001",
+    "title": "Potential pathological regex runtime risk in ConnectionStringPasswordRegex (missing matchTimeout / NonBacktracking)",
+    "description": "ConnectionStringPasswordRegex uses adjacent lazy wildcards (=.*?;.*?) with RegexOptions.Compiled and no matchTimeout or RegexOptions.NonBacktracking, creating a potential risk of pathological runtime on crafted .cs or appsettings*.json strings (catastrophic backtracking is not dynamically proven).",
+    "claimed_root_cause": "Sec001HardcodedSecretsRule.cs:20-22 and Sec002PlaintextConfigSecretsRule.cs:17-19 compile ConnectionStringPasswordRegex without RegexOptions.NonBacktracking or matchTimeout.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Analyzers/Security/SecurityAnalyzer.cs",
+        "line": 58,
+        "scope": "SecurityAnalyzer.AnalyzeAsync",
+        "description": "Reads untrusted repository .cs and appsettings*.json files."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Analyzers/Security/Rules/Sec001HardcodedSecretsRule.cs",
+        "line": 79,
+        "scope": "Sec001HardcodedSecretsRule.Analyze",
+        "description": "Evaluates ConnectionStringPasswordRegex on string literals without timeout."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Analyzers/Security/Rules/Sec001HardcodedSecretsRule.cs",
+        "line": 20,
+        "description": "ConnectionStringPasswordRegex uses =.*?;.*? without matchTimeout."
+      },
+      {
+        "file": "src/Analyzers/Security/Rules/Sec002PlaintextConfigSecretsRule.cs",
+        "line": 17,
+        "description": "Identical regex without matchTimeout."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed."
+    ],
+    "validation_plan": {
+      "local": "In an isolated unit test, pass a string with repeated 'Host=;' segments and no 'Password=' to Sec001HardcodedSecretsRule.Analyze and measure CPU duration."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "HUNTER-W2-002",
+    "title": "Missing analyzer-level file size caps and file-level ReparsePoint checks in CSharpAnalyzer, SqlAnalyzer, and SecurityAnalyzer",
+    "description": "CSharpAnalyzer, SqlAnalyzer, and SecurityAnalyzer call File.ReadAllTextAsync without analyzer-level file-size limits and check FileAttributes.ReparsePoint only on directories, not individual files. Upstream extraction in RepositorySourceService caps single files at 50 MiB and total extracted size at 250 MiB (and skips Unix symlinks 0xA000), so reads are bounded upstream, but actual OOM/resource impact at up to 50 MiB per file remains unverified dynamically.",
+    "claimed_root_cause": "CSharpAnalyzer.cs:48-96, SqlAnalyzer.cs:54-117, and SecurityAnalyzer.cs:58-180 lack the 2 MiB file cap and file-level ReparsePoint check present in RoslynModelInspector.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Analyzers/Security/SecurityAnalyzer.cs",
+        "line": 64,
+        "scope": "SecurityAnalyzer.AnalyzeAsync",
+        "description": "Calls File.ReadAllTextAsync on every *.cs and appsettings*.json without size check."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Analyzers/CSharp/CSharpAnalyzer.cs",
+        "line": 52,
+        "scope": "CSharpAnalyzer.AnalyzeAsync",
+        "description": "Reads full file into memory and parses syntax tree."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Analyzers/CSharp/CSharpAnalyzer.cs",
+        "line": 52,
+        "description": "Unbounded File.ReadAllTextAsync."
+      },
+      {
+        "file": "src/Analyzers/Sql/SqlAnalyzer.cs",
+        "line": 58,
+        "description": "Unbounded File.ReadAllTextAsync."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed."
+    ],
+    "validation_plan": {
+      "local": "In an isolated sandbox, analyze a fixture containing a 50 MiB .cs file and measure peak worker memory."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "HUNTER-W2-003",
+    "title": "Unauthenticated, unthrottled /health endpoint triggers live DB CanConnectAsync per request",
+    "description": "app.MapHealthChecks('/health') is unauthenticated and unthrottled, executing DatabaseHealthCheck.CanConnectAsync against PostgreSQL on every request.",
+    "claimed_root_cause": "Program.cs:313 maps /health with no RequireAuthorization or RequireRateLimiting; DatabaseHealthCheck.cs:25 calls CanConnectAsync on every request.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Api/Program.cs",
+        "line": 313,
+        "scope": "Program",
+        "description": "Maps unauthenticated, unthrottled GET /health."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Backend/Api/Health/DatabaseHealthCheck.cs",
+        "line": 25,
+        "scope": "DatabaseHealthCheck.CheckHealthAsync",
+        "description": "Executes dbContext.Database.CanConnectAsync."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Api/Program.cs",
+        "line": 313,
+        "description": "app.MapHealthChecks('/health') without rate limiting."
+      },
+      {
+        "file": "src/Backend/Api/Health/DatabaseHealthCheck.cs",
+        "line": 25,
+        "description": "Direct CanConnectAsync call."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed.",
+      "Reverse-proxy throttling on /health is outside repository source."
+    ],
+    "validation_plan": {
+      "local": "In an isolated loopback test, send concurrent GET /health requests and observe DB connection pool usage.",
+      "deployment": "Verify whether ingress restricts or caches /health."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "HUNTER-W2-004",
+    "title": "Missing page/commit cap and per-page allExpandedParents rebuild during in-memory DAG accumulation in GitHubSyncService",
+    "description": "GitHubSyncService.SyncAsync has no application-level page or commit-count cap, accumulates DAG state in memory, and rebuilds allExpandedParents over vExpanded on every page; actual memory/CPU impact under large histories is not dynamically reproduced.",
+    "claimed_root_cause": "GitHubSyncService.cs:105-202 and GitHubService.cs:127-240 have no page/commit limit and rebuild allExpandedParents per page.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Application/Services/GitHubSyncService.cs",
+        "line": 116,
+        "scope": "GitHubSyncService.SyncAsync",
+        "description": "Iterates unbounded commit pages from GitHubService."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Backend/Application/Services/GitHubSyncService.cs",
+        "line": 166,
+        "scope": "GitHubSyncService.SyncAsync",
+        "description": "Rebuilds allExpandedParents across entire vExpanded set on every page."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Application/Services/GitHubSyncService.cs",
+        "line": 166,
+        "description": "Per-page iteration over all vExpanded entries."
+      },
+      {
+        "file": "src/Backend/Infrastructure/GitHub/GitHubService.cs",
+        "line": 127,
+        "description": "GetCommitPagesAsync has no max page bound."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed."
+    ],
+    "validation_plan": {
+      "local": "In an isolated mock-GitHub test with 10,000+ commits, measure memory and CPU time of SyncAsync."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "QUEUE-01",
+    "title": "Head-of-line blocking when >= 50 Poison Pill or advisory-locked rows exist",
+    "description": "TryAcquireNextPendingOrStaleAsync stops after maxCandidateSkips = 50, and AnalysisBackgroundService runs one task sequentially per loop.",
+    "claimed_root_cause": "AnalysisRepository.cs:190-192 caps skipped candidates at 50; AnalysisBackgroundService.cs:26-56 processes one task at a time.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs",
+        "line": 40,
+        "scope": "AnalysisBackgroundService.ExecuteAsync",
+        "description": "Polls TryAcquireNextPendingOrStaleAsync sequentially."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Backend/Infrastructure/Repository/AnalysisRepository.cs",
+        "line": 190,
+        "scope": "AnalysisRepository.TryAcquireNextPendingOrStaleAsync",
+        "description": "Returns null once skippedCandidateIds reaches 50."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Infrastructure/Repository/AnalysisRepository.cs",
+        "line": 190,
+        "description": "maxCandidateSkips = 50."
+      },
+      {
+        "file": "src/Backend/Api/BackgroundServices/AnalysisBackgroundService.cs",
+        "line": 40,
+        "description": "Single-worker sequential loop."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed."
+    ],
+    "validation_plan": {
+      "local": "In an isolated PostgreSQL test, insert 50 advisory-locked analyses followed by 1 unlocked Pending analysis and verify whether the 51st is acquired."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "QUEUE-02",
+    "title": "Poison Pill bypass when Running row has NULL LeaseExpiration",
+    "description": "Claimed Status=1 with LeaseExpiration IS NULL bypasses Poison Pill check.",
+    "claimed_root_cause": "AnalysisRepository.cs:242 checks candidate.LeaseExpiration.HasValue.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Infrastructure/Repository/AnalysisRepository.cs",
+        "line": 213,
+        "scope": "AnalysisRepository.TryAcquireNextPendingOrStaleAsync",
+        "description": "Selects Status=1 AND (LeaseExpiration IS NULL OR ...)."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Infrastructure/Repository/AnalysisRepository.cs",
+        "line": 297,
+        "description": "All transitions to Status=1 set non-null LeaseExpiration."
+      }
+    ],
+    "reason": "Status=1 (Running) is only ever written together with a non-null LeaseExpiration, and all transitions clearing LeaseExpiration also change Status away from 1."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "QUEUE-03",
+    "title": "No global or per-user queue depth cap in AnalysisService.EnqueueAsync",
+    "description": "EnqueueAsync deduplicates only per CommitId; neither EnqueueAsync nor AnalysesController.Create enforces a per-user or global active queue limit.",
+    "claimed_root_cause": "AnalysisService.cs:32-74 checks only HasActiveAnalysisAsync(commitId); AnalysesController.cs:30-74 has no quota or rate limit.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Api/Controllers/AnalysesController.cs",
+        "line": 30,
+        "scope": "AnalysesController.Create",
+        "description": "Enqueues analysis per commit without per-user quota."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Backend/Application/Services/AnalysisService.cs",
+        "line": 32,
+        "scope": "AnalysisService.EnqueueAsync",
+        "description": "Checks only per-commit uniqueness."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Application/Services/AnalysisService.cs",
+        "line": 32,
+        "description": "No per-user or global queue cap."
+      },
+      {
+        "file": "src/Backend/Api/Controllers/AnalysesController.cs",
+        "line": 30,
+        "description": "No rate limit or quota check."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed."
+    ],
+    "validation_plan": {
+      "local": "In an isolated test, enqueue analyses across multiple commits for one user and verify unbounded queue growth."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "SUPPLY-01",
+    "title": "Missing NuGet lockfiles (packages.lock.json) and --locked-mode restore",
+    "description": "No packages.lock.json files exist and Dockerfiles run dotnet restore without --locked-mode, allowing unpinned transitive NuGet dependency resolution at build time.",
+    "claimed_root_cause": "Dockerfiles run 'dotnet restore' without '--locked-mode' and *.csproj files do not enable RestorePackagesWithLockFile.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "infrastructure/docker/Dockerfile",
+        "line": 19,
+        "scope": "Dockerfile",
+        "description": "Runs dotnet restore without --locked-mode."
+      },
+      {
+        "kind": "sink",
+        "file": "infrastructure/docker/Dockerfile.database-analyzer",
+        "line": 7,
+        "scope": "Dockerfile.database-analyzer",
+        "description": "Runs dotnet restore without --locked-mode."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "infrastructure/docker/Dockerfile",
+        "line": 19,
+        "description": "dotnet restore without --locked-mode."
+      },
+      {
+        "file": "infrastructure/docker/Dockerfile.database-analyzer",
+        "line": 7,
+        "description": "dotnet restore without --locked-mode."
+      }
+    ],
+    "reason": "Reclassified as a supply-chain hardening recommendation (tracked in HARDENING.md) rather than a standalone vulnerability: no concrete attack scenario or compromised NuGet feed is established in source."
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "SUPPLY-02",
+    "title": "Mutable Docker image tags without digest pinning across compose and Dockerfiles",
+    "description": "docker-compose.yml and both Dockerfiles reference mutable tags (postgres:17, netscope-database-analyzer:latest, mcr.microsoft.com/dotnet/*:10.0) without @sha256: digests.",
+    "claimed_root_cause": "Base images and runner image tags omit immutable @sha256: digest pins.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "docker-compose.yml",
+        "line": 3,
+        "scope": "postgres.image",
+        "description": "Uses mutable tag postgres:17."
+      },
+      {
+        "kind": "sink",
+        "file": "docker-compose.yml",
+        "line": 31,
+        "scope": "database-analyzer-build.image",
+        "description": "Uses mutable tag netscope-database-analyzer:latest."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "docker-compose.yml",
+        "line": 3,
+        "description": "postgres:17 without @sha256:."
+      },
+      {
+        "file": "infrastructure/docker/Dockerfile",
+        "line": 2,
+        "description": "docker:28.5.2-cli without @sha256:."
+      }
+    ],
+    "reason": "Reclassified as a supply-chain hardening recommendation (tracked in HARDENING.md) rather than a standalone vulnerability: mutable tags alone do not establish a boundary violation without a compromised registry or tag-mutation attack path."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "ZW-001",
+    "title": "Missing scheme and character validation in GitHubRepositoryReference.Parse (DTO regex permits percent-encoded chars; non-MVC bypass unconfirmed)",
+    "description": "GitHubRepositoryReference.Parse (lines 7-33) does not validate uri.Scheme or owner/repo characters itself; known MVC paths use CreateProjectDto/UpdateProjectDto regexes enforcing https://, though [^/\\s]+ permits percent-encoded characters (%2F/%2E%2E) and any DTO bypass via another path is not established.",
+    "claimed_root_cause": "GitHubRepositoryReference.cs:7-33 only checks Uri.TryCreate, Host == github.com, and 2 segments; CreateProjectDto regex permits percent-encoded chars.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Application/DTOs/CreateProjectDto.cs",
+        "line": 21,
+        "scope": "CreateProjectDto.RepoUrl",
+        "description": "Regex [^/\\s]+ allows percent-encoded characters."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Backend/Infrastructure/GitHub/Models/GitHubRepositoryReference.cs",
+        "line": 7,
+        "scope": "GitHubRepositoryReference.Parse",
+        "description": "Interpolates unescaped Owner/Name into GitHub API paths."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Infrastructure/GitHub/Models/GitHubRepositoryReference.cs",
+        "line": 7,
+        "description": "No scheme or identifier character validation."
+      },
+      {
+        "file": "src/Backend/Application/DTOs/CreateProjectDto.cs",
+        "line": 21,
+        "description": "Regex allows [^/\\s]+."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed."
+    ],
+    "validation_plan": {
+      "local": "In an isolated unit test, pass https://github.com/owner%2fextra/repo to CreateProjectDto and GitHubRepositoryReference.Parse."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "ZW-002",
+    "title": "Unescaped commitHash interpolation in zipball URL",
+    "description": "Claimed non-hex commitHash could inject path segments into zipball URL.",
+    "claimed_root_cause": "RepositorySourceService.cs:214 interpolates commitHash without Uri.EscapeDataString.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+        "line": 214,
+        "scope": "RepositorySourceService.DownloadAndExtractAsync",
+        "description": "Formats zipball/{commitHash}."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Application/DTOs/CreateCommitDto.cs",
+        "line": 15,
+        "description": "CreateCommitDto enforces \\A[0-9a-fA-F]{7,64}\\z."
+      }
+    ],
+    "reason": "All Commit.CommitHash values in DB originate either from CreateCommitDto (strict hex regex) or GitHubSyncService (SHAs from https://api.github.com/)."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "ZW-003",
+    "title": "Directory entries bypass MaxFileCount (10,000) during archive extraction",
+    "description": "Confirmed code behavior: RepositorySourceService.ExtractArchiveInternalCoreAsync (lines 431-502) collects all entries before checking MaxFileCount and executes continue on item.IsDirectory (line 494) before incrementing fileCount (line 497). While the input archive is bounded at 50 MiB (so entry count is not mathematically unbounded), directory entries bypass the 10,000-item quota; actual memory/inode impact requires dynamic verification.",
+    "claimed_root_cause": "RepositorySourceService.cs:431-502 iterates all entries into extractionPlan and executes continue on item.IsDirectory before incrementing fileCount.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+        "line": 431,
+        "scope": "RepositorySourceService.ExtractArchiveInternalCoreAsync",
+        "description": "Collects all archive entries without directory count cap."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+        "line": 488,
+        "scope": "RepositorySourceService.ExtractArchiveInternalCoreAsync",
+        "description": "Creates directories and skips MaxFileCount check."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+        "line": 488,
+        "description": "item.IsDirectory hits continue before fileCount++ at line 497."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed."
+    ],
+    "validation_plan": {
+      "local": "In an isolated sandbox, extract a small zip fixture containing >10,000 empty directory entries and observe memory/directory creation."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "ZW-004",
+    "title": "ValidateNextPageUrl allows non-default ports and UserInfo in GitHub Link header",
+    "description": "Claimed Link header could redirect PAT to non-standard port.",
+    "claimed_root_cause": "GitHubService.cs:513-546 omits IsDefaultPort and UserInfo checks.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Infrastructure/GitHub/GitHubService.cs",
+        "line": 513,
+        "scope": "GitHubService.ValidateNextPageUrl",
+        "description": "Validates Link rel=next URL."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Api/Program.cs",
+        "line": 104,
+        "description": "HttpClient BaseAddress is hardcoded to https://api.github.com/."
+      }
+    ],
+    "reason": "Link headers are parsed only from HTTPS responses from trusted https://api.github.com/; no untrusted actor controls the Link header."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "ZW-005",
+    "title": "Early return in RepositorySourceService.CleanupAsync skips containerExchangeDir if fullTargetDir is absent",
+    "description": "CleanupInternalAsync returns at line 605 if !Directory.Exists(fullTargetDir), skipping deletion of containerExchangeDir until AnalysisCleanupService runs.",
+    "claimed_root_cause": "RepositorySourceService.cs:604-612 returns early before reaching lines 637-657.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+        "line": 604,
+        "scope": "RepositorySourceService.CleanupInternalAsync",
+        "description": "Returns early when fullTargetDir does not exist."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+        "line": 637,
+        "scope": "RepositorySourceService.CleanupInternalAsync",
+        "description": "containerExchangeDir cleanup is skipped."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Infrastructure/GitHub/RepositorySourceService.cs",
+        "line": 604,
+        "description": "Early return before containerExchangeDir cleanup."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed."
+    ],
+    "validation_plan": {
+      "local": "In an isolated unit test, invoke CleanupAsync when fullTargetDir is absent and verify containerExchangeDir remains until AnalysisCleanupService runs."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "auth-jwt-key-length-unvalidated",
+    "title": "Missing startup minimum-length validation for Jwt:Key signing secret",
+    "description": "Program.cs and JwtTokenService read Jwt:Key without an explicit minimum-length check.",
+    "claimed_root_cause": "Program.cs:198-218 checks only null Jwt:Key.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Api/Program.cs",
+        "line": 198,
+        "scope": "Program",
+        "description": "Reads Jwt:Key from configuration."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Infrastructure/Infrastructure.csproj",
+        "line": 18,
+        "description": "Uses System.IdentityModel.Tokens.Jwt 8.23.0."
+      }
+    ],
+    "reason": "Jwt:Key is an external deployment secret and System.IdentityModel.Tokens.Jwt enforces HMAC key length at signing/validation; missing startup check is a hardening note without a concrete source boundary violation."
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "auth-jwt-no-revocation-stale-claims",
+    "title": "No JWT revocation or server-side validation on password change, role demotion, or user deletion",
+    "description": "Issued HS256 JWTs remain valid for 1 hour (+5m default ClockSkew) after password change, Admin->User demotion, or user deletion because authorization trusts the JWT role claim without checking DB state.",
+    "claimed_root_cause": "JwtTokenService.GenerateToken emits stateless HS256 JWTs without jti/token-version; ApiJwtEvents.TokenValidated does not query DB; UserService/AuthService do not revoke prior tokens.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/Backend/Infrastructure/Security/JwtTokenService.cs",
+        "line": 24,
+        "scope": "JwtTokenService.GenerateToken",
+        "description": "Emits stateless JWT with sub, unique_name, role and 1h expiry."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/Backend/Api/Common/ApiJwtEvents.cs",
+        "line": 39,
+        "scope": "ApiJwtEvents.TokenValidated",
+        "description": "Logs UserId without checking DB role or revocation."
+      },
+      {
+        "kind": "sink",
+        "file": "src/Backend/Api/Controllers/AdminUsersController.cs",
+        "line": 18,
+        "scope": "AdminUsersController",
+        "description": "Authorizes solely from JWT role claim."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/Backend/Infrastructure/Security/JwtTokenService.cs",
+        "line": 24,
+        "description": "Claims array has no jti/security-stamp."
+      },
+      {
+        "file": "src/Backend/Application/Services/UserService.cs",
+        "line": 100,
+        "description": "UpdateRoleAsync updates RoleId without revoking tokens."
+      }
+    ],
+    "blockers": [
+      "OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox is unavailable on this Windows host; runtime reproduction was not executed."
+    ],
+    "validation_plan": {
+      "local": "In an isolated WebApplicationFactory test, demote Admin B via Admin A and verify whether Admin B's prior JWT still receives 200 OK on GET /api/admin/users.",
+      "deployment": "Verify token revocation / short TTL policy in staging."
+    }
+  }
+]

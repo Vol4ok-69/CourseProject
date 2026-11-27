@@ -1,0 +1,45 @@
+{
+  "run_id": "run-1",
+  "repo": "CourseProject",
+  "target": "c:/Users/ivank/Desktop/Uceba/Projects/CourseProject",
+  "source_ref": {
+    "commit": "a061bb8a388ef1848b64548d0a03178bb83162d7",
+    "branch": "main",
+    "dirty": true,
+    "untracked_audit_docs": [
+      "docs/audits/TD-016-Stage-0-Preparation.md",
+      "docs/audits/TD-016-Stage-1-Backend-REST-API.md",
+      "docs/audits/TD-016-Stage-2-Endpoint-Completeness.md",
+      "docs/audits/TD-016-Stage-3-PostgreSQL-Performance.md"
+    ]
+  },
+  "profile": "deep",
+  "scope_paths": [
+    "src/Backend/",
+    "src/Analyzers/",
+    "tests/Backend.Tests/",
+    "tests/DatabaseAnalyzer.Runner.Tests/",
+    "tests/SecurityAnalyzer.Tests/",
+    ".github/",
+    "Dockerfile",
+    "docker-compose.yml"
+  ],
+  "budget": null,
+  "execution_policy": "source-only-no-os-sandbox",
+  "sandbox_limitation": "Windows host lacks OS-enforced empty-env + network-disabled + read-only target/toolchain sandbox; target-controlled execution is omitted and runtime/deployment facts are marked needs_validation when decisive.",
+  "selected_companions": [
+    "WEB-PROTOCOL-AND-AUTH.md",
+    "CLOUD-AND-DEPLOYMENT.md",
+    "DATA-ISOLATION-AND-LIFECYCLE.md",
+    "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md",
+    "SUPPLY-CHAIN-AND-RELEASE.md",
+    "PROTOCOLS-RPC-AND-MESSAGING.md"
+  ],
+  "prior_run_paths": [],
+  "shared_file_owners": {
+    "parent": "coordinator"
+  },
+  "run_status": "complete",
+  "dynamic_execution_performed": false,
+  "artifact_location": "docs/audits/TD-016-Stage-4-Security"
+}
